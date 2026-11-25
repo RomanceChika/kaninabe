@@ -131,7 +131,7 @@ ARCH-0001 の昇格条件は Cloudflare Cron Triggers を名指ししている�
 - [x] J2 の対象を `runner: vercel_cron` に限定
 - [x] J3(`runner: pg_cron` ⇔ `supabase/migrations` の `cron.schedule`)を新設
 - [x] J4(`runner: vercel_cron` の cron 式が 1 日 1 回以下)を新設
-- [x] `supabase/migrations/20260906000046_pg_cron_runner.sql` で pg_cron + pg_net を有効化し、2 本を登録
+- [x] 元の製品の migration で pg_cron + pg_net を有効化し、2 本を登録
 - [x] `app/vercel.json` から 10 分間隔の 2 本を外す
 - [ ] 本番の Supabase Vault に `cron_base_url` / `cron_secret` を投入する(runbook.md §2-3'。実施は本番構築時)
 

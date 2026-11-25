@@ -151,7 +151,7 @@ export const INPUT_RESTRICTED_SYNTAX = [
  * とは別物になっていた）。骨格は生成物（`@/domain/generated/testids`）からしか作れないようにする。
  *
  * 部品の**内側**（入力欄・行・エラー表示）は仕様が持たない自由地帯なので、
- * `` `${workshopDetailTestIds['body.center.entry_form']}.title` `` のように
+ * `` `${itemDetailTestIds['body.center.loan_form']}.title` `` のように
  * 生成定数を前置きにした派生を許す。禁じるのは「先頭に手書きの文字列が来ること」だけである。
  */
 export const TESTID_RESTRICTED_SYNTAX = [

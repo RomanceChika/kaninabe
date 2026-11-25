@@ -146,7 +146,7 @@ norms: [PRIN-0001, PRIN-0003, PRIN-0005, PRIN-0007, PRIN-0008, PRIN-0009, PRIN-0
 ### RLS の位置づけ（書き込みとの違い）
 
 - **RLS は読み取りの防衛線である。** 読み取りではアプリ側に判定が無い（置かないと決めた）ため、**RLS が第一にして唯一の防衛線**になる。
-- **書き込みには RLS の出番が無い。** ユーザー（`anon` / `authenticated`）は INSERT / UPDATE / DELETE の権限を 1 つも持たず、**書き込みのユーザー直接経路は存在しない**（`20260819000016_revoke_direct_update.sql`）。全書き込みは `security definer` の RPC を通り、可否はその手前でエンジン（`canFire` / `canCreate` / `canWrite` / `canDelete`）が判断する。
+- **書き込みには RLS の出番が無い。** ユーザー（`anon` / `authenticated`）は INSERT / UPDATE / DELETE の権限を 1 つも持たず、**書き込みのユーザー直接経路は存在しない**（元の製品の migration で撤去した）。全書き込みは `security definer` の RPC を通り、可否はその手前でエンジン（`canFire` / `canCreate` / `canWrite` / `canDelete`）が判断する。
 - この形にしたことで、**「全書き込みが監査ログに残る」が例外なしに真になる**（`domain_events` への追記は書き込み RPC の中にしかない）。かつては `writes` を列 GRANT + 状態条件つきポリシーとして DB にも写していたが、それは第二防衛線ではなく**アプリを迂回する第二の書き込み口**であり、①追記の無い書き込みを許し、②列 GRANT がポリシー単位に分けられないため `writes` の状態差（「提出後は連絡事項だけ」）を表現できず許可列の和集合が開く、という 2 つの穴を持っていた（Phase C-6 第 3 波で撤去）。
 - **DB 側の防衛線が無くなったわけではない。** 不変条件（CHECK・ユニーク・トリガー）と値域、`security definer` 関数の実行権限（`service_role` のみ）は変わらず DB が執行する（enforcement-matrix §9）。
 

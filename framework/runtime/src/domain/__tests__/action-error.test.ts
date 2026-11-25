@@ -87,12 +87,12 @@ describe('toActionError', () => {
       state: 'draft',
       reason: 'guard_unknown',
       guardSource: undefined,
-      unresolvedPaths: ['workshop.state'],
+      unresolvedPaths: ['item.state'],
     };
 
     expect(toActionError(rejection, EVENT_ID, ACTOR_ROLE)).toMatchObject({
       blockedBy: 'guard',
-      reason: 'guard_unknown: (guard source unavailable) (unresolved: workshop.state)',
+      reason: 'guard_unknown: (guard source unavailable) (unresolved: item.state)',
     });
   });
 
@@ -102,7 +102,7 @@ describe('toActionError', () => {
       event: 'accept',
       state: 'submitted',
       reason: 'role_forbidden',
-      allowedRoles: ['organizer'],
+      allowedRoles: ['librarian'],
       actorRoles: ['member'],
     };
 
@@ -119,14 +119,14 @@ describe('toCreateActionError', () => {
     const rejection: CreateRejected = {
       allowed: false,
       reason: 'guard_unsatisfied',
-      guardSource: 'workshop.state == accepting',
+      guardSource: 'item.state == accepting',
     };
 
     expect(toCreateActionError(rejection, CREATE_EVENT_ID, ACTOR_ROLE)).toEqual({
       kind: 'guard_unsatisfied',
       event: CREATE_EVENT_ID,
       blockedBy: 'guard',
-      reason: 'guard_unsatisfied: workshop.state == accepting',
+      reason: 'guard_unsatisfied: item.state == accepting',
     });
   });
 
@@ -146,12 +146,12 @@ describe('toCreateActionError', () => {
     const rejection: CreateRejected = {
       allowed: false,
       reason: 'guard_unknown',
-      guardSource: 'workshop.state == accepting',
-      unresolvedPaths: ['workshop.state'],
+      guardSource: 'item.state == accepting',
+      unresolvedPaths: ['item.state'],
     };
 
     expect(toCreateActionError(rejection, CREATE_EVENT_ID, ACTOR_ROLE)).toMatchObject({
-      reason: 'guard_unknown: workshop.state == accepting (unresolved: workshop.state)',
+      reason: 'guard_unknown: item.state == accepting (unresolved: item.state)',
     });
   });
 

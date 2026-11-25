@@ -8,7 +8,7 @@
 
 /** ガード評価時に環境から取り出せる値。集合・オブジェクトは持てない（スカラーのみ）。 */
 export type GuardValue = string | number | boolean | null;
-/** パス文字列(例: "workshop.state"、"now"、"actor.id")→ 実行時の値 */
+/** パス文字列(例: "item.state"、"now"、"actor.id")→ 実行時の値 */
 export type GuardEnv = Readonly<Record<string, GuardValue>>;
 
 /**

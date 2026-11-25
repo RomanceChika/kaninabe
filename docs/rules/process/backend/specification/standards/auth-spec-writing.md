@@ -40,7 +40,7 @@ decisions: [ADR-0003]
 | 軸 | 語彙の持ち主 | 理由 |
 |---|---|---|
 | `kind`（`state` / `field` / `enum`）/ `guards` / `on_fail` | **体系（`lib/model/auth/types.ts`）** | H1〜H4 と生成物が**この値で分岐する**。「主語は状態機械か enum の欄」「関門は requires_auth かロール」「通れない人は送り返すか無いものとして扱う」という 3 つの三分は、認証フローという 1 本の流れの形そのものであってアプリごとに増える語ではない |
-| **軸の ID・値・表示名・「どの行が持つか」** | **カタログの `axes`** | すべてこのアプリの事情である。かつては `patron`（`kind: state`）と `invitation`（`kind: enum`）の**2 語が必須の軸名**として体系側に固定されており、招待制でないシステムは決定表を 1 行も書けなかった（束 ⑱ の実測 → 束 ⑲-2a で開いた）。`guild` / `activate` のような補助条件の語も、体系の値域ではなく `axes` の 1 本である |
+| **軸の ID・値・表示名・「どの行が持つか」** | **カタログの `axes`** | すべてこのアプリの事情である。かつては `member`（`kind: state`）と `invitation`（`kind: enum`）の**2 語が必須の軸名**として体系側に固定されており、招待制でないシステムは決定表を 1 行も書けなかった（束 ⑱ の実測 → 束 ⑲-2a で開いた）。`card_status` のような補助条件の語も、体系の値域ではなく `axes` の 1 本である |
 | `lands` / `screen` / `variant` / `runs` | **他の仕様に接地する** | 状態は `state_spec`（または entity_spec の `enum`）、着地先は `screen_spec`、実行する操作はドメインイベント。ここで語彙を宣言し直すと二重の正になる |
 
 ### 共通形式
@@ -201,11 +201,11 @@ axes:
     labels:
       none: 招待を持っていない
       accepted: 招待を受諾できた
-  - id: guild
+  - id: card_status
     kind: enum
-    summary: ギルド在籍の確認結果
-    optional: true             # 在籍を確かめた行だけが持つ(条件は無い)
-    values: [joined, not_joined]
+    summary: カードの状態の確認結果
+    optional: true             # 状態を確かめた行だけが持つ(条件は無い)
+    values: [valid, expired, unknown]
 ```
 
 | キー | 必須 | 意味 |
@@ -246,7 +246,7 @@ axes:
 | `lands` | ○ | 着地（`landings` の id） |
 | `summary` | ○ | 何が起きるかを 1 行で |
 
-題材の製品の 4 軸はこの形の 1 例である —— `patron`（主語）/ `invitation`（`when: { patron: none }`）/ `guild`・`activate`（`optional`）。「書いた行だけが在籍を問い合わせる」という判断は `optional` の軸を書くか書かないかで表される（書かない行は外部 API を叩かない、という宣言）。
+元の製品の軸はこの形の 1 例である —— 主語の軸 / `invitation`（`when` で主語が無い行だけ）/ `card_status` のような補助の軸（`optional`）。「書いた行だけが外部に問い合わせる」という判断は `optional` の軸を書くか書かないかで表される（書かない行は外部 API を叩かない、という宣言）。
 
 **`gates`（関門 = 画面に入るときの資格）**
 

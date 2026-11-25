@@ -135,7 +135,7 @@ describe('runPaidEntry の多要素認証の段', () => {
       { roles: ['staff'], role: 'staff', stops: true },
       // member の口に立つのは member だけ。staff への要求は掛からない。
       { roles: ['staff'], role: 'member', stops: false },
-      { roles: ['organizer'], role: 'member', stops: false },
+      { roles: ['librarian'], role: 'member', stops: false },
     ];
     for (const { roles, role, stops } of cases) {
       const { calls, options } = harness({ scope: 'roles', roles }, false, role);

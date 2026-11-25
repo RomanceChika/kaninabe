@@ -34,7 +34,7 @@ norms: [PRIN-0001, PRIN-0007, PRIN-0009, PRIN-0010, ARCH-BE-0001, ARCH-BE-0013, 
 - **すべきこと:** テーブルを作ったら、まず `revoke all ... from anon, authenticated` で既定権限を落とす。そのうえで **`access_spec` の `reads` に対応する `select` だけ**を `grant` する。
 - **なぜ:** Supabase の既定では `public` スキーマの新規テーブルに `anon` / `authenticated` への全権限が付く。**既定に頼ると、テーブルを 1 つ増やすたびに穴が開く**（PRIN-0009 / PRIN-0010）。
 - **してはいけないこと:** `insert` / `update` / `delete` を `anon` / `authenticated` に与える（**列単位の `grant update (col, …)` も含む**）。**書き込みのユーザー直接経路は存在しない**というのが体系の断言であり、全書き込みは `security definer` の RPC（`service_role`）を通る。
-- **なぜ書き込みを DB に写さないのか（Phase C-6 第 3 波の決定。`20260819000016_revoke_direct_update.sql`）:** かつては `writes` を「列 GRANT + 状態条件つき UPDATE ポリシー」として第二防衛線に写していた。それは実際にはアプリを通らない書き込み口（PostgREST 直叩き）を開いており、次の 2 つが成り立っていなかった。
+- **なぜ書き込みを DB に写さないのか（元の製品での決定）:** かつては `writes` を「列 GRANT + 状態条件つき UPDATE ポリシー」として第二防衛線に写していた。それは実際にはアプリを通らない書き込み口（PostgREST 直叩き）を開いており、次の 2 つが成り立っていなかった。
   1. **全書き込みが監査ログに残る** — `domain_events` への追記は RPC の中にしかない。
   2. **`writes` の意味どおりに書ける列が決まる** — 列 GRANT はポリシー単位に分けられないため「`requested` のときは `note` だけ」を表現できず、許可列の**和集合**が開く（提出済みの貸出の予約を直接書き換えられる状態だった）。
 - **したがって RLS に残る役割は「読み取りの上界」である**（ARCH-BE-0016）。`writes` の可否そのものは第一防衛線（`canWrite`）だけが判断する（D5 / D6 は**執行しない**）。
@@ -50,7 +50,7 @@ norms: [PRIN-0001, PRIN-0007, PRIN-0009, PRIN-0010, ARCH-BE-0001, ARCH-BE-0013, 
 - **すべきこと:** 「誰が・いつ・どの列を更新してよいか」は DB に写さない。判断点はエンジンの照会（`canWrite` / `canFire`）1 つだけである。
 - **してはいけないこと:** `for update` のポリシーを新設する。GRANT が無ければ効かないため、書けば**「効いているように読める死んだ規則」**が増える（次に読む人が「ここが守っている」と誤読する）。
 - **判断と書き込みの間の競合**は、ポリシーではなく RPC の条件（`where ... and state = p_expected_state`）が受け持つ（D14 / D18）。
-- **履歴:** Phase C-6 第 3 波（`20260819000016_revoke_direct_update.sql`）まで、`loans` / `items` / `patrons` / `holds` には状態条件つきの UPDATE ポリシー 5 本があった。上の D1 / D2 の理由で GRANT ごと撤去し、ポリシーも drop してある。**「`using` と `with check` の両方に条件を書く」という当時の規則は、UPDATE ポリシーが存在しない現在は適用対象を持たない。**
+- **履歴:** 元の製品のある時点まで、`loans` / `items` / `patrons` / `holds` には状態条件つきの UPDATE ポリシー 5 本があった。上の D1 / D2 の理由で GRANT ごと撤去し、ポリシーも drop してある。**「`using` と `with check` の両方に条件を書く」という当時の規則は、UPDATE ポリシーが存在しない現在は適用対象を持たない。**
 
 ### 不変条件は宣言的制約を第一候補にする（D10〜D12）
 
@@ -112,7 +112,7 @@ create policy loans_update_patron_requested on public.loans
     with check (patron_id = (select auth.uid()) and state = 'requested');
 ```
 
-**これは Phase C-6 第 3 波より前の形であり、現在は禁止である**（`20260819000016_revoke_direct_update.sql` で GRANT ごと撤去した）。第二防衛線のつもりでも、実際にはアプリを通らない書き込み口を開いている。列 GRANT はポリシー単位に分けられないため、`writes` の状態差（「`requested` のときは `note` だけ」）は表現できず**許可列の和集合**が開く。そして何より、この経路を通った書き込みは `domain_events` に 1 行も残らない。
+**これは元の製品で撤去する前の形であり、現在は禁止である**（元の製品の migration で GRANT ごと撤去した）。第二防衛線のつもりでも、実際にはアプリを通らない書き込み口を開いている。列 GRANT はポリシー単位に分けられないため、`writes` の状態差（「`requested` のときは `note` だけ」）は表現できず**許可列の和集合**が開く。そして何より、この経路を通った書き込みは `domain_events` に 1 行も残らない。
 
 **ポイント:** RLS ポリシーを書いたことと、権限を絞ったことは別である。そして**書き込みについては「絞る」ではなく「与えない」**が答えである。
 
@@ -180,7 +180,7 @@ update public.loans set state = p_next_state where id = p_loan_id;
 
 | 仕様 | DB での状態 | 委ねている先 |
 |---|---|---|
-| `writes` の可否そのもの（誰が・いつ・どの列を） | **執行しない**（設計）。かつては列 GRANT + 状態条件つき UPDATE ポリシーとして写していたが、①その経路では監査ログが残らず、②列 GRANT はポリシー単位に分けられないため「`requested` のときは `note` だけ」を表現できず**許可列の和集合**が開いていた。Phase C-6 第 3 波で**ユーザーの UPDATE 権限ごと撤去**した（`20260819000016`） | 第一防衛線（`src/operation` → `canWrite`）。DB 側は「誰も直接書けない」だけを言う |
+| `writes` の可否そのもの（誰が・いつ・どの列を） | **執行しない**（設計）。かつては列 GRANT + 状態条件つき UPDATE ポリシーとして写していたが、①その経路では監査ログが残らず、②列 GRANT はポリシー単位に分けられないため「`requested` のときは `note` だけ」を表現できず**許可列の和集合**が開いていた。Phase C-6 第 3 波で**ユーザーの UPDATE 権限ごと撤去**した（元の製品の migration） | 第一防衛線（`src/operation` → `canWrite`）。DB 側は「誰も直接書けない」だけを言う |
 | 遷移可否そのもの（ガード式・ロール判定） | **執行している**（束 ⑳-3）。定型 5 形の RPC の本文が `by` とガードと期待状態を述語として持ち、`UC403` / `UC412` / `UC409` で理由を返す。0 行の理由を分類する順は engine と同じ **状態 → ロール → ガード**で、**順の正は engine（`canFire` / `canCreate`）であり SQL はその写し**である（ADR-0012 ⑤。server-actions.md §RPC が `by` とガードを守る） | `src/domain/engine` の照会は**先読み**（人に読める理由を先に返す役。権威は DB 側）。`handwritten` / `composite` と宣言された RPC はこの執行の範囲外で、そこは先読みだけが守る（範囲は保証 `rpc_enforces_spec` の summary が示す） |
 | `insert` / `update` / `delete` の権限 | `anon` / `authenticated` には 1 つも付けていない。**書き込みのユーザー直接経路は存在しない**（全書き込みが `service_role` の RPC = 監査ログ付きの経路を通る） | — |
 | 書き込み RPC が触る列と `writes` の一致 | 編集 RPC は宣言外の列を**例外**にする（D18）。ただし「宣言された列を RPC が書き忘れていないか」は見ていない | レビュー・統合テスト |

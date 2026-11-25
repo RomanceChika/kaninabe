@@ -28,13 +28,13 @@ type ResolvedValue = Exclude<GuardValue, null>;
 /**
  * `contains` の判定に使うenvキーを組み立てる。
  *
- * `GuardEnv` の値はスカラーのみで集合を表現できない。例: `workshop.organizer_ids contains actor.id`
+ * `GuardEnv` の値はスカラーのみで集合を表現できない。例: `item.librarian_ids contains actor.id`
  * のような集合メンバーシップは**operation側が解決してboolean値としてenvに載せる**契約とし、
  * そのキーをこの関数で決める（呼び出し側が書式を推測しなくて済むように公開する）。
  *
- * @param path - 集合側のパス（例: `workshop.organizer_ids`）
+ * @param path - 集合側のパス（例: `item.librarian_ids`）
  * @param ref - 要素側のパス（例: `actor.id`）
- * @returns envに載せるべきキー（例: `workshop.organizer_ids contains actor.id`）
+ * @returns envに載せるべきキー（例: `item.librarian_ids contains actor.id`）
  */
 export function containsKey(path: string, ref: string): string {
   return `${path} contains ${ref}`;

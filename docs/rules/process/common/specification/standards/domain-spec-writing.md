@@ -241,7 +241,7 @@ state_machine: loan
 states:
   - id: draft        # 下書き
   - id: submitted    # 提出済み(司書確認待ち)
-  - id: accepted     # 受理(予約の編成対象)
+  - id: accepted     # 受理(予約の並べ替えの対象)
   - id: rejected     # 却下
   - id: withdrawn    # 取下げ
 initial: draft

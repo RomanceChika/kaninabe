@@ -27,53 +27,53 @@ const entryMachine: MachineTable = {
       event: 'submit',
       from: ['draft'],
       to: 'submitted',
-      by: ['performer'],
+      by: ['borrower'],
       guard: {
         kind: 'compare',
-        path: 'workshop.state',
+        path: 'item.state',
         op: '==',
         rhs: { kind: 'literal', value: 'accepting' },
       },
-      guardSource: 'workshop.state == accepting',
+      guardSource: 'item.state == accepting',
       otherwiseForbidden: '提出は下書きからのみ',
-      effects: ['notify_organizer_new_entry'],
+      effects: ['notify_librarian_new_loan'],
     },
     {
       event: 'revise',
       from: ['submitted'],
       to: 'draft',
-      by: ['performer'],
+      by: ['borrower'],
       guard: {
         kind: 'compare',
-        path: 'workshop.state',
+        path: 'item.state',
         op: '==',
         rhs: { kind: 'literal', value: 'accepting' },
       },
-      guardSource: 'workshop.state == accepting',
+      guardSource: 'item.state == accepting',
       effects: [],
     },
     {
       event: 'accept',
       from: ['submitted'],
       to: 'accepted',
-      by: ['organizer'],
-      guard: { kind: 'in', path: 'workshop.state', values: ['accepting', 'closed'] },
-      guardSource: 'workshop.state in [accepting, closed]',
-      effects: ['notify_performer_accepted'],
+      by: ['librarian'],
+      guard: { kind: 'in', path: 'item.state', values: ['accepting', 'closed'] },
+      guardSource: 'item.state in [accepting, closed]',
+      effects: ['notify_borrower_accepted'],
     },
     {
       event: 'withdraw',
       from: ['submitted', 'accepted'],
       to: 'withdrawn',
-      by: ['performer', 'organizer'],
+      by: ['borrower', 'librarian'],
       guard: {
         kind: 'compare',
-        path: 'workshop.state',
+        path: 'item.state',
         op: '!=',
         rhs: { kind: 'literal', value: 'program_published' },
       },
-      guardSource: 'workshop.state != program_published',
-      effects: ['notify_organizer_withdrawn'],
+      guardSource: 'item.state != program_published',
+      effects: ['notify_librarian_withdrawn'],
     },
   ],
 };
@@ -85,17 +85,17 @@ const noteMachine: MachineTable = {
   initial: 'open',
   final: ['archived'],
   transitions: [
-    { event: 'archive', from: ['open'], to: 'archived', by: ['organizer'], effects: [] },
+    { event: 'archive', from: ['open'], to: 'archived', by: ['librarian'], effects: [] },
   ],
 };
 
-const accepting: GuardEnv = { 'workshop.state': 'accepting' };
+const accepting: GuardEnv = { 'item.state': 'accepting' };
 
 describe('canFire — 許可', () => {
-  it('受付中の催しでは出演者が下書きを提出できる', () => {
+  it('受付中の蔵書では利用者が下書きを提出できる', () => {
     const decision = canFire(
       entryMachine,
-      { state: 'draft', actorRoles: ['performer'], env: accepting },
+      { state: 'draft', actorRoles: ['borrower'], env: accepting },
       'submit',
     );
     expect(decision.allowed).toBe(true);
@@ -103,13 +103,13 @@ describe('canFire — 許可', () => {
       event: 'entry.submit',
       from: 'draft',
       to: 'submitted',
-      effects: ['notify_organizer_new_entry'],
+      effects: ['notify_librarian_new_loan'],
     });
   });
 
   it('from が複数のイベントはどの遷移元からも発火できる', () => {
     const from = (state: string) =>
-      canFire(entryMachine, { state, actorRoles: ['organizer'], env: accepting }, 'withdraw');
+      canFire(entryMachine, { state, actorRoles: ['librarian'], env: accepting }, 'withdraw');
     expect(allowedTransition(from('submitted'))).toMatchObject({ from: 'submitted', to: 'withdrawn' });
     expect(allowedTransition(from('accepted'))).toMatchObject({ from: 'accepted', to: 'withdrawn' });
   });
@@ -117,14 +117,14 @@ describe('canFire — 許可', () => {
   it('実行者のロールが by のいずれかに含まれれば許可する', () => {
     const decision = canFire(
       entryMachine,
-      { state: 'submitted', actorRoles: ['member', 'organizer'], env: accepting },
+      { state: 'submitted', actorRoles: ['member', 'librarian'], env: accepting },
       'accept',
     );
     expect(allowedTransition(decision)).toMatchObject({ to: 'accepted' });
   });
 
   it('ガードの無い遷移は常に許可する', () => {
-    const decision = canFire(noteMachine, { state: 'open', actorRoles: ['organizer'], env: {} }, 'archive');
+    const decision = canFire(noteMachine, { state: 'open', actorRoles: ['librarian'], env: {} }, 'archive');
     expect(allowedTransition(decision)).toEqual({
       event: 'note.archive',
       from: 'open',
@@ -139,7 +139,7 @@ describe('canFire — 拒否', () => {
   it('表に無いイベントは unknown_event として拒否する', () => {
     const decision = canFire(
       entryMachine,
-      { state: 'draft', actorRoles: ['performer'], env: accepting },
+      { state: 'draft', actorRoles: ['borrower'], env: accepting },
       'publish',
     );
     expect(decision).toEqual({
@@ -154,7 +154,7 @@ describe('canFire — 拒否', () => {
   it('from に無い状態からの発火は invalid_from として拒否し、期待される遷移元と仕様の理由文を返す', () => {
     const decision = canFire(
       entryMachine,
-      { state: 'accepted', actorRoles: ['performer'], env: accepting },
+      { state: 'accepted', actorRoles: ['borrower'], env: accepting },
       'submit',
     );
     expect(decision).toEqual({
@@ -170,7 +170,7 @@ describe('canFire — 拒否', () => {
   it('仕様に理由文が無ければ invalid_from の otherwiseForbidden は undefined になる', () => {
     const decision = canFire(
       entryMachine,
-      { state: 'draft', actorRoles: ['performer'], env: accepting },
+      { state: 'draft', actorRoles: ['borrower'], env: accepting },
       'accept',
     );
     expect(decision).toMatchObject({ reason: 'invalid_from' });
@@ -181,7 +181,7 @@ describe('canFire — 拒否', () => {
   it('from が複数のイベントでは期待される遷移元を重複なく列挙する', () => {
     const decision = canFire(
       entryMachine,
-      { state: 'draft', actorRoles: ['performer'], env: accepting },
+      { state: 'draft', actorRoles: ['borrower'], env: accepting },
       'withdraw',
     );
     expect(decision).toMatchObject({
@@ -193,7 +193,7 @@ describe('canFire — 拒否', () => {
   it('by に無いロールの実行者は role_forbidden として拒否し、許可ロールを返す', () => {
     const decision = canFire(
       entryMachine,
-      { state: 'submitted', actorRoles: ['performer'], env: accepting },
+      { state: 'submitted', actorRoles: ['borrower'], env: accepting },
       'accept',
     );
     expect(decision).toEqual({
@@ -201,8 +201,8 @@ describe('canFire — 拒否', () => {
       event: 'accept',
       state: 'submitted',
       reason: 'role_forbidden',
-      allowedRoles: ['organizer'],
-      actorRoles: ['performer'],
+      allowedRoles: ['librarian'],
+      actorRoles: ['borrower'],
     });
   });
 
@@ -212,13 +212,13 @@ describe('canFire — 拒否', () => {
       { state: 'draft', actorRoles: [], env: accepting },
       'submit',
     );
-    expect(decision).toMatchObject({ reason: 'role_forbidden', allowedRoles: ['performer'] });
+    expect(decision).toMatchObject({ reason: 'role_forbidden', allowedRoles: ['borrower'] });
   });
 
   it('ガードが成立しなければ guard_unsatisfied として拒否し、元のガード式を返す', () => {
     const decision = canFire(
       entryMachine,
-      { state: 'draft', actorRoles: ['performer'], env: { 'workshop.state': 'closed' } },
+      { state: 'draft', actorRoles: ['borrower'], env: { 'item.state': 'closed' } },
       'submit',
     );
     expect(decision).toEqual({
@@ -226,14 +226,14 @@ describe('canFire — 拒否', () => {
       event: 'submit',
       state: 'draft',
       reason: 'guard_unsatisfied',
-      guardSource: 'workshop.state == accepting',
+      guardSource: 'item.state == accepting',
     });
   });
 
   it('ガードの評価に必要な値が env に無ければ guard_unknown として拒否する', () => {
     const decision = canFire(
       entryMachine,
-      { state: 'draft', actorRoles: ['performer'], env: {} },
+      { state: 'draft', actorRoles: ['borrower'], env: {} },
       'submit',
     );
     expect(decision).toEqual({
@@ -241,15 +241,15 @@ describe('canFire — 拒否', () => {
       event: 'submit',
       state: 'draft',
       reason: 'guard_unknown',
-      guardSource: 'workshop.state == accepting',
-      unresolvedPaths: ['workshop.state'],
+      guardSource: 'item.state == accepting',
+      unresolvedPaths: ['item.state'],
     });
   });
 
   it('ガードの評価で型が食い違えば guard_unknown として拒否し、未解決パスは空になる', () => {
     const decision = canFire(
       entryMachine,
-      { state: 'draft', actorRoles: ['performer'], env: { 'workshop.state': 3 } },
+      { state: 'draft', actorRoles: ['borrower'], env: { 'item.state': 3 } },
       'submit',
     );
     expect(decision).toMatchObject({ reason: 'guard_unknown', unresolvedPaths: [] });
@@ -258,7 +258,7 @@ describe('canFire — 拒否', () => {
   it('ロールの判定はガードより先に行う', () => {
     const decision = canFire(
       entryMachine,
-      { state: 'submitted', actorRoles: ['performer'], env: {} },
+      { state: 'submitted', actorRoles: ['borrower'], env: {} },
       'accept',
     );
     expect(decision).toMatchObject({ reason: 'role_forbidden' });
@@ -292,8 +292,8 @@ describe('isFinal / knownEvents', () => {
       initial: 'open',
       final: ['closed', 'void'],
       transitions: [
-        { event: 'close', from: ['open'], to: 'closed', by: ['organizer'], effects: [] },
-        { event: 'close', from: ['held'], to: 'void', by: ['organizer'], effects: [] },
+        { event: 'close', from: ['open'], to: 'closed', by: ['librarian'], effects: [] },
+        { event: 'close', from: ['held'], to: 'void', by: ['librarian'], effects: [] },
       ],
     };
     expect(knownEvents(ticketMachine)).toEqual(['close']);

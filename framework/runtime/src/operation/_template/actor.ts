@@ -5,7 +5,7 @@
  *
  * ロールの**解決**は operation 層の責務であり、エンジンは解決結果を照合するだけである
  * （`@kaninabe/runtime/engine`（`machine.ts`） のJSDoc）。どのフィールドがどのロールに対応するかは
- * 集約ごとに違う（例: `entry.performer_id` / `workshop.organizer_id`）ので、対応そのものは
+ * 集約ごとに違う（例: `entry.patron_id` / `item.librarian_id`）ので、対応そのものは
  * 各操作が渡す。ここにあるのは「渡された対応を照合して並べる」段取りだけである。
  *
  * 「未ログイン」「認証ユーザーの既定ロール」に対応する具体的なロール ID は**その製品の事情**

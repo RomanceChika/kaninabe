@@ -20,20 +20,20 @@ const DRAFT: GuardExprData = {
   rhs: { kind: 'literal', value: 'draft' },
 };
 
-/** performer は下書きのときだけ消せ、system は無条件に消せる表。 */
+/** borrower は下書きのときだけ消せ、system は無条件に消せる表。 */
 const table = {
   entity: 'entry',
   rules: [
-    { by: 'performer', guard: DRAFT, guardSource: 'state == draft' },
+    { by: 'borrower', guard: DRAFT, guardSource: 'state == draft' },
     { by: 'system' },
   ],
 } as const satisfies DeleteTable;
 
 describe('canDelete', () => {
   it('ロールが一致しガードも成立すれば許可する', () => {
-    const decision = canDelete(table, { actorRoles: ['member', 'performer'], env: { state: 'draft' } });
+    const decision = canDelete(table, { actorRoles: ['member', 'borrower'], env: { state: 'draft' } });
 
-    expect(decision).toEqual({ allowed: true, by: 'performer' });
+    expect(decision).toEqual({ allowed: true, by: 'borrower' });
   });
 
   it('ガードが無い規則は無条件に許可する', () => {
@@ -49,13 +49,13 @@ describe('canDelete', () => {
     expect(decision).toEqual({
       allowed: false,
       reason: 'role_forbidden',
-      allowedRoles: ['performer', 'system'],
+      allowedRoles: ['borrower', 'system'],
       actorRoles: ['member'],
     });
   });
 
   it('ガードが偽なら guard_unsatisfied として拒否し、原文を診断に載せる', () => {
-    const decision = canDelete(table, { actorRoles: ['performer'], env: { state: 'submitted' } });
+    const decision = canDelete(table, { actorRoles: ['borrower'], env: { state: 'submitted' } });
 
     expect(decision).toEqual({
       allowed: false,
@@ -65,7 +65,7 @@ describe('canDelete', () => {
   });
 
   it('評価に必要な値が env に無ければ guard_unknown として拒否する（偽に潰さない）', () => {
-    const decision = canDelete(table, { actorRoles: ['performer'], env: { state: null } });
+    const decision = canDelete(table, { actorRoles: ['borrower'], env: { state: null } });
 
     expect(decision).toEqual({
       allowed: false,
@@ -77,7 +77,7 @@ describe('canDelete', () => {
 
   it('境界: 実行者が複数ロールを持つ場合はどれか1本でも成立すれば許可する', () => {
     const decision = canDelete(table, {
-      actorRoles: ['performer', 'system'],
+      actorRoles: ['borrower', 'system'],
       env: { state: 'submitted' },
     });
 
@@ -85,9 +85,9 @@ describe('canDelete', () => {
   });
 
   it('境界: 規則が 1 本も無い表では誰も消せない', () => {
-    const empty = { entity: 'workshop', rules: [] } as const satisfies DeleteTable;
+    const empty = { entity: 'item', rules: [] } as const satisfies DeleteTable;
 
-    expect(canDelete(empty, { actorRoles: ['organizer'], env: {} })).toMatchObject({
+    expect(canDelete(empty, { actorRoles: ['librarian'], env: {} })).toMatchObject({
       allowed: false,
       reason: 'role_forbidden',
       allowedRoles: [],
@@ -98,26 +98,26 @@ describe('canDelete', () => {
     const mixed = {
       entity: 'entry',
       rules: [
-        { by: 'performer', guard: DRAFT, guardSource: 'state == draft' },
+        { by: 'borrower', guard: DRAFT, guardSource: 'state == draft' },
         {
-          by: 'performer',
+          by: 'borrower',
           guard: {
             kind: 'compare',
-            path: 'workshop.state',
+            path: 'item.state',
             op: '==',
             rhs: { kind: 'literal', value: 'closed' },
           },
-          guardSource: 'workshop.state == closed',
+          guardSource: 'item.state == closed',
         },
       ],
     } as const satisfies DeleteTable;
 
-    const decision = canDelete(mixed, { actorRoles: ['performer'], env: { state: 'submitted' } });
+    const decision = canDelete(mixed, { actorRoles: ['borrower'], env: { state: 'submitted' } });
 
     expect(decision).toMatchObject({
       allowed: false,
       reason: 'guard_unknown',
-      guardSource: 'workshop.state == closed',
+      guardSource: 'item.state == closed',
     });
   });
 });

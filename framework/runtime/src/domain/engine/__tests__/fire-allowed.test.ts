@@ -22,12 +22,12 @@ const noteMachine: MachineTable = {
   states: ['open', 'archived'],
   initial: 'open',
   final: ['archived'],
-  transitions: [{ event: 'archive', from: ['open'], to: 'archived', by: ['organizer'], effects: ['audit'] }],
+  transitions: [{ event: 'archive', from: ['open'], to: 'archived', by: ['librarian'], effects: ['audit'] }],
 };
 
 /** エンジンから正規の許可を得る。 */
 function realDecision(): FireAllowed {
-  const decision = canFire(noteMachine, { state: 'open', actorRoles: ['organizer'], env: {} }, 'archive');
+  const decision = canFire(noteMachine, { state: 'open', actorRoles: ['librarian'], env: {} }, 'archive');
   if (!decision.allowed) throw new Error('許可されるはずの遷移が拒否されました');
   return decision;
 }

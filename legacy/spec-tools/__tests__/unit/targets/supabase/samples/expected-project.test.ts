@@ -32,8 +32,8 @@ describe('期待との照らし', () => {
   });
 
   it('期待が無い・空なら見ない(共用の stack で回す普通の実行)', () => {
-    expect(unexpectedProject('project_id = "system-template"', undefined)).toBeNull();
-    expect(unexpectedProject('project_id = "system-template"', '')).toBeNull();
+    expect(unexpectedProject('project_id = "kaninabe-sample"', undefined)).toBeNull();
+    expect(unexpectedProject('project_id = "kaninabe-sample"', '')).toBeNull();
   });
 
   it('期待と同じなら null', () => {
@@ -41,7 +41,7 @@ describe('期待との照らし', () => {
   });
 
   it.each([
-    ['共用に戻っている', 'project_id = "system-template"', 'system-template'],
+    ['共用に戻っている', 'project_id = "kaninabe-sample"', 'kaninabe-sample'],
     ['別の使い捨て', 'project_id = "mc-y"', 'mc-y'],
     ['読めない', '', '読めない'],
   ])('%s なら止める 1 行(読めた値と期待を名指す)', (_name, text, shown) => {
@@ -62,8 +62,8 @@ describe('作業場所の設定で照らす(CLI の決まりの <root>/supabase/
   it('期待どおりなら通し、違えば・無ければ投げ、期待が無ければ読みもしない', () => {
     writeFileSync(join(root, 'supabase', 'config.toml'), 'project_id = "mc-x"\n');
     expect(() => refuseUnexpectedProject(root, 'mc-x')).not.toThrow();
-    writeFileSync(join(root, 'supabase', 'config.toml'), 'project_id = "system-template"\n');
-    expect(() => refuseUnexpectedProject(root, 'mc-x')).toThrow(/system-template/);
+    writeFileSync(join(root, 'supabase', 'config.toml'), 'project_id = "kaninabe-sample"\n');
+    expect(() => refuseUnexpectedProject(root, 'mc-x')).toThrow(/kaninabe-sample/);
     expect(() => refuseUnexpectedProject(join(root, 'none'), 'mc-x')).toThrow(/読めない/);
     expect(() => refuseUnexpectedProject(join(root, 'none'), undefined)).not.toThrow();
   });
@@ -95,13 +95,13 @@ describe('題材の通し実行の db reset は、設定が期待と違えば CL
   const stack = { apiUrl: 'http://127.0.0.1:9', anonKey: 'a', serviceRoleKey: 's', databaseUrl: 'd' };
 
   it('写した設定が共用に戻っていれば、supabase を呼ばずに ok: false と理由', async () => {
-    writeFileSync(join(workdir, 'supabase', 'config.toml'), 'project_id = "system-template"\n');
+    writeFileSync(join(workdir, 'supabase', 'config.toml'), 'project_id = "kaninabe-sample"\n');
     process.env[EXPECT_PROJECT_ENV] = 'mc-x';
 
     const result = await resetWithWorkdir(workdir, stack, workdir);
 
     expect(result.ok).toBe(false);
-    expect(result.output).toContain('system-template');
+    expect(result.output).toContain('kaninabe-sample');
     expect(existsSync(join(bin, 'called'))).toBe(false);
   });
 

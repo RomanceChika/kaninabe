@@ -273,7 +273,7 @@ composition は、`npm run generate` が書く**（`app/src/app/_actions/usecase
 
 > **実物(製品側の例。デモには無い):** `hold.update`（予約順の一括並べ替え）。仕様は
 > `docs/specs/backend/actions/hold/update.md`、実装は `app/src/operation/hold/update.ts`
-> と `supabase/migrations/20260818000012_reorder_holds.sql`。
+> と、元の製品の migration。
 
 ### 定型 4 手順（編集・単行 form）
 
@@ -340,7 +340,7 @@ composition は、`npm run generate` が書く**（`app/src/app/_actions/usecase
 > **実物:** `loan.update`（貸出の編集）と `item.update`（蔵書の編集）。仕様は
 > `docs/specs/backend/actions/{loan,item}/update.md`、実装は
 > `app/src/operation/{loan,item}/update.ts` と
-> `supabase/migrations/20260819000014_update_loan.sql` / `20260819000015_update_item.sql`。
+> 元の製品の migration。
 
 #### 状態列を持たない集約の単行 form
 
@@ -369,7 +369,7 @@ composition は、`npm run generate` が書く**（`app/src/app/_actions/usecase
   成功と区別すること**は状態の有無に関係なく守る。
 
 > **実物(製品側の例。デモには無い):** `patron.update`。仕様は `docs/specs/backend/actions/patron/update.md`、実装は
-> `app/src/operation/patron/update.ts` と `supabase/migrations/20260819000017_update_patron.sql`。
+> `app/src/operation/patron/update.ts` と、元の製品の migration。
 
 ### 実行者（actor）の解決
 

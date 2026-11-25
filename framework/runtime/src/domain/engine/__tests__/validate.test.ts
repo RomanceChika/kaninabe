@@ -15,8 +15,8 @@ const validTable: MachineTable = {
   initial: 'draft',
   final: ['withdrawn'],
   transitions: [
-    { event: 'submit', from: ['draft'], to: 'submitted', by: ['performer'], effects: [] },
-    { event: 'withdraw', from: ['submitted'], to: 'withdrawn', by: ['performer'], effects: [] },
+    { event: 'submit', from: ['draft'], to: 'submitted', by: ['borrower'], effects: [] },
+    { event: 'withdraw', from: ['submitted'], to: 'withdrawn', by: ['borrower'], effects: [] },
   ],
 };
 
@@ -74,14 +74,14 @@ describe('assertValidTable — 状態集合', () => {
 describe('assertValidTable — 遷移1本の形', () => {
   it('to が states に無ければ報告する', () => {
     const problems = assertValidTable(
-      withTransition({ event: 'reject', from: ['submitted'], to: 'rejected', by: ['organizer'], effects: [] }),
+      withTransition({ event: 'reject', from: ['submitted'], to: 'rejected', by: ['librarian'], effects: [] }),
     );
     expect(problems.some((problem) => problem.includes('to の rejected が states にありません'))).toBe(true);
   });
 
   it('from が states に無ければ報告する', () => {
     const problems = assertValidTable(
-      withTransition({ event: 'reject', from: ['pending'], to: 'withdrawn', by: ['organizer'], effects: [] }),
+      withTransition({ event: 'reject', from: ['pending'], to: 'withdrawn', by: ['librarian'], effects: [] }),
     );
     expect(problems.some((problem) => problem.includes('from の pending が states にありません'))).toBe(
       true,
@@ -90,7 +90,7 @@ describe('assertValidTable — 遷移1本の形', () => {
 
   it('from が空なら報告する', () => {
     const problems = assertValidTable(
-      withTransition({ event: 'reject', from: [], to: 'withdrawn', by: ['organizer'], effects: [] }),
+      withTransition({ event: 'reject', from: [], to: 'withdrawn', by: ['librarian'], effects: [] }),
     );
     expect(problems.some((problem) => problem.includes('from が空です'))).toBe(true);
   });
@@ -104,14 +104,14 @@ describe('assertValidTable — 遷移1本の形', () => {
 
   it('event が空なら報告する', () => {
     const problems = assertValidTable(
-      withTransition({ event: '', from: ['submitted'], to: 'withdrawn', by: ['organizer'], effects: [] }),
+      withTransition({ event: '', from: ['submitted'], to: 'withdrawn', by: ['librarian'], effects: [] }),
     );
     expect(problems).toContain('event が空の遷移があります。ドメインイベントIDを書いてください');
   });
 
   it('final 状態から出る遷移があれば報告する', () => {
     const problems = assertValidTable(
-      withTransition({ event: 'reopen', from: ['withdrawn'], to: 'draft', by: ['organizer'], effects: [] }),
+      withTransition({ event: 'reopen', from: ['withdrawn'], to: 'draft', by: ['librarian'], effects: [] }),
     );
     expect(
       problems.some((problem) => problem.includes('final 状態 withdrawn が from にあります')),
@@ -122,7 +122,7 @@ describe('assertValidTable — 遷移1本の形', () => {
 describe('assertValidTable — 決定性', () => {
   it('同一イベントが同じ状態に複数定義されていれば報告する', () => {
     const problems = assertValidTable(
-      withTransition({ event: 'submit', from: ['draft'], to: 'withdrawn', by: ['organizer'], effects: [] }),
+      withTransition({ event: 'submit', from: ['draft'], to: 'withdrawn', by: ['librarian'], effects: [] }),
     );
     expect(problems).toContain(
       'イベント submit が状態 draft に対して複数定義されています。from を排他にするか、イベントを分けてください',
@@ -131,7 +131,7 @@ describe('assertValidTable — 決定性', () => {
 
   it('同一イベントでも from が排他なら報告しない', () => {
     const problems = assertValidTable(
-      withTransition({ event: 'submit', from: ['submitted'], to: 'withdrawn', by: ['organizer'], effects: [] }),
+      withTransition({ event: 'submit', from: ['submitted'], to: 'withdrawn', by: ['librarian'], effects: [] }),
     );
     expect(problems).toEqual([]);
   });
@@ -141,7 +141,7 @@ describe('assertValidTable — 決定性', () => {
       event: 'submit',
       from: ['draft'],
       to: 'withdrawn',
-      by: ['organizer'],
+      by: ['librarian'],
       effects: [],
     };
     const problems = assertValidTable(

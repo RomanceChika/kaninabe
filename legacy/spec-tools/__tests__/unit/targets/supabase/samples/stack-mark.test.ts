@@ -25,7 +25,7 @@ describe('名指しか使い捨ての runner が無ければ止める(判定の�
     ['何も無い(手元の素の実行)', env(), false],
     ['名指しが空', env({ expected: '' }), false],
     ['名指しがある(値の照らしは別)', env({ expected: 'mc-x' }), true],
-    ['人が共用を名指す', env({ expected: 'system-template' }), true],
+    ['人が共用を名指す', env({ expected: 'kaninabe-sample' }), true],
     ['GitHub がホストする runner', env({ githubActions: 'true', runnerEnvironment: 'github-hosted' }), true],
     ['自前の runner(手元の機械でありうる)', env({ githubActions: 'true', runnerEnvironment: 'self-hosted' }), false],
     ['GITHUB_ACTIONS だけ', env({ githubActions: 'true' }), false],
@@ -76,15 +76,15 @@ describe('印の環境と、作業場所の設定との照らし', () => {
   it('名指しが設定と同じなら通し、違えば・読めなければ投げる', () => {
     writeFileSync(join(root, 'supabase', 'config.toml'), 'project_id = "mc-x"\n');
     expect(() => requireStackMark(root, env({ expected: 'mc-x' }))).not.toThrow();
-    expect(() => requireStackMark(root, env({ expected: 'system-template' }))).toThrow(/mc-x/);
+    expect(() => requireStackMark(root, env({ expected: 'kaninabe-sample' }))).toThrow(/mc-x/);
     expect(() => requireStackMark(join(root, 'none'), env({ expected: 'mc-x' }))).toThrow(/読めない/);
   });
 
   it('使い捨ての runner は名指しが無くても通す。名指しがあれば runner でも照らす', () => {
     const runner = { githubActions: 'true', runnerEnvironment: 'github-hosted' };
     expect(() => requireStackMark(join(root, 'none'), env(runner))).not.toThrow();
-    writeFileSync(join(root, 'supabase', 'config.toml'), 'project_id = "system-template"\n');
-    expect(() => requireStackMark(root, env({ ...runner, expected: 'mc-x' }))).toThrow(/system-template/);
+    writeFileSync(join(root, 'supabase', 'config.toml'), 'project_id = "kaninabe-sample"\n');
+    expect(() => requireStackMark(root, env({ ...runner, expected: 'mc-x' }))).toThrow(/kaninabe-sample/);
   });
 });
 
@@ -99,7 +99,7 @@ describe('足場の 3 つの口は、印なしでは supabase を 1 度も呼ば
     workdir = mkdtempSync(join(tmpdir(), 'stack-mark-wd-'));
     bin = mkdtempSync(join(tmpdir(), 'stack-mark-bin-'));
     mkdirSync(join(workdir, 'supabase'));
-    writeFileSync(join(workdir, 'supabase', 'config.toml'), 'project_id = "system-template"\n');
+    writeFileSync(join(workdir, 'supabase', 'config.toml'), 'project_id = "kaninabe-sample"\n');
     // 偽の supabase: 呼ばれたら印のファイルを書いて赤で終わる(起動も作り直しもしない)。
     writeFileSync(join(bin, 'supabase'), `#!/bin/sh\ntouch ${JSON.stringify(join(bin, 'called'))}\nexit 1\n`, { mode: 0o755 });
     process.env['PATH'] = [bin, '/usr/bin', '/bin'].join(delimiter);
@@ -134,7 +134,7 @@ describe('足場の 3 つの口は、印なしでは supabase を 1 度も呼ば
   });
 
   it('印あり(人が共用を名指す)なら、3 つとも今までどおり supabase を呼ぶ', async () => {
-    process.env['ST_EXPECT_PROJECT_ID'] = 'system-template';
+    process.env['ST_EXPECT_PROJECT_ID'] = 'kaninabe-sample';
     expect(() => ensureLocalSupabase(workdir)).toThrow(/supabase/);
     expect(called()).toBe(true);
     rmSync(join(bin, 'called'));

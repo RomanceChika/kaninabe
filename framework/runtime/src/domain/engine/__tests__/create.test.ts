@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest';
 import { canCreate } from '@kaninabe/runtime/engine';
 import type { CreateTable, GuardExprData } from '@kaninabe/runtime/engine';
 
-/** `workshop.state == accepting` の AST（生成物と同じ形）。 */
+/** `item.state == accepting` の AST（生成物と同じ形）。 */
 /** 作成の縛りの節で使うガード(題材の語を使わない中立の例)。 */
 const AVAILABLE: GuardExprData = {
   kind: 'compare',
@@ -22,7 +22,7 @@ const AVAILABLE: GuardExprData = {
 
 const ACCEPTING: GuardExprData = {
   kind: 'compare',
-  path: 'workshop.state',
+  path: 'item.state',
   op: '==',
   rhs: { kind: 'literal', value: 'accepting' },
 };
@@ -31,7 +31,7 @@ const ACCEPTING: GuardExprData = {
 const table = {
   entity: 'entry',
   rules: [
-    { by: 'member', guard: ACCEPTING, guardSource: 'workshop.state == accepting' },
+    { by: 'member', guard: ACCEPTING, guardSource: 'item.state == accepting' },
     { by: 'system' },
   ],
 } as const satisfies CreateTable;
@@ -40,7 +40,7 @@ describe('canCreate', () => {
   it('ロールが一致しガードも成立すれば許可する', () => {
     const decision = canCreate(table, {
       actorRoles: ['member'],
-      env: { 'workshop.state': 'accepting' },
+      env: { 'item.state': 'accepting' },
     });
 
     expect(decision).toEqual({ allowed: true, by: 'member' });
@@ -56,7 +56,7 @@ describe('canCreate', () => {
   it('表に無いロールは作成できない（deny by default）', () => {
     const decision = canCreate(table, {
       actorRoles: ['anonymous'],
-      env: { 'workshop.state': 'accepting' },
+      env: { 'item.state': 'accepting' },
     });
 
     expect(decision).toEqual({
@@ -70,31 +70,31 @@ describe('canCreate', () => {
   it('ガードが偽なら guard_unsatisfied として拒否し、原文を診断に載せる', () => {
     const decision = canCreate(table, {
       actorRoles: ['member'],
-      env: { 'workshop.state': 'closed' },
+      env: { 'item.state': 'closed' },
     });
 
     expect(decision).toEqual({
       allowed: false,
       reason: 'guard_unsatisfied',
-      guardSource: 'workshop.state == accepting',
+      guardSource: 'item.state == accepting',
     });
   });
 
   it('評価に必要な値が env に無ければ guard_unknown として拒否する（偽に潰さない）', () => {
-    const decision = canCreate(table, { actorRoles: ['member'], env: { 'workshop.state': null } });
+    const decision = canCreate(table, { actorRoles: ['member'], env: { 'item.state': null } });
 
     expect(decision).toEqual({
       allowed: false,
       reason: 'guard_unknown',
-      guardSource: 'workshop.state == accepting',
-      unresolvedPaths: ['workshop.state'],
+      guardSource: 'item.state == accepting',
+      unresolvedPaths: ['item.state'],
     });
   });
 
   it('境界: 実行者が複数ロールを持つ場合はどれか1本でも成立すれば許可する', () => {
     const decision = canCreate(table, {
       actorRoles: ['member', 'system'],
-      env: { 'workshop.state': 'closed' },
+      env: { 'item.state': 'closed' },
     });
 
     expect(decision).toEqual({ allowed: true, by: 'system' });
@@ -114,23 +114,23 @@ describe('canCreate', () => {
     const mixed = {
       entity: 'entry',
       rules: [
-        { by: 'member', guard: ACCEPTING, guardSource: 'workshop.state == accepting' },
+        { by: 'member', guard: ACCEPTING, guardSource: 'item.state == accepting' },
         {
           by: 'member',
           guard: {
             kind: 'compare',
-            path: 'workshop.kind',
+            path: 'item.kind',
             op: '==',
             rhs: { kind: 'literal', value: 'solo' },
           },
-          guardSource: 'workshop.kind == solo',
+          guardSource: 'item.kind == solo',
         },
       ],
     } as const satisfies CreateTable;
 
-    const decision = canCreate(mixed, { actorRoles: ['member'], env: { 'workshop.state': 'closed' } });
+    const decision = canCreate(mixed, { actorRoles: ['member'], env: { 'item.state': 'closed' } });
 
-    expect(decision).toMatchObject({ allowed: false, reason: 'guard_unknown', guardSource: 'workshop.kind == solo' });
+    expect(decision).toMatchObject({ allowed: false, reason: 'guard_unknown', guardSource: 'item.kind == solo' });
   });
 });
 

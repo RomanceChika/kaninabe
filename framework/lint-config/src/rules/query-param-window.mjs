@@ -1,6 +1,6 @@
 /**
  * 写像（`src/infrastructure/**​/queries.ts` / `*-queries.ts`）で、埋め込みリソースの列
- * （PostgREST のドット表記。例: `entry_participants.workshop_id`）を、関数の仮引数で直接
+ * （PostgREST のドット表記。例: `loan_companions.item_id`）を、関数の仮引数で直接
  * `.eq()` / `.in()` するのを禁止するローカルルール。
  *
  * 併読（`includes`）を `== param.{name}` で絞る条件は、`query_spec` から生成される
@@ -10,7 +10,7 @@
  * `applyActorConditions` 1 箇所に絞った Q8（`QUERY_RESTRICTED_SYNTAX` の actorId 禁則）と
  * 同じ考え方を、実行時入力（param）で併読を絞る条件にも広げたものである。
  *
- * ドットを含まない列（`source` 自身の列。例: `.eq('workshop_id', workshopId)`）は対象外にする。
+ * ドットを含まない列（`source` 自身の列。例: `.eq('item_id', itemId)`）は対象外にする。
  * `source` の絞り込みは配線が受け取る主引数そのもので、型で 1 対 1 の対応が既に見えている
  * （併読のように暗黙に埋め込みへ伝播する曖昧さが無い）ため、線引きを分けている
  * （code-query-windows.ts の同じ線引きと対になる）。

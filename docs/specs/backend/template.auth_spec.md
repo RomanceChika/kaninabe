@@ -46,12 +46,25 @@ landings:                         # 着地 = サインインの結末。id は�
     # variant: "{画面の variants のキー}"   # 画面が排他表示を持つときは必須
     summary: "{どういう結末かを 1 行で}"
 
+axes:                             # 決定表の軸。体系が要るのは「主語の軸がちょうど 1 本」だけで、名前・値・表示名はこの仕様が正(H0 / H1)
+  - id: "{主語の軸 ID}"            # 名前はこのシステムの語
+    kind: field                   # state(状態機械の状態) | field(entity_spec の enum の欄)。主語はちょうど 1 本
+    of: "{エンティティ}.{欄}"       # state なら状態機械名。上の subject と一致すること
+    absent: none                  # 主語の行が無いことを表す値
+    summary: "{何を表す軸かを 1 行で}"
+    labels:                       # 任意。値 -> 表示名(values / 値域に無い鍵は error)
+      none: "{行が無い}"
+      "{値}": "{表示名}"
+  # - id: "{補助の軸 ID}"
+  #   kind: enum
+  #   summary: "{何を表す軸かを 1 行で}"
+  #   when: { "{主語の軸 ID}": none }   # その条件の行だけが持つ。optional: true と同時には書けない(optional は行ごとに任意)
+  #   values: [{値 1}, {値 2}]
+
 sign_in:                          # 決定表。順に読むものではない(条件で結末が一意に決まる)
   - id: "{分岐 ID}"
-    member: "{subject の状態 ID / none}"   # none = メンバー行がまだ無い
-    # invitation: none | unknown | refused | unreadable | accepted   # member: none の行だけが持つ
-    # guild: joined | not_joined            # 書いた行だけが在籍を問い合わせる
-    # activate: accepted | refused | refused_but_active
+    "{主語の軸 ID}": "{その軸の値 / none}"   # 主語の軸は全行で必須
+    # "{補助の軸 ID}": "{その軸の値}"        # when / optional の軸は、持つ行だけ書く
     # runs: ["{ドメインイベント ID}"]        # この行で実行される操作(by: system であること)
     lands: "{landings の id}"
     summary: "{何が起きるかを 1 行で}"

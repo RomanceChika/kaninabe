@@ -21,13 +21,13 @@ const DRAFT: GuardExprData = {
 };
 
 /**
- * performer は下書きのとき title / note を、提出後は note だけを編集でき、
+ * borrower は下書きのとき title / note を、提出後は note だけを編集でき、
  * system は無条件に note を編集できる表。
  */
 const table = {
   entity: 'entry',
   rules: [
-    { by: 'performer', fields: ['title', 'note'], guard: DRAFT, guardSource: 'state == draft' },
+    { by: 'borrower', fields: ['title', 'note'], guard: DRAFT, guardSource: 'state == draft' },
     { by: 'system', fields: ['note'] },
   ],
 } as const satisfies WriteTable;
@@ -36,11 +36,11 @@ describe('canWrite', () => {
   it('ロール・フィールドが一致しガードも成立すれば許可する', () => {
     const decision = canWrite(table, {
       field: 'title',
-      actorRoles: ['member', 'performer'],
+      actorRoles: ['member', 'borrower'],
       env: { state: 'draft' },
     });
 
-    expect(decision).toEqual({ allowed: true, by: 'performer' });
+    expect(decision).toEqual({ allowed: true, by: 'borrower' });
   });
 
   it('ガードが無い規則は無条件に許可する', () => {
@@ -56,7 +56,7 @@ describe('canWrite', () => {
     expect(decision).toEqual({
       allowed: false,
       reason: 'role_forbidden',
-      allowedRoles: ['performer'],
+      allowedRoles: ['borrower'],
       actorRoles: ['member'],
     });
   });
@@ -64,7 +64,7 @@ describe('canWrite', () => {
   it('ロールは一致してもそのフィールドを許す規則が無ければ拒否する', () => {
     const decision = canWrite(table, {
       field: 'duration_min',
-      actorRoles: ['performer'],
+      actorRoles: ['borrower'],
       env: { state: 'draft' },
     });
 
@@ -73,14 +73,14 @@ describe('canWrite', () => {
       allowed: false,
       reason: 'role_forbidden',
       allowedRoles: [],
-      actorRoles: ['performer'],
+      actorRoles: ['borrower'],
     });
   });
 
   it('ガードが偽なら guard_unsatisfied として拒否し、原文を診断に載せる', () => {
     const decision = canWrite(table, {
       field: 'title',
-      actorRoles: ['performer'],
+      actorRoles: ['borrower'],
       env: { state: 'submitted' },
     });
 
@@ -94,7 +94,7 @@ describe('canWrite', () => {
   it('評価に必要な値が env に無ければ guard_unknown として拒否する（偽に潰さない）', () => {
     const decision = canWrite(table, {
       field: 'title',
-      actorRoles: ['performer'],
+      actorRoles: ['borrower'],
       env: { state: null },
     });
 
@@ -109,7 +109,7 @@ describe('canWrite', () => {
   it('境界: 同じフィールドに複数の規則が当たる場合はどれか1本でも成立すれば許可する', () => {
     const decision = canWrite(table, {
       field: 'note',
-      actorRoles: ['performer', 'system'],
+      actorRoles: ['borrower', 'system'],
       env: { state: 'submitted' },
     });
 
@@ -119,7 +119,7 @@ describe('canWrite', () => {
   it('境界: 規則が 1 本も無い表では誰も編集できない', () => {
     const empty = { entity: 'program_item', rules: [] } as const satisfies WriteTable;
 
-    expect(canWrite(empty, { field: 'order_index', actorRoles: ['organizer'], env: {} })).toMatchObject({
+    expect(canWrite(empty, { field: 'order_index', actorRoles: ['librarian'], env: {} })).toMatchObject({
       allowed: false,
       reason: 'role_forbidden',
       allowedRoles: [],
@@ -130,31 +130,31 @@ describe('canWrite', () => {
     const mixed = {
       entity: 'entry',
       rules: [
-        { by: 'performer', fields: ['note'], guard: DRAFT, guardSource: 'state == draft' },
+        { by: 'borrower', fields: ['note'], guard: DRAFT, guardSource: 'state == draft' },
         {
-          by: 'performer',
+          by: 'borrower',
           fields: ['note'],
           guard: {
             kind: 'compare',
-            path: 'workshop.state',
+            path: 'item.state',
             op: '==',
             rhs: { kind: 'literal', value: 'accepting' },
           },
-          guardSource: 'workshop.state == accepting',
+          guardSource: 'item.state == accepting',
         },
       ],
     } as const satisfies WriteTable;
 
     const decision = canWrite(mixed, {
       field: 'note',
-      actorRoles: ['performer'],
+      actorRoles: ['borrower'],
       env: { state: 'submitted' },
     });
 
     expect(decision).toMatchObject({
       allowed: false,
       reason: 'guard_unknown',
-      guardSource: 'workshop.state == accepting',
+      guardSource: 'item.state == accepting',
     });
   });
 
@@ -165,15 +165,15 @@ describe('canWrite', () => {
     // 返した規則が宣言していたものだけを集める。
     const withEffects = {
       entity: 'entry',
-      rules: [{ by: 'performer', fields: ['note'], effects: ['entry_note_changed'] }],
+      rules: [{ by: 'borrower', fields: ['note'], effects: ['entry_note_changed'] }],
     } as const satisfies WriteTable;
 
     const decision = canWrite(withEffects, {
       field: 'note',
-      actorRoles: ['performer'],
+      actorRoles: ['borrower'],
       env: {},
     });
 
-    expect(decision).toEqual({ allowed: true, by: 'performer', effects: ['entry_note_changed'] });
+    expect(decision).toEqual({ allowed: true, by: 'borrower', effects: ['entry_note_changed'] });
   });
 });

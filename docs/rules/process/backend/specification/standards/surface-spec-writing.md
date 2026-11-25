@@ -108,7 +108,7 @@ hand_written_views:
 `surface` に出る表は data_table で書き出し先を宣言する。
 
 ```yaml
-surface_migration: 20260923000338_api_view_check_items.sql
+surface_migration: 20260923000338_api_view_items.sql
 ```
 
 - **MUST**: 名前は `{14 桁}_{公開スキーマ}_view_{テーブル名}.sql`(公開スキーマは `exposedSchema`)。全 migration 名を通して一意。

@@ -26,8 +26,8 @@ decisions: [ADR-0004]
 ### 共通形式
 
 - **YAML フロントマターが正**とする。本文の手書き散文は標識 2 種のみ（§散文の規則）。
-- `doc_type: action_spec` / `scope: backend` / `id` を必ず書く。`id` は `{aggregate}-{event}-action`（例: `loan-submit-action`）。
-- **1 ファイル 1 アクション**。ファイルパスはドメインイベント ID と対応させる（`loan.submit` → `actions/loan/submit.md`）。
+- `doc_type: action_spec` / `scope: backend` / `id` を必ず書く。`id` は `{aggregate}-{event}-action`（例: `loan-check_out-action`）。
+- **1 ファイル 1 アクション**。ファイルパスはドメインイベント ID と対応させる（`loan.check_out` → `actions/loan/check_out.md`）。
 
 ### 散文の規則
 
@@ -46,9 +46,9 @@ decisions: [ADR-0004]
 ```yaml
 doc_type: action_spec
 scope: backend
-id: loan-submit-action
+id: loan-check_out-action
 
-handles: loan.submit              # 必須。処理するドメインイベント ID（1 つだけ）
+handles: loan.check_out              # 必須。処理するドメインイベント ID（1 つだけ）
 
 input:                             # 必須。受けるフィールドを {entity}.{field} で列挙（無い場合も [] を明示）
   - loan.id
@@ -60,7 +60,7 @@ owner: loan.patron_id              # 任意。作成({entity}.create)だけ。�
 
 computes:                          # 任意。入力に無く、実行時に純関数が決める欄(§computes)
   - field: loan.late_fee_amount
-    ref: confirmedSlotFee            # app/src/domain/computes/{ref}.ts の主 export
+    ref: lateFee            # app/src/domain/computes/{ref}.ts の主 export
     # reads / shape / examples は任意(例の表 = 入力 → 値の行。人が読む早見表になり、テストが生成される)
 
 runner:                            # 任意。書けば「生成に乗らない操作」の宣言になる(§runner)
@@ -72,16 +72,16 @@ errors:                            # 必須。共通規約への参照 + 固有�
   additional: []                   # 固有のエラーがある場合のみ（例: 外部連携の失敗）
 
 test_cases:                        # 必須。1 つ以上
-  - id: TC-ENTRY-SUBMIT-001
+  - id: TC-LOAN-CHECK_OUT-001
     type: unit                     # unit | integration
     covers: [success]              # 必須。このケースが覆う意味クラス（値域、複数可）
-    spec_ids: [loan.submit]
-    implementation: app/src/operation/__tests__/loan/submit.test.ts::下書きから提出できる
-  - id: TC-ENTRY-SUBMIT-002
+    spec_ids: [loan.check_out]
+    implementation: app/src/operation/__tests__/loan/check_out.test.ts::申し込んだ本人が貸出を受け取れる
+  - id: TC-LOAN-CHECK_OUT-002
     type: integration
     covers: [invariant]
     spec_ids: [INV-LOAN-001]
-    implementation: app/src/infrastructure/__tests__/loan/submit.test.ts::二重貸出は拒否される
+    implementation: app/src/infrastructure/__tests__/loan/check_out.test.ts::二重貸出は拒否される
 ```
 
 #### handles
@@ -158,7 +158,7 @@ test_cases:
   # /AUTO-GENERATED:action-unit-tests
 
   # --- integration（実 DB に対して通す。ここから下は手書き） ---
-  - id: TC-ENTRY-CREATE-008
+  - id: TC-LOAN-CREATE-008
     type: integration
     covers: [success]
     spec_ids: [loan.create]
@@ -177,7 +177,7 @@ test_cases:
 
 - **すべきこと:** 各ケースに `id`（`TC-{AGGREGATE}-{EVENT}-{NNN}`）、`type`、`covers`、`spec_ids`、`implementation` を書く。`covers` に `success` を持つケースには `by_role` も書く（下記）。生成ブロックの中の番号は **900 番台**を使う（手書きの連番と帯を分ける。A9 の一意性を保つため）。
 - **すべきこと:** `spec_ids` には、そのケースが守っている仕様の ID を書く。書けるのは次の値域であり、実在が検査される（A8）。存在しない ID を書いたテストは、何も守っていないのに**守っているように読める**。
-  - ドメインイベント ID（例: `loan.submit`。予約 ID `{entity}.create` / `{entity}.delete` / `{entity}.update` を含む）
+  - ドメインイベント ID（例: `loan.check_out`。予約 ID `{entity}.create` / `{entity}.delete` / `{entity}.update` を含む）
   - `access_spec` の `id`（例: `loan-access`）— 権限・可視性そのものを守るテスト
   - 不変条件 ID（例: `INV-LOAN-001`）
 - **すべきこと:** `implementation` は `{リポジトリルートからのテストファイルパス}::{テスト名}` とする。置き場は [testing/unit.md](../../system/standards/conventions/testing/unit.md) §配置・命名（`type: unit` → `app/src/operation/__tests__/{entity}/{event}.test.ts`）と [testing/integration.md](../../system/standards/conventions/testing/integration.md) §配置・命名（`type: integration` の通しは **Composition Root を入口にする** `app/src/composition/__tests__/{entity}/{event}.test.ts`、RLS は `app/src/infrastructure/__tests__/{entity}/rls.test.ts`）が正である。**`app/src/app/__tests__/` は存在しない** — Server Action は cookie から actor を解決するためリクエスト文脈なしには呼べず、通しの入口は composition になる。
@@ -221,7 +221,7 @@ input:
 ```yaml
 computes:
   - field: loan.late_fee_amount   # {entity}.{field}
-    ref: confirmedSlotFee          # 純関数名（app/src/domain/computes/{ref}.ts の主 export）
+    ref: lateFee          # 純関数名（app/src/domain/computes/{ref}.ts の主 export）
     reads:                         # その純関数が読む事実（任意。{entity}.{field} の並び）
       - loan.kind
       - item.daily_fee

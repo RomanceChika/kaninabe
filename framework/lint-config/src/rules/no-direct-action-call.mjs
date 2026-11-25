@@ -3,7 +3,7 @@
  *
  * 正: docs/rules/process/frontend/system/standards/conventions/action-runner.md
  * 「閉世界」の節。**宣言のあるファイルが `src/app/_actions/**` 配下の関数を呼び出したら**落ちる
- * （`cancelWorkshopAction({ id })` の形）。**import して `<ActionButton action={cancelWorkshopAction}>`
+ * （`cancelItemAction({ id })` の形）。**import して `<ActionButton action={cancelItemAction}>`
  * のように値として渡すことは禁じない** —— 実行器（`useActionRunner` / `ActionButton` /
  * `ActionForm`）に手渡すこと自体は「経由」であり、`await action(...)` を手で書いて
  * `useState(pending)` / `setError` / `router.refresh()` を自前で回すことだけを塞ぐ。
@@ -12,8 +12,8 @@
  * (`CallExpression`)の callee を型チェッカーで解決し、辿り着いた宣言のファイルパスを見る。
  * これにより次の 2 つの「すり抜け」も塞がる（2026-09 裁定。以前は識別子名の追跡だけだった）。
  *
- *   - 別名に代入してから呼ぶ: `const shim = cancelWorkshopAction; shim(input);`
- *   - オブジェクトのプロパティに入れてから呼ぶ: `const w = { run: cancelWorkshopAction }; w.run(input);`
+ *   - 別名に代入してから呼ぶ: `const shim = cancelItemAction; shim(input);`
+ *   - オブジェクトのプロパティに入れてから呼ぶ: `const w = { run: cancelItemAction }; w.run(input);`
  *
  * どちらも「呼び出し先の関数が最終的にどこで宣言されているか」を型で辿れば、束縛の名前や
  * 経由した式の形に関わらず同じ結論になる。

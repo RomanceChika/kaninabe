@@ -1,0 +1,25 @@
+{
+  "name": "kaninabe-docs",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vitepress dev .",
+    "start": "npm run dev",
+    "build": "vitepress build .",
+    "preview": "vitepress preview ."
+  },
+  "devDependencies": {
+    "mermaid": "11.17.2",
+    "vitepress": "1.6.4",
+    "vitepress-plugin-mermaid": "2.0.17",
+    "vitepress-sidebar": "1.33.1",
+    "vue": "3.5.44"
+  },
+  "overrides": {
+    "vite": "^6.4.4"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

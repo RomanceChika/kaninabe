@@ -1,0 +1,17 @@
+{
+  "@kaninabe/adapter-postgrest": [
+    "ROLLBACK_ATTEMPT_LIMIT",
+    "ROLLBACK_SQLSTATES",
+    "createFactReader",
+    "createHandwrittenRpc",
+    "createRpcCaller",
+    "createUsecaseRepository",
+    "dbFailure",
+    "invariantResolverOf",
+    "isCertainRollback",
+    "refusalOrThrow",
+    "retryRollbacks",
+    "retryTableWrites",
+    "toOutcome"
+  ]
+}

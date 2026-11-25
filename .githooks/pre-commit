@@ -1,0 +1,11 @@
+#!/bin/sh
+# Secret scan of everything being committed. Fail closed: no scanner, no commit.
+# One-time setup: git config core.hooksPath .githooks   (npm run hooks:install)
+if [ "${SKIP_SECRET_SCAN:-}" = "1" ]; then
+  echo "pre-commit: SKIP_SECRET_SCAN is not honoured; secret safety is absolute." >&2
+fi
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "pre-commit: gitleaks is not installed. Install it (https://github.com/gitleaks/gitleaks/releases) and retry." >&2
+  exit 1
+fi
+exec gitleaks git --pre-commit --staged --no-banner --redact

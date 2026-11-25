@@ -1,0 +1,461 @@
+/*
+ * HTML で書き出した本(生成器が直接書く `docs/book/**.html`)だけが使う見た目。
+ *
+ * VitePress 版では VitePress の土台(`.vp-doc` の表・コード・リンク、`html.dark` の color-scheme)が持っていた分と、
+ * HTML 版で新しく出る部品(`<details>` の折りたたみ・自前の流れの図・表の包み)だけを書く。値はすべてトークンから引く(face.css と同じ規約)。
+ * VitePress 版の本は `.bf-html` を持たないので、ここの規則は VitePress 版に効かない。
+ */
+
+/* ------------------------------------------------------------ 土台 */
+
+html.bf-html {
+  color-scheme: light;
+}
+
+html.bf-html.dark {
+  color-scheme: dark;
+}
+
+html.bf-html body {
+  margin: 0;
+}
+
+.bf-html .bf-doc a:not(.screen-preview *, .parts-demo *, .bf-fl-svg *) {
+  color: light-dark(var(--color-accent), var(--color-focus-inverse));
+  text-decoration: underline;
+  text-underline-offset: var(--space-1);
+}
+
+.bf-html .bf-doc code:not(.screen-preview *, .parts-demo *, .bf-fl-svg *) {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  background: light-dark(var(--color-surface-raised), var(--color-night-surface));
+}
+
+.bf-html .bf-doc p:not(.screen-preview *, .parts-demo *, .bf-fl-svg *) {
+  margin: var(--space-3) 0;
+}
+
+.bf-html .bf-sec {
+  margin-top: var(--space-8);
+}
+
+.bf-html .bf-note {
+  color: light-dark(var(--color-text-secondary), var(--color-night-text-secondary));
+  font-size: var(--text-sm);
+}
+
+.bf-html .bf-notes {
+  font-size: var(--text-sm);
+  color: light-dark(var(--color-text-secondary), var(--color-night-text-secondary));
+}
+
+/* ------------------------------------------------------------ 表 */
+
+.bf-table {
+  overflow-x: auto;
+  margin: var(--space-4) 0;
+}
+
+.bf-table table {
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+
+.bf-table th,
+.bf-table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: var(--border-hairline) solid light-dark(var(--color-border), var(--color-night-border));
+  text-align: left;
+  vertical-align: top;
+}
+
+.bf-table th {
+  font-weight: var(--weight-bold);
+  color: light-dark(var(--color-text-secondary), var(--color-night-text-secondary));
+  white-space: nowrap;
+}
+
+/* 操作の名前の列は、字ごとに折り返さない(短い名前が縦に崩れない)。 */
+.bf-table td > b {
+  display: inline-block;
+  min-width: var(--size-label-sm);
+  font-weight: var(--weight-medium);
+}
+
+.bf-table--matrix td:nth-child(n + 4),
+.bf-table--matrix th:nth-child(n + 4) {
+  text-align: center;
+}
+
+/* 短い語の列(自動か など)は字ごとに折り返さない。 */
+.bf-nowrap {
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------ 流れの図(自前の SVG) */
+
+.bf-fl {
+  margin: var(--space-4) 0;
+}
+
+.bf-fl-scroll {
+  overflow-x: auto;
+}
+
+.bf-fl-svg {
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+}
+
+.bf-fl-node rect {
+  stroke: currentColor;
+  stroke-width: var(--border-hairline);
+}
+
+.bf-fl-node.bf-state--final rect {
+  stroke-width: var(--border-thick);
+}
+
+.bf-fl-node text {
+  fill: currentColor;
+}
+
+.bf-fl-node.bf-state--start {
+  color: light-dark(var(--color-badge-neutral-fg), var(--color-badge-neutral-bg));
+}
+
+.bf-fl-node.bf-state--start rect {
+  fill: light-dark(var(--color-badge-neutral-bg), var(--color-badge-neutral-fg));
+}
+
+.bf-fl-node.bf-state--progress {
+  color: light-dark(var(--color-badge-info-fg), var(--color-badge-info-bg));
+}
+
+.bf-fl-node.bf-state--progress rect {
+  fill: light-dark(var(--color-badge-info-bg), var(--color-badge-info-fg));
+}
+
+.bf-fl-node.bf-state--done {
+  color: light-dark(var(--color-badge-positive-fg), var(--color-badge-positive-bg));
+}
+
+.bf-fl-node.bf-state--done rect {
+  fill: light-dark(var(--color-badge-positive-bg), var(--color-badge-positive-fg));
+}
+
+.bf-fl-node.bf-state--negative {
+  color: light-dark(var(--color-badge-critical-fg), var(--color-badge-critical-bg));
+}
+
+.bf-fl-node.bf-state--negative rect {
+  fill: light-dark(var(--color-badge-critical-bg), var(--color-badge-critical-fg));
+}
+
+.bf-fl-edge path,
+.bf-fl-start path {
+  fill: none;
+  stroke: light-dark(var(--color-text-muted), var(--color-night-text-secondary));
+  stroke-width: var(--border-hairline);
+}
+
+.bf-fl-edge--back path {
+  stroke-dasharray: var(--space-1) var(--space-1);
+}
+
+.bf-fl-start circle,
+#bf-fl-arrow path,
+#bf-ag-arrow path {
+  fill: light-dark(var(--color-text-muted), var(--color-night-text-secondary));
+}
+
+.bf-fl-edge-label {
+  font-size: var(--text-xs);
+  fill: light-dark(var(--color-text-secondary), var(--color-night-text-secondary));
+}
+
+/* 集約関係図の節(エンティティ)。節はその集約の章へのリンク。欄の名前は線の上に地の色の縁取りで置く。 */
+.bf-ag-node rect {
+  fill: light-dark(var(--color-surface), var(--color-night-surface));
+  stroke: light-dark(var(--color-border-strong), var(--color-night-border));
+  stroke-width: var(--border-hairline);
+}
+
+.bf-ag-node text {
+  fill: light-dark(var(--color-text), var(--color-night-text));
+}
+
+.bf-ag-name {
+  font-family: var(--font-mono);
+  font-weight: var(--weight-medium);
+}
+
+.bf-ag-small {
+  font-size: var(--text-xs);
+  fill: light-dark(var(--color-text-secondary), var(--color-night-text-secondary));
+}
+
+a:hover > .bf-ag-node rect,
+a:focus-visible > .bf-ag-node rect {
+  stroke: light-dark(var(--color-accent), var(--color-focus-inverse));
+  stroke-width: var(--border-thick);
+}
+
+.bf-ag-label {
+  paint-order: stroke;
+  stroke: light-dark(var(--color-canvas), var(--color-night-canvas));
+  stroke-width: var(--space-1);
+  stroke-linejoin: round;
+}
+
+.bf-fl-cap {
+  font-size: var(--text-xs);
+  color: light-dark(var(--color-text-muted), var(--color-night-text-secondary));
+}
+
+/* ------------------------------------------------------------ 折りたたみ(<details>) */
+
+details.bf-fold > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+details.bf-fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* script が無いときは、モードの切り替えと暗い面のボタンを出さない(hidden のまま)。 */
+.bf-html [hidden] {
+  display: none;
+}
+
+/* 折りたたみの印(VitePress 版の部品は字で出していた。<details> では開閉の状態から CSS が出す)。 */
+details.bf-fold > summary .bf-fold-sign::before {
+  content: '＋';
+}
+
+details.bf-fold[open] > summary .bf-fold-sign::before {
+  content: '－';
+}
+
+/* 標識の原文(Markdown のまま字として出す。改行を保つ)。 */
+.bf-sign-text {
+  white-space: pre-wrap;
+}
+
+/* 書き方の例のコード抜粋(等幅のまま、幅を超える行は横にスクロールする)。 */
+.bf-html .bf-doc pre.bf-code {
+  margin: var(--space-3) 0;
+  padding: var(--space-3) var(--space-4);
+  overflow-x: auto;
+  border-radius: var(--radius-sm);
+  background: light-dark(var(--color-surface-raised), var(--color-night-surface));
+}
+
+.bf-html .bf-doc pre.bf-code > code {
+  padding: 0;
+  background: none;
+  white-space: pre;
+}
+
+/* 凡例の説明は印の右の残りの幅で折り返す(長い説明が印の下の行へ回り込まないように)。 */
+.vp-doc ul.bf-legend > li > :last-child {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* ------------------------------------------------------------ 画面プレビュー */
+
+/*
+ * 実装を偽データで描いた SSR プレビューの舞台。中の見た目は生成物 assets/ui.css(実装の CSS を `.screen-preview.screen-preview` の下へ
+ * スコープした写し)が決める。ここで決めるのは舞台の枠と、仮想の画面幅と縮尺だけである。プレビューは実物の姿なので、ダーク表示でも地は変えない。
+ */
+.bf-html .bf-preview-stage {
+  max-height: var(--size-preview-stage);
+  overflow: auto;
+  margin: var(--space-2) 0 var(--space-4);
+  border: var(--border-hairline) solid light-dark(var(--color-border), var(--color-night-border));
+  border-radius: var(--radius-md);
+  background: var(--color-canvas);
+  color-scheme: light;
+}
+
+/* 仮想の画面幅を縮尺で段に収める(横に送らずに、デスクトップで開いた 1 ページの姿を保つ)。 */
+.bf-html .bf-preview-stage .screen-preview {
+  width: var(--size-preview-viewport);
+  zoom: var(--zoom-preview);
+  pointer-events: none;
+}
+
+/* 重ね表示と状態ごとの見え方は小さいので、カードに並べる。 */
+.bf-html .bf-preview-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  align-items: flex-start;
+}
+
+.bf-html .bf-preview-card {
+  flex: 1 1 var(--size-cell-min);
+  min-width: 0;
+  margin: 0;
+}
+
+.bf-html .bf-preview-stage--overlay .screen-preview {
+  width: auto;
+  zoom: var(--zoom-preview-overlay);
+}
+
+.bf-html .bf-preview-stage--state .screen-preview {
+  zoom: var(--zoom-preview-state);
+}
+
+.bf-html .bf-preview-card figcaption {
+  font-size: var(--text-sm);
+  color: light-dark(var(--color-text-secondary), var(--color-night-text-secondary));
+}
+
+/* ------------------------------------------------------------ 部品の見本と色見本(デザインの章) */
+
+/*
+ * 部品の見本の舞台。中の見た目は生成物 assets/ui.css(実装の CSS を `.parts-demo.parts-demo` の下へスコープした写し)が決める。
+ * ここで決めるのは見本 1 項目の枠(見出し・舞台・部品名の行)だけである。見本は実物の姿なので、ダーク表示でも地は変えない。
+ */
+.bf-html .bf-demo-item {
+  margin: var(--space-5) 0;
+  border: var(--border-hairline) solid light-dark(var(--color-border), var(--color-night-border));
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.bf-html .bf-doc p.bf-demo-title {
+  margin: 0;
+  padding: var(--space-2) var(--space-4);
+  border-bottom: var(--border-hairline) solid light-dark(var(--color-border), var(--color-night-border));
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.bf-html .bf-demo-item .parts-demo {
+  padding: var(--space-5);
+  background: var(--color-canvas);
+  color-scheme: light;
+}
+
+.bf-html .bf-doc p.bf-demo-meta {
+  margin: 0;
+  padding: var(--space-2) var(--space-4);
+  border-top: var(--border-hairline) dashed light-dark(var(--color-border), var(--color-night-border));
+  font-size: var(--text-xs);
+  color: light-dark(var(--color-text-secondary), var(--color-night-text-secondary));
+}
+
+/* 色見本。塗りは assets/face.css の末尾に生成される `.bf-swatch[data-token]` の規則が決める。 */
+.bf-html .bf-swatch {
+  display: inline-block;
+  width: var(--space-4);
+  height: var(--space-4);
+  margin-right: var(--space-2);
+  vertical-align: middle;
+  border: var(--border-hairline) solid light-dark(var(--color-border-strong), var(--color-night-border));
+  border-radius: var(--radius-sm);
+}
+
+.bf-html .bf-demo-meta code {
+  white-space: nowrap;
+}
+
+
+/* ------------------------------------------------------------ 全文検索(上の帯の入力欄と結果の一覧。要素は assets/book.js が作る) */
+
+.bf-html .bf-search {
+  position: relative;
+}
+
+.bf-html .bf-search-input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: var(--space-1) var(--space-3);
+  border: var(--border-hairline) solid light-dark(var(--color-border-strong), var(--color-night-border));
+  border-radius: var(--radius-md);
+  background: light-dark(var(--color-surface), var(--color-night-surface));
+  color: inherit;
+  font: inherit;
+  font-size: var(--text-sm);
+}
+
+.bf-html .bf-search-input:focus-visible {
+  outline: var(--border-thick) solid light-dark(var(--color-focus), var(--color-focus-inverse));
+  outline-offset: var(--border-thick);
+}
+
+.bf-html .bf-search-panel {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 10;
+  box-sizing: border-box;
+  width: max(100%, var(--size-cell-min));
+  max-width: calc(100vw - var(--space-8));
+  max-height: var(--size-preview-stage);
+  overflow-y: auto;
+  margin-top: var(--space-1);
+  border: var(--border-hairline) solid light-dark(var(--color-border-strong), var(--color-night-border));
+  border-radius: var(--radius-md);
+  background: light-dark(var(--color-surface), var(--color-night-surface));
+  box-shadow: var(--shadow-md);
+}
+
+.bf-html .bf-search-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bf-html .bf-search-item {
+  border-top: var(--border-hairline) solid light-dark(var(--color-border), var(--color-night-border));
+}
+
+.bf-html .bf-search-item:first-child {
+  border-top: 0;
+}
+
+.bf-html .bf-search-item[aria-selected='true'] {
+  background: light-dark(var(--color-accent-soft), var(--color-accent-deep));
+}
+
+.bf-html .bf-search-link {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  color: inherit;
+  text-decoration: none;
+  font-size: var(--text-sm);
+  line-height: var(--leading-tight);
+}
+
+.bf-html .bf-search-link:hover {
+  background: light-dark(var(--color-surface-raised), var(--color-night-surface));
+}
+
+.bf-html .bf-search-page {
+  font-weight: var(--weight-bold);
+}
+
+.bf-html .bf-search-heading,
+.bf-html .bf-search-snippet {
+  color: light-dark(var(--color-text-secondary), var(--color-night-text-secondary));
+  font-size: var(--text-xs);
+}
+
+.bf-html .bf-search-note {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  color: light-dark(var(--color-text-secondary), var(--color-night-text-secondary));
+}

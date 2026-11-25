@@ -1,0 +1,9 @@
+{
+  "@kaninabe/adapter-log-axiom": [
+    "AXIOM_DEFAULT_DOMAIN",
+    "AXIOM_DEFAULT_TIMEOUT_MS",
+    "AXIOM_MAX_BATCH",
+    "axiomSinkFromValues",
+    "createAxiomSink"
+  ]
+}

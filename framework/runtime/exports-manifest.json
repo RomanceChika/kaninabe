@@ -1,0 +1,262 @@
+{
+  "@kaninabe/runtime/action-error": [
+    "toActionError",
+    "toCreateActionError",
+    "toDeleteActionError",
+    "toWriteActionError"
+  ],
+  "@kaninabe/runtime/bindings": [],
+  "@kaninabe/runtime/datetime": [
+    "formatAnnouncementDateTime",
+    "formatDateTime"
+  ],
+  "@kaninabe/runtime/engine": [
+    "assertValidTable",
+    "canCreate",
+    "canDelete",
+    "canFire",
+    "canWrite",
+    "containsKey",
+    "evaluateGuard",
+    "isFinal",
+    "knownEvents",
+    "transitionOf",
+    "unresolvedPaths"
+  ],
+  "@kaninabe/runtime/engine/types": [],
+  "@kaninabe/runtime/form": [
+    "changedFields",
+    "formOf",
+    "hasAnyChange",
+    "toFieldIssues"
+  ],
+  "@kaninabe/runtime/form-changes": [
+    "changedFields",
+    "hasAnyChange"
+  ],
+  "@kaninabe/runtime/form-refresh": [
+    "acceptSaved",
+    "conflictsOf",
+    "editField",
+    "reconcileFormDraft",
+    "resolveConflict"
+  ],
+  "@kaninabe/runtime/http/browser-defense": [
+    "CSP_HEADER",
+    "NONCE_REQUEST_HEADER",
+    "contentSecurityPolicy",
+    "createNonce",
+    "gateDocumentRequest",
+    "staticHeaderEntries"
+  ],
+  "@kaninabe/runtime/http/paid-entry": [
+    "readBodyLimited",
+    "runPaidEntry"
+  ],
+  "@kaninabe/runtime/http/redirect": [
+    "safeRedirectResponse"
+  ],
+  "@kaninabe/runtime/http/request-origin": [
+    "crossOriginRefusal",
+    "isSameOriginRequest",
+    "isStateChangingMethod",
+    "logoutResponse",
+    "noStoreInit",
+    "recordOriginRefusal",
+    "refuseCrossOrigin"
+  ],
+  "@kaninabe/runtime/http/response": [
+    "JSON_CONTENT_TYPE",
+    "TEXT_CONTENT_TYPE",
+    "attachmentResponse",
+    "jsonResponse",
+    "textResponse"
+  ],
+  "@kaninabe/runtime/http/route-guard": [
+    "ATTACHMENT_RESPONSE_TYPES",
+    "ROUTE_CACHE_CONTROLS",
+    "ROUTE_GUARD_REFUSAL_STATUS",
+    "ROUTE_NO_CACHE_HEADERS",
+    "ROUTE_RESPONSE_HEADERS",
+    "ROUTE_RESPONSE_TYPES",
+    "cacheHeadersAllowed",
+    "contentTypeAllowed",
+    "guardRoute",
+    "isExactOrigin",
+    "isGuardedRoute",
+    "locationAllowed",
+    "redirectHeadersVerdict",
+    "redirectSignalTarget",
+    "routeGuardRecord"
+  ],
+  "@kaninabe/runtime/http/safe-fetch": [
+    "safeFetch"
+  ],
+  "@kaninabe/runtime/inbound": [
+    "runInbound"
+  ],
+  "@kaninabe/runtime/inbound/signature": [
+    "verifyInboundSignature"
+  ],
+  "@kaninabe/runtime/intent": [
+    "intentKeyOf",
+    "temporaryFailureOf"
+  ],
+  "@kaninabe/runtime/log-sink": [
+    "LOG_SINK_FAILURES",
+    "createForwardingLogger",
+    "isSecurityEventRecord",
+    "sinkFailureRecord"
+  ],
+  "@kaninabe/runtime/markdown": [
+    "ALLOWED_TAGS",
+    "MARKDOWN_RENDER_LIMIT",
+    "excerptOf",
+    "plainTextOf",
+    "renderMarkdown"
+  ],
+  "@kaninabe/runtime/markdown-view": [
+    "MarkdownView"
+  ],
+  "@kaninabe/runtime/navigation": [
+    "safeRedirect"
+  ],
+  "@kaninabe/runtime/navigation/client": [
+    "safeNavigator",
+    "useSafeNavigate"
+  ],
+  "@kaninabe/runtime/neutralize": [
+    "allowedDiscordMentionsOf",
+    "clampLength",
+    "neutralizeDiscordMentions",
+    "stripControlChars"
+  ],
+  "@kaninabe/runtime/plan": [],
+  "@kaninabe/runtime/platform-op": [
+    "GENERIC_REFUSAL_REASON",
+    "INVALID_INPUT_MESSAGE",
+    "MFA_REQUIRED_MESSAGE",
+    "UNKNOWN_REFUSAL_MESSAGE",
+    "platformInvalid",
+    "platformMfaRequired",
+    "platformOk",
+    "platformRefused",
+    "platformRefusedWithin",
+    "refusalAsActionError",
+    "refusalMessage"
+  ],
+  "@kaninabe/runtime/ports": [
+    "DbInfrastructureError",
+    "receiptOf",
+    "settle"
+  ],
+  "@kaninabe/runtime/preflight": [
+    "passesPreflight",
+    "writableFields"
+  ],
+  "@kaninabe/runtime/refusal": [
+    "classifyDbFailure",
+    "commitOfDbError",
+    "refusalKindOfSqlstate",
+    "sqlstateOrNull"
+  ],
+  "@kaninabe/runtime/refusal/refusal-codes": [
+    "REFUSALS",
+    "refusalCodeOfReason"
+  ],
+  "@kaninabe/runtime/regexp": [
+    "escapeRegExp"
+  ],
+  "@kaninabe/runtime/result": [
+    "FRAMEWORK_REFUSAL_TEXT",
+    "RESEND_ALREADY_SAVED",
+    "err",
+    "frameworkRefusalText",
+    "isRefusalWord",
+    "ok"
+  ],
+  "@kaninabe/runtime/secret": [
+    "constantTimeEquals",
+    "matchesAnySecret",
+    "readServiceSecret"
+  ],
+  "@kaninabe/runtime/security-log": [
+    "LOG_FIELDS",
+    "LOG_FIELD_NAMES",
+    "SECURITY_EVENTS",
+    "originRefusalRecord",
+    "recordAuthEvent",
+    "recordRefusal",
+    "refusalRecord",
+    "requestIdOf",
+    "stdoutLogger"
+  ],
+  "@kaninabe/runtime/sql/eq-subject": [
+    "eqSubjectValues"
+  ],
+  "@kaninabe/runtime/sql/sql-condition": [
+    "atomsOfSql",
+    "conditionAtom",
+    "sameAtoms"
+  ],
+  "@kaninabe/runtime/step-decision": [
+    "arrayActorRoles",
+    "decideShape",
+    "rowConditionHolds"
+  ],
+  "@kaninabe/runtime/template": [
+    "runPlanOperation"
+  ],
+  "@kaninabe/runtime/template/actor": [
+    "rejectedRole"
+  ],
+  "@kaninabe/runtime/template/actor-roles": [
+    "globalRoleWith",
+    "resolveActorRolesWith"
+  ],
+  "@kaninabe/runtime/template/evaluate": [
+    "decidePlanWith",
+    "decideStepWith",
+    "envOf",
+    "factValue",
+    "namedArgs",
+    "planActorRolesWith"
+  ],
+  "@kaninabe/runtime/template/facts": [
+    "NOT_VISIBLE",
+    "found"
+  ],
+  "@kaninabe/runtime/template/mfa": [
+    "mfaRefusal",
+    "refuseUnverifiedMfa"
+  ],
+  "@kaninabe/runtime/template/outcome": [
+    "conflictOf",
+    "invariantViolatedOf",
+    "seal"
+  ],
+  "@kaninabe/runtime/template/transition": [
+    "transitionOperation"
+  ],
+  "@kaninabe/runtime/template/update": [
+    "updateOperation"
+  ],
+  "@kaninabe/runtime/template/update-fields": [
+    "updateFieldsOperation"
+  ],
+  "@kaninabe/runtime/text-input": [
+    "CONTROL_CHARACTER_MESSAGE",
+    "hasForbiddenCharacter",
+    "textInput"
+  ],
+  "@kaninabe/runtime/url": [
+    "URL_MAX_LENGTH",
+    "isConfigUrl",
+    "matchesUrl",
+    "readConfigUrl",
+    "safeHttpUrl",
+    "safeReturnPath",
+    "safeReturnPathOr",
+    "urlRegexSource"
+  ]
+}

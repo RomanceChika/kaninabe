@@ -1,0 +1,41 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install gitleaks (pinned, checksum verified)
+        run: |
+          curl -sSfL -o gl.tgz https://github.com/gitleaks/gitleaks/releases/download/v8.30.0/gitleaks_8.30.0_linux_x64.tar.gz
+          echo "79a3ab579b53f71efd634f3aaf7e04a0fa0cf206b7ed434638d1547a2470a66e  gl.tgz" | sha256sum -c -
+          tar -xzf gl.tgz gitleaks
+      - name: Scan the whole tree and the history
+        run: |
+          ./gitleaks dir . --no-banner --redact
+          ./gitleaks git . --no-banner --redact
+
+  # Stubs: replaced by real checks in the first change to dev.
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "no checks yet"
+  main-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "no guard yet"
+  release-tree:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "no release check yet"

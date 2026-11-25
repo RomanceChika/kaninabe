@@ -1,0 +1,42 @@
+name: tag
+
+# Creates the annotated tag v<version> when the version in package.json is new.
+# Runs on a push to dev (a merged pull request) and by hand. A tag that already exists is never touched:
+# the run stops with a message and succeeds without doing anything, so ordinary pushes are a no-op.
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tag
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create the tag for a new version
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "package.json version is not a semantic version: refusing"; exit 1
+          fi
+          tag="v$version"
+          git fetch --tags --force --quiet
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "$tag already exists at $(git rev-parse --short "$tag^{commit}"); nothing to do"
+            exit 0
+          fi
+          git config user.name "RomanceChika"
+          git config user.email "RomanceChika@users.noreply.github.com"
+          git tag -a "$tag" -m "$tag" "$GITHUB_SHA"
+          git push origin "refs/tags/$tag"
+          echo "created $tag at $(git rev-parse --short "$GITHUB_SHA")"

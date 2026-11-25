@@ -33,11 +33,12 @@ export const COMMANDS = {
 };
 
 const USAGE = `usage: kaninabe <command> [--root <product-root>] [command options]
+       kaninabe setup
 
 commands: setup, ${Object.keys(COMMANDS).join(', ')}
 
-setup   installs what kaninabe needs from a lockfile (npm ci here and in legacy/spec-tools); run it once
-        after the folder is mounted and again after the pin moves
+setup   takes no options. It installs from the lockfiles (npm ci in the kaninabe folder and in its
+        legacy/spec-tools); run it once after the folder is mounted and again after the pin moves
 
 --root  directory that holds product.md. Without it, the nearest directory above the
         current one that holds product.md and is not kaninabe itself; when only kaninabe
@@ -128,12 +129,37 @@ export const SETUP_STEPS = [
   ['legacy/spec-tools', ['ci']],
 ];
 
+/** The environment an install needs: the caller's, minus settings an outer npm or a production shell would inject. */
+function installEnv(env = process.env) {
+  const clean = { ...env };
+  for (const key of Object.keys(clean)) {
+    if (/^npm_(?:config|lifecycle|package)_/i.test(key) || key === 'NODE_ENV' || key === 'INIT_CWD') delete clean[key];
+  }
+  return clean;
+}
+
+/**
+ * How to start npm: node on npm's own script when it can be found (no shell, works on Windows), else `npm` itself
+ * (through the shell on Windows, where `npm.cmd` cannot be started directly).
+ */
+export function npmCommand(env = process.env, platform = process.platform) {
+  const script = env.npm_execpath;
+  if (script !== undefined && /npm-cli\.[cm]?js$/.test(script) && existsSync(script)) return { command: process.execPath, prefix: [script], shell: false };
+  return { command: platform === 'win32' ? 'npm.cmd' : 'npm', prefix: [], shell: platform === 'win32' };
+}
+
 /** Runs `npm ci` in kaninabe's root and in the legacy tool folder; returns the first failing status or 0. */
-function setup() {
-  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  for (const [dir, args] of SETUP_STEPS) {
-    const result = spawnSync(npm, args, { cwd: path.join(KANINABE_ROOT, dir), stdio: 'inherit', env: process.env });
+function setup(args) {
+  if (args.length > 0) {
+    console.error(`kaninabe setup: takes no arguments (got ${args.join(' ')}); it runs \`npm ci\` in the kaninabe folder and in legacy/spec-tools`);
+    return args.includes('--help') || args.includes('-h') ? 0 : 1;
+  }
+  const npm = npmCommand();
+  const env = installEnv();
+  for (const [dir, npmArgs] of SETUP_STEPS) {
+    const result = spawnSync(npm.command, [...npm.prefix, ...npmArgs], { cwd: path.join(KANINABE_ROOT, dir), stdio: 'inherit', env, shell: npm.shell });
     if (result.error !== undefined) console.error(`kaninabe setup: ${result.error.message}`);
+    if (result.signal) console.error(`kaninabe setup: npm was stopped by ${result.signal}`);
     if ((result.status ?? 1) !== 0) return result.status ?? 1;
   }
   return 0;
@@ -141,7 +167,7 @@ function setup() {
 
 function main(argv) {
   const [command, ...args] = argv;
-  if (command === 'setup') return setup();
+  if (command === 'setup') return setup(args);
   if (command === undefined || command === '--help' || command === '-h') {
     console.log(USAGE);
     return command === undefined ? 1 : 0;

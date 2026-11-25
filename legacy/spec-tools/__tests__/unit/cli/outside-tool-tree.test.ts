@@ -9,6 +9,7 @@
  *   - `INIT_CWD`(npm が起動された場所)があれば、根の探索と相対パスの基準はそちらになる
  *     (ルートの取り次ぎは作業ディレクトリが道具の木になるので、ルートで打った相対パスを正しく解くため)
  *   - `product.md` の無い場所から呼べば、終了コードが 0 でなく、根が見つからない旨の文言が出る
+ *   - 製品の木の中に自分の `product.md` を持つ kaninabe の写しがあっても、`--root` で外側を指せば外側の仕様を読み外側に書く
  *
  * 生成物の中身の正しさは通し実行(`__tests__/samples/`)の仕事で、ここは重ねない。通し実行が
  * lib を直接呼ぶのに対し、これは**本物の CLI を別プロセスで**動かす(入口の配線そのものを見る)。
@@ -24,6 +25,7 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { FRAMEWORK_CLI_DIR, PRODUCT_DECL_FILE, toRelative, walkFiles } from '../../../lib/io/paths.js';
 import { ROOT_MESSAGES } from '../../../lib/io/messages.js';
+import { resolveRepoRoot } from '../../../cli/repo-root.js';
 import { loadProductRoots } from '../../../lib/model/product/loader.js';
 import { declareToolWatchTest } from '../../helpers/book-entry-fixture.js';
 import { runToolCli, TOOL_ROOT, TOOL_TREE, withoutSolverExitNoise } from '../../helpers/run-tool-cli.js';
@@ -210,4 +212,37 @@ describe('道具の木の外から CLI を呼ぶ', () => {
       expect(result.stderr).toContain(ROOT_MESSAGES.notFound(outside, PRODUCT_DECL_FILE));
     },
   );
+});
+
+describe('製品の木の中に kaninabe の写し(自分の product.md を持つ)がある', () => {
+  /** 外側の根に、別の題材を kaninabe/ として写す(submodule の置き方。内側にも根の宣言がある)。 */
+  function nestedTree(): { outer: string; inner: string; roots: ProductRoots } {
+    const outer = copiedSample();
+    const inner = path.join(outer.root, 'kaninabe');
+    cpSync(path.join(import.meta.dirname, '../../fixtures/samples/stores'), inner, { recursive: true });
+    return { outer: outer.root, inner, roots: outer.roots };
+  }
+
+  it('--root を渡さずに内側から呼ぶと、探索は内側の宣言に着く(だから入口は常に根を明示する)', () => {
+    const tree = nestedTree();
+
+    expect(resolveRepoRoot([], tree.inner)).toEqual({ ok: true, root: tree.inner });
+  });
+
+  it('--root で外側を指せば、内側から呼んでも verify / generate は外側の仕様を読み、外側に書く', { timeout: SLOW }, () => {
+    const tree = nestedTree();
+    const root = ['--root', tree.outer];
+
+    const verified = run('verify-docs.ts', tree.inner, root);
+    expect(verified.status, verified.stdout + verified.stderr).toBe(0);
+    // 外側の題材(library)は集約 4 件、内側の写し(stores)は 11 件。件数で「どちらの仕様を読んだか」を固定する。
+    expect(verified.stdout).toContain('集約 4 件');
+
+    const generated = run('generate-docs.ts', tree.inner, root);
+    expect(generated.status, generated.stdout + generated.stderr).toBe(0);
+    expect(hasEntries(path.join(tree.outer, tree.roots.generated))).toBe(true);
+    expect(hasEntries(path.join(tree.outer, tree.roots.migrations))).toBe(true);
+    expect(hasEntries(path.join(tree.inner, tree.roots.generated))).toBe(false);
+    expect(hasEntries(path.join(tree.inner, tree.roots.migrations))).toBe(false);
+  });
 });

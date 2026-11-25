@@ -25,17 +25,45 @@ jobs:
         run: |
           ./gitleaks dir . --no-banner --redact
           ./gitleaks git . --no-banner --redact
+      # Product words, personal data and local paths, over every commit. The word list is the Actions secret SCAN_WORDS:
+      # it is read only in this step, written to a temp file, never echoed, and the script prints only
+      # a short commit id, a file path, a line number and counts (the logs of a public repository are public).
+      # The trigger is `pull_request`, never `pull_request_target`, so a fork's workflow never receives the secret.
+      - name: Scan every commit for product words, personal data and local paths
+        env:
+          SCAN_WORDS: ${{ secrets.SCAN_WORDS }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork == true }}
+        run: |
+          words="$RUNNER_TEMP/scan-words"
+          umask 077
+          if [ -n "$SCAN_WORDS" ]; then
+            printf '%s\n' "$SCAN_WORDS" > "$words"
+            export SCAN_WORDS_FILE="$words"
+          elif [ "$IS_FORK" = "true" ]; then
+            echo "fork pull request: the word list is not available; only the generic checks run"
+          else
+            echo "SCAN_WORDS is not set"; exit 1
+          fi
+          sh scripts/scan-public.sh
+          rm -f "$words"
 
-  # Stubs: replaced by real checks in the first change to dev.
   checks:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - run: echo "no checks yet"
-  main-guard:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "no guard yet"
-  release-tree:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "no release check yet"
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci
+      - run: npm --prefix legacy/spec-tools ci
+      - run: npm --prefix docs ci
+      - run: npm run typecheck:framework
+      - run: npm run lint:framework
+      - run: npm run typecheck:spec-tools
+      - run: npm run lint:spec-tools
+      - run: npm run verify -- --fail-on-unclassified
+      - run: npm run test:unit
+      - run: npm run test:spec-tools

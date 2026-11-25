@@ -1,0 +1,27 @@
+{
+  "name": "@kaninabe/lint-config",
+  "version": "0.1.0",
+  "private": true,
+  "description": "境界の規則のデータと自作 ESLint 規則(仕組み側の正)。製品の eslint.config.mjs と framework の各パッケージが同じ 1 本を読む。",
+  "exports": {
+    "./policies": "./src/policies.mjs",
+    "./oversize": "./src/oversize.mjs",
+    "./rules": "./src/rules/index.mjs",
+    "./framework-source": "./src/framework-source.mjs"
+  },
+  "scripts": {
+    "lint": "eslint --max-warnings 0"
+  },
+  "dependencies": {
+    "@typescript-eslint/utils": "^8.66.0",
+    "eslint-plugin-jsdoc": "^63.3.3",
+    "typescript": "^5",
+    "typescript-eslint": "^8.66.0"
+  },
+  "devDependencies": {
+    "eslint-plugin-boundaries": "^7.1.0"
+  },
+  "peerDependencies": {
+    "eslint": "^9.39.5"
+  }
+}

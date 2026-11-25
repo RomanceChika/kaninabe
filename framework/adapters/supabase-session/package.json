@@ -1,0 +1,40 @@
+{
+  "name": "@kaninabe/adapter-supabase-session",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Supabase のセッションをサーバーだけが持つ adapter(cookie の約束・サーバーのクライアント・前段の更新・サインインの開始とログアウトの口)。ブラウザの Supabase クライアントを使わない形(サーバーだけがセッションを持つ形の案 A)。Next.js に依らない。",
+  "exports": {
+    ".": {
+      "test": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./cookie-policy": {
+      "test": "./src/cookie-policy.ts",
+      "types": "./dist/cookie-policy.d.ts",
+      "default": "./dist/cookie-policy.js"
+    }
+  },
+  "scripts": {
+    "build": "node ../../runtime/scripts/check-dist-fresh.mjs --invalidate && tsc -p tsconfig.build.json",
+    "check:exports": "node ../../runtime/scripts/check-exports.mjs",
+    "lint": "eslint --max-warnings 0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@kaninabe/adapter-postgrest": "file:../postgrest",
+    "@kaninabe/runtime": "file:../../runtime",
+    "@supabase/ssr": "^0.12.4",
+    "@supabase/supabase-js": "^2.112.2",
+    "cookie": "^1.0.2"
+  },
+  "devDependencies": {
+    "@kaninabe/lint-config": "file:../../lint-config",
+    "typescript": "^5",
+    "vitest": "^4.1.12"
+  },
+  "files": [
+    "dist"
+  ]
+}

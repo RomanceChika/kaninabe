@@ -1,0 +1,18 @@
+tmp
+.idea/
+.vercel
+.env*
+
+# ワークスペースの依存(ルートの node_modules)。
+# 個々のパッケージ側の .gitignore(app/ docs/)と同じ扱い。
+node_modules/
+
+# カバレッジの出力(実行の根がルートなので、ここと各パッケージの下に出る)。
+coverage/
+
+# 実行時パッケージの配布物(`@kaninabe/runtime` の `tsc` 成果物)。**コミットしない** ——
+# 仕様から導かれる生成物ではなく、人がレビューする対象でもない(ADR-0006 の趣旨の外)。
+# 作るのは**ルートの** `prepare`(`npm ci` / `npm install` が呼ぶ)と、検査の先頭の
+# `npm run build:framework` である。**この 1 つのパスだけを無視する** —— `dist/` と書くと
+# リポジトリ全体のどの `dist` も黙って消える(将来 `docs/dist` を作った日に気づけない)。
+framework/runtime/dist/

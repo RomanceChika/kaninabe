@@ -1,0 +1,22 @@
+{
+  "entries": {
+    "app": [
+      "build:gate",
+      "dev",
+      "test:e2e",
+      "typecheck"
+    ],
+    "legacy/spec-tools": [
+      "generate",
+      "generate:check",
+      "samples:db",
+      "typecheck",
+      "verify"
+    ]
+  },
+  "at_end": {
+    "app": [
+      "build:gate"
+    ]
+  }
+}

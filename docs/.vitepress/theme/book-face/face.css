@@ -1,0 +1,1108 @@
+/*
+ * ハンドブックの人向けの表示(部品 5 枚と、生成器が吐く semantic なクラス)の見た目。
+ *
+ * **値はすべてトークンから引く**(docs/specs/frontend/design/tokens.md。生の色・余白・字の大きさは書かない)。
+ * 検査は実装の CSS と同じ規約(G1 生値 / G2 実在 / G7 死語彙)で、この置き場(book-face/)も走査される。
+ * 色はライト(紙色)を既定とし、ダーク(`html.dark`。端末の設定か器の切替で決まる)のときは夜の組(`color-night-*`)に切り替える。
+ * 切り替えはトークンの名前を上書きせず、`light-dark()` で 1 か所ずつ決める(ブックの中の「実物」の断片 =
+ * 画面カードは `color-scheme: light` を持つので、夜の組に巻き込まれない)。画面幅の分岐は書かず、折り返しで解く。
+ * 動きは使わない(開閉の切替だけ。アニメーションなし)。
+ *
+ * 原則(docs/design/book-human-face.md §7-4): 近いものは 1 群 / インクは情報に(罫は横罫だけ)/
+ * 階層は 3 段まで / 色は意味にだけ(tone と 4 つの読み方の印)/ 一度に見せる量は一目で数えられるだけ。
+ */
+
+/* ------------------------------------------------------------ 器(ブック専用のレイアウト。HTML の本の器 html/page.ts と対) */
+
+/* 外から供給される字の族(トークン font-serif / font-sans の先頭)。出どころは config の head が読む Google Fonts。 */
+:root {
+  --font-serif-jp: "Noto Serif JP";
+  --font-sans-jp: "Noto Sans JP";
+}
+
+/* 余白(ページの外側)も紙の色にする(端のスクロールの戻りで既定の地が見えない)。 */
+body:has(.bf-shell) {
+  background-color: light-dark(var(--color-canvas), var(--color-night-canvas));
+}
+
+.bf-shell {
+  min-height: 100vh;
+  background-color: light-dark(var(--color-canvas), var(--color-night-canvas));
+  color: light-dark(var(--color-text), var(--color-night-text));
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading-relaxed);
+  font-feature-settings: "palt";
+
+  /* VitePress の本文(.vp-doc・コードブロック・検索)の変数を、トークンの組に向け直す。 */
+  --vp-c-bg: light-dark(var(--color-canvas), var(--color-night-canvas));
+  --vp-c-bg-alt: light-dark(var(--color-surface), var(--color-night-surface));
+  --vp-c-bg-elv: light-dark(var(--color-surface), var(--color-night-surface));
+  --vp-c-bg-soft: light-dark(var(--color-surface-raised), var(--color-night-surface));
+  --vp-c-default-soft: light-dark(var(--color-surface-raised), var(--color-night-surface));
+  --vp-c-text-1: light-dark(var(--color-text), var(--color-night-text));
+  --vp-c-text-2: light-dark(var(--color-text-secondary), var(--color-night-text-secondary));
+  --vp-c-text-3: light-dark(var(--color-text-muted), var(--color-night-text-secondary));
+  --vp-c-divider: light-dark(var(--color-border), var(--color-night-border));
+  --vp-c-gutter: light-dark(var(--color-border), var(--color-night-border));
+  --vp-c-border: var(--color-border-strong);
+  --vp-c-brand-1: light-dark(var(--color-accent), var(--color-focus-inverse));
+  --vp-c-brand-2: light-dark(var(--color-accent-strong), var(--color-focus-inverse));
+  --vp-c-brand-3: var(--color-accent);
+  --vp-c-brand-soft: light-dark(var(--color-accent-soft), var(--color-night-surface));
+  --vp-code-bg: light-dark(var(--color-surface-raised), var(--color-night-surface));
+  --vp-code-block-bg: light-dark(var(--color-surface), var(--color-night-surface));
+  --vp-code-block-divider-color: light-dark(var(--color-border), var(--color-night-border));
+}
+
+/* 本文へのスキップリンク。畳んでおき、キーボードの焦点が来たときだけ現れる(押すと本文に焦点が移る)。 */
+.bf-skip {
+  position: absolute;
+  top: var(--space-2);
+  left: var(--space-4);
+  z-index: 1;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--color-accent);
+  color: var(--color-text-inverse);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  text-decoration: none;
+  transform: translateY(-300%);
+}
+
+.bf-skip:focus {
+  transform: none;
+  outline: var(--border-thick) solid light-dark(var(--color-focus), var(--color-focus-inverse));
+  outline-offset: var(--border-thick);
+}
+
+.bf-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  max-width: var(--size-page-wide);
+  margin: 0 auto;
+  padding: var(--space-4) var(--space-4) 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+
+.bf-bar-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-5);
+}
+
+.bf-bar-link {
+  color: light-dark(var(--color-text-secondary), var(--color-night-text-secondary));
+  text-decoration: underline;
+  text-decoration-color: light-dark(var(--color-border), var(--color-night-border));
+  text-underline-offset: var(--space-1);
+}
+
+.bf-bar-link:hover {
+  color: light-dark(var(--color-text), var(--color-night-text));
+}
+
+.bf-bar-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+/* 検索(VitePress の検索を 1 つ。幅は目次に揃える)。 */
+.bf-bar-tools .bf-search {
+  flex: none;
+  width: var(--size-toc);
+  padding-left: 0;
+}
+
+.bf-theme {
+  padding: var(--space-1) var(--space-3);
+  border: var(--border-hairline) solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.bf-theme[aria-pressed='true'] {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-text-inverse);
+}
+
+/* 目次(左)と本文(右)。折り返しで 1 列に落ちる: 目次の幅 + 余白 + 本文の最小の幅が入らなければ、目次が本文の上に回る。 */
+.bf-page {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8) var(--space-10);
+  max-width: var(--size-page-wide);
+  margin: 0 auto;
+  padding: var(--space-8) var(--space-4) var(--space-16);
+}
+
+.bf-aside {
+  flex: 1 1 var(--size-toc);
+  min-width: 0;
+}
+
+.bf-main {
+  flex: 999 1 var(--size-measure);
+  min-width: 0;
+}
+
+/* 本文は、スキップリンクが焦点を移す先(押せるものではないので、輪郭は出さない)。 */
+.bf-main:focus {
+  outline: 0;
+}
+
+/* 目次の開閉(本文の上に回ったときだけ。並んでいるときは開いたままで、見出しを隠す)。動きは使わない。 */
+.bf-toc-box {
+  margin: 0;
+}
+
+.bf-toc-summary {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  line-height: var(--leading-normal);
+  list-style: none;
+  cursor: pointer;
+}
+
+.bf-toc-summary::-webkit-details-marker {
+  display: none;
+}
+
+.bf-toc-summary::before {
+  content: '＋';
+  font-family: var(--font-mono);
+  font-weight: normal;
+  opacity: var(--opacity-subtle);
+}
+
+.bf-toc-box[open] > .bf-toc-summary::before {
+  content: '－';
+}
+
+.bf-toc-summary:focus-visible {
+  outline: var(--border-thick) solid light-dark(var(--color-focus), var(--color-focus-inverse));
+  outline-offset: var(--border-thick);
+}
+
+.bf-aside[data-stacked='false'] .bf-toc-summary {
+  display: none;
+}
+
+/* 目次は包みの中でだけ貼り付く(折り返して 1 列になれば包みが目次の背丈しかなく、貼り付く余地が無い = 本文に重ならない)。 */
+.bf-toc {
+  position: sticky;
+  top: var(--space-4);
+  max-height: calc(100vh - var(--space-8));
+  overflow-y: auto;
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  color: light-dark(var(--color-text-secondary), var(--color-night-text-secondary));
+}
+
+.bf-toc ol {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bf-toc li {
+  margin: 0;
+}
+
+.bf-toc li.g {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-2);
+  margin-top: var(--space-4);
+  color: light-dark(var(--color-text), var(--color-night-text));
+  font-weight: var(--weight-medium);
+}
+
+.bf-toc li.g:first-child {
+  margin-top: 0;
+}
+
+.bf-toc li.i {
+  padding-left: var(--space-4);
+}
+
+.bf-toc a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.bf-toc a:hover {
+  text-decoration: underline;
+  text-underline-offset: var(--space-1);
+}
+
+.bf-toc a:focus-visible {
+  outline: var(--border-thick) solid light-dark(var(--color-focus), var(--color-focus-inverse));
+  outline-offset: var(--border-thick);
+}
+
+/* 本文(.vp-doc)。階層は章 / 節 / 段の 3 サイズ(h1 = 28 / h2 = 20 / h3 = 18)。 */
+.bf-shell .vp-doc h1 {
+  margin: 0 0 var(--space-3);
+  font-family: var(--font-serif);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-normal);
+  line-height: var(--leading-tight);
+}
+
+.bf-shell .vp-doc h2 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-3);
+  margin: var(--space-16) 0 var(--space-4);
+  padding-top: var(--space-4);
+  border-top: var(--border-hairline) solid light-dark(var(--color-border), var(--color-night-border));
+  font-size: var(--text-xl);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-normal);
+  line-height: var(--leading-tight);
+}
+
+.bf-shell .vp-doc h3 {
+  margin: var(--space-10) 0 var(--space-3);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-normal);
+  line-height: var(--leading-tight);
+}
+
+/* 前後の章。 */
+.bf-pager {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-top: var(--space-16);
+  padding-top: var(--space-4);
+  border-top: var(--border-hairline) solid light-dark(var(--color-border), var(--color-night-border));
+}
+
+.bf-pager-link {
+  display: flex;
+  flex: 1 1 var(--size-label);
+  flex-direction: column;
+  min-width: 0;
+  color: light-dark(var(--color-text), var(--color-night-text));
+  text-decoration: none;
+}
+
+.bf-pager-next {
+  align-items: flex-end;
+  text-align: right;
+}
+
+.bf-pager-label {
+  font-size: var(--text-xs);
+  opacity: var(--opacity-subtle);
+}
+
+.bf-pager-title {
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.bf-pager-link:hover > .bf-pager-title {
+  text-decoration: underline;
+  text-underline-offset: var(--space-1);
+}
+
+/* ------------------------------------------------------------ 読み方の印(4 種。色 + 形の 2 重) */
+
+.bf-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-wide);
+  line-height: var(--leading-normal);
+  white-space: nowrap;
+}
+
+.bf-mark--axiom {
+  color: light-dark(var(--color-mark-axiom-fg), var(--color-mark-axiom-bg));
+  background: light-dark(var(--color-mark-axiom-bg), var(--color-mark-axiom-fg));
+}
+
+.bf-mark--axiom::before {
+  content: '●';
+}
+
+.bf-mark--derive {
+  color: light-dark(var(--color-mark-derive-fg), var(--color-mark-derive-bg));
+  background: light-dark(var(--color-mark-derive-bg), var(--color-mark-derive-fg));
+}
+
+.bf-mark--derive::before {
+  content: '○';
+}
+
+.bf-mark--acceptance {
+  color: light-dark(var(--color-mark-accept-fg), var(--color-mark-accept-bg));
+  background: light-dark(var(--color-mark-accept-bg), var(--color-mark-accept-fg));
+}
+
+.bf-mark--acceptance::before {
+  content: '◆';
+}
+
+.bf-mark--changed {
+  color: light-dark(var(--color-mark-changed-fg), var(--color-mark-changed-bg));
+  background: light-dark(var(--color-mark-changed-bg), var(--color-mark-changed-fg));
+}
+
+.bf-mark--changed::before {
+  content: '△';
+}
+
+/* 状態は必ずピル。悪い知らせの状態(tone: negative)だけ別の色。 */
+.bf-pill {
+  display: inline-block;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  white-space: nowrap;
+  color: light-dark(var(--color-badge-neutral-fg), var(--color-night-text));
+  background: light-dark(var(--color-badge-neutral-bg), var(--color-night-surface));
+}
+
+.bf-pill--negative {
+  color: light-dark(var(--color-badge-critical-fg), var(--color-badge-critical-bg));
+  background: light-dark(var(--color-badge-critical-bg), var(--color-badge-critical-fg));
+}
+
+/* ------------------------------------------------------------ ライフサイクルの図(段と矢印だけ。生成した SVG の見た目) */
+
+/* 図は段のピルと矢印以外を描かない。色は意味にだけ: 悪い知らせの段のピル(.bf-pill--negative と同じ組)と、矢印・字の灰色。
+   SVG の幅は生成した数(属性)が決め、狭ければ縮む。字は SVG の座標の中で測るので、縮むと字も一緒に縮む。 */
+.vp-doc figure.bf-flow {
+  margin: var(--space-5) 0 0;
+}
+
+.bf-flow-svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  font-size: var(--text-xs);
+}
+
+.bf-flow-pill {
+  fill: light-dark(var(--color-badge-neutral-bg), var(--color-night-surface));
+}
+
+.bf-flow-pill--negative {
+  fill: light-dark(var(--color-badge-critical-bg), var(--color-badge-critical-fg));
+}
+
+.bf-flow-name {
+  fill: light-dark(var(--color-badge-neutral-fg), var(--color-night-text));
+}
+
+.bf-flow-name--negative {
+  fill: light-dark(var(--color-badge-critical-fg), var(--color-badge-critical-bg));
+}
+
+.bf-flow-edge {
+  fill: none;
+  stroke: light-dark(var(--color-text-secondary), var(--color-night-text-secondary));
+  stroke-width: var(--border-hairline);
+}
+
+.bf-flow-head {
+  fill: light-dark(var(--color-text-secondary), var(--color-night-text-secondary));
+}
+
+.bf-flow-label {
+  fill: light-dark(var(--color-text-secondary), var(--color-night-text-secondary));
+}
+
+.bf-flow-label--note {
+  fill: light-dark(var(--color-text-muted), var(--color-night-text-secondary));
+}
+
+.vp-doc figcaption.bf-flow-cap {
+  max-width: var(--size-measure);
+  margin-top: var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  opacity: var(--opacity-subtle);
+}
+
+/* ------------------------------------------------------------ 文字の型 */
+
+.vp-doc p.bf-prose,
+.vp-doc p.bf-note {
+  max-width: var(--size-measure);
+  margin: 0 0 var(--space-4);
+  font-size: var(--text-base);
+  line-height: var(--leading-relaxed);
+}
+
+.vp-doc p.bf-lede {
+  font-size: var(--text-lg);
+}
+
+.vp-doc p.bf-note {
+  font-size: var(--text-sm);
+  opacity: var(--opacity-subtle);
+}
+
+.bf-none,
+.bf-no {
+  opacity: var(--opacity-subtle);
+}
+
+.bf-mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+/* 原文(仕様の statement)。丸めずに逐語で置く。 */
+.vp-doc p.bf-q {
+  max-width: var(--size-measure);
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+
+.vp-doc p.bf-subhead {
+  max-width: var(--size-measure);
+  margin: var(--space-8) 0 var(--space-2);
+  font-weight: var(--weight-bold);
+}
+
+.vp-doc p.bf-subhead small,
+.vp-doc p.bf-group small {
+  margin-left: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: normal;
+  opacity: var(--opacity-subtle);
+}
+
+.vp-doc p.bf-group {
+  max-width: var(--size-measure);
+  margin: var(--space-8) 0 var(--space-1);
+  font-weight: var(--weight-bold);
+}
+
+.vp-doc p.bf-label {
+  margin: var(--space-4) 0 var(--space-1);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+}
+
+.bf-n {
+  margin-left: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: normal;
+  opacity: var(--opacity-subtle);
+}
+
+/* ------------------------------------------------------------ 箇条(1 項目 1 値) */
+
+.vp-doc ul.bf-pts {
+  display: grid;
+  gap: var(--space-1);
+  max-width: var(--size-measure);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-md);
+  line-height: var(--leading-normal);
+}
+
+.vp-doc ul.bf-pts > li {
+  position: relative;
+  min-width: 0;
+  margin: 0;
+  padding-left: var(--space-4);
+  overflow-wrap: anywhere;
+}
+
+.vp-doc ul.bf-pts > li::before {
+  content: '·';
+  position: absolute;
+  left: 0;
+  opacity: var(--opacity-subtle);
+}
+
+.vp-doc ul.bf-pts.bf-blk {
+  margin-top: var(--space-3);
+}
+
+/* ------------------------------------------------------------ ラベル行(ラベル + 値。項目は仕様の欄と 1 対 1) */
+
+.bf-kvs {
+  display: grid;
+  max-width: var(--size-measure);
+  margin: var(--space-3) 0 0;
+  border-top: var(--border-hairline) solid light-dark(var(--color-border), var(--color-night-border));
+}
+
+.bf-kv {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  min-width: 0;
+  padding: var(--space-2) 0;
+  border-bottom: var(--border-hairline) solid light-dark(var(--color-border), var(--color-night-border));
+}
+
+.bf-kv > .bf-k,
+.bf-kv > .bf-rk {
+  flex: 0 0 var(--size-label-sm);
+  min-width: 0;
+}
+
+.bf-kv > .bf-k {
+  font-size: var(--text-sm);
+  opacity: var(--opacity-subtle);
+}
+
+/* 行頭が仕様の語(ロール名)の行。主語なので、ラベルの語のように薄くしない。 */
+.bf-kv > .bf-rk {
+  font-size: var(--text-md);
+  line-height: var(--leading-normal);
+  overflow-wrap: anywhere;
+}
+
+.bf-kv > .bf-v {
+  flex: 1 1 var(--size-label);
+  min-width: 0;
+  font-size: var(--text-md);
+  line-height: var(--leading-normal);
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------ 公理の行(行頭に標識 = 異議の場所) */
+
+.bf-axiom,
+.bf-rule {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  margin-top: var(--space-6);
+}
+
+.bf-axiom > .bf-id,
+.bf-rule > .bf-id {
+  display: flex;
+  flex: 0 0 var(--size-label);
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.bf-axiom > .bf-st,
+.bf-rule > .bf-st {
+  flex: 1 1 var(--size-label);
+  min-width: 0;
+}
+
+.bf-axiom > .bf-st > .bf-kvs,
+.bf-rule > .bf-st > .bf-kvs {
+  margin-top: 0;
+}
+
+.bf-from {
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  opacity: var(--opacity-subtle);
+}
+
+/* 従属する概念の節(親の節の中の節)。 */
+.bf-sub {
+  margin-top: var(--space-8);
+  padding-left: var(--space-5);
+  border-left: var(--border-thick) solid light-dark(var(--color-border), var(--color-night-border));
+}
+
+/* ------------------------------------------------------------ 出る手(1 手 1 かたまり) */
+
+.vp-doc ul.bf-hands {
+  display: grid;
+  margin: var(--space-1) 0 0;
+  padding: 0;
+  list-style: none;
+  border-top: var(--border-hairline) solid light-dark(var(--color-border), var(--color-night-border));
+}
+
+.vp-doc ul.bf-hands > li {
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-2) 0;
+  border-bottom: var(--border-hairline) solid light-dark(var(--color-border), var(--color-night-border));
+}
+
+.bf-hd {
+  display: block;
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+}
+
+.bf-ev {
+  margin-right: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: normal;
+  opacity: var(--opacity-subtle);
+}
+
+.bf-hands .bf-kv {
+  padding: 0;
+  border-bottom: 0;
+}
+
+.bf-hands .bf-kv > .bf-k {
+  flex: 0 0 var(--size-label-sm);
+}
+
+/* ------------------------------------------------------------ 凡例・前提の語 */
+
+.vp-doc ul.bf-legend {
+  display: grid;
+  gap: var(--space-2);
+  max-width: var(--size-measure);
+  margin: var(--space-4) 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-md);
+  line-height: var(--leading-normal);
+}
+
+.vp-doc ul.bf-legend > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+}
+
+.vp-doc ul.bf-legend > li > :first-child {
+  flex: 0 0 var(--size-label-sm);
+}
+
+.vp-doc dl.bf-terms {
+  max-width: var(--size-measure);
+  margin: var(--space-3) 0 0;
+  border-top: var(--border-hairline) solid light-dark(var(--color-border), var(--color-night-border));
+}
+
+.vp-doc dl.bf-terms > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  padding: var(--space-3) 0;
+  border-bottom: var(--border-hairline) solid light-dark(var(--color-border), var(--color-night-border));
+}
+
+.vp-doc dl.bf-terms dt {
+  flex: 0 0 var(--size-label);
+  font-weight: var(--weight-bold);
+}
+
+.vp-doc dl.bf-terms dt small {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: normal;
+  opacity: var(--opacity-subtle);
+}
+
+.vp-doc dl.bf-terms dd {
+  flex: 1 1 var(--size-label);
+  min-width: 0;
+  margin: 0;
+  font-size: var(--text-md);
+  line-height: var(--leading-normal);
+}
+
+/* ------------------------------------------------------------ 部品: Mode */
+
+.bf-mode {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
+}
+
+.bf-mode-button {
+  padding: var(--space-1) var(--space-3);
+  border: var(--border-hairline) solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: light-dark(var(--color-surface), var(--color-night-surface));
+  color: light-dark(var(--color-text), var(--color-night-text));
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.bf-mode-button[aria-pressed='true'] {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-text-inverse);
+}
+
+.bf-mode-button:focus-visible,
+.bf-theme:focus-visible,
+.bf-fold-head:focus-visible,
+.bf-term:focus-visible {
+  outline: var(--border-thick) solid light-dark(var(--color-focus), var(--color-focus-inverse));
+  outline-offset: var(--border-thick);
+}
+
+/* ------------------------------------------------------------ 部品: Fold(畳んでも見出しは見える) */
+
+.bf-fold {
+  border-top: var(--border-hairline) solid light-dark(var(--color-border), var(--color-night-border));
+}
+
+.bf-fold-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+  width: 100%;
+  padding: var(--space-3) 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: var(--text-md);
+  font-weight: var(--weight-bold);
+  text-align: left;
+  cursor: pointer;
+}
+
+.bf-fold-sign {
+  flex: none;
+  font-family: var(--font-mono);
+  font-weight: normal;
+  opacity: var(--opacity-subtle);
+}
+
+.bf-fold-n {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: normal;
+  opacity: var(--opacity-subtle);
+}
+
+.bf-fold-title,
+.bf-fold-hint {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.bf-fold-hint {
+  font-size: var(--text-sm);
+  font-weight: normal;
+  opacity: var(--opacity-subtle);
+}
+
+.bf-fold-body {
+  min-width: 0;
+  padding: 0 0 var(--space-6) var(--space-5);
+}
+
+/* 原文は言い換えの直下に置く小さな折りたたみ(罫を引かない)。 */
+.bf-fold[data-kind='orig'] {
+  border-top: 0;
+}
+
+.bf-fold[data-kind='orig'] > .bf-fold-head {
+  padding: var(--space-1) 0;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  opacity: var(--opacity-subtle);
+}
+
+.bf-axiom + .bf-fold[data-kind='orig'] {
+  margin-top: var(--space-2);
+}
+
+/* ------------------------------------------------------------ 部品: Steps */
+
+.vp-doc ol.bf-steps {
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  list-style: none;
+  border-top: var(--border-hairline) solid light-dark(var(--color-border), var(--color-night-border));
+}
+
+.vp-doc ol.bf-steps > li.bf-step {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  margin: 0;
+  padding: var(--space-5) 0;
+  border-bottom: var(--border-hairline) solid light-dark(var(--color-border), var(--color-night-border));
+}
+
+.bf-step-head {
+  display: flex;
+  flex: 0 0 var(--size-label);
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+
+.bf-step-no {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  opacity: var(--opacity-subtle);
+}
+
+.bf-step-body {
+  flex: 1 1 var(--size-label);
+  min-width: 0;
+  max-width: var(--size-measure);
+}
+
+.bf-step-body > .bf-kvs {
+  margin-top: var(--space-3);
+}
+
+/* ------------------------------------------------------------ 部品: Grid(読む量の 4 枚) */
+
+.bf-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--size-cell-min)), 1fr));
+  gap: var(--space-3);
+  margin: var(--space-6) 0 0;
+}
+
+.bf-cell {
+  min-width: 0;
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  border: var(--border-hairline) solid light-dark(var(--color-border), var(--color-night-border));
+  border-radius: var(--radius-md);
+  background: light-dark(var(--color-surface), var(--color-night-surface));
+  color: light-dark(var(--color-text), var(--color-night-text));
+}
+
+.bf-cell-k {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-md);
+}
+
+.bf-cell-v {
+  margin-top: var(--space-1);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-bold);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--leading-tight);
+}
+
+.bf-cell-s {
+  margin-top: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.bf-cell-s .bf-pts {
+  font-size: var(--text-sm);
+}
+
+/* ------------------------------------------------------------ 部品: Term(用語のツールチップ) */
+
+.bf-term {
+  position: relative;
+  border-bottom: var(--border-hairline) dotted var(--color-border-strong);
+  cursor: help;
+}
+
+.bf-term-tip {
+  display: none;
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  z-index: 1;
+  width: max-content;
+  /* 本文の幅か、画面の幅から本文の左右の余白を引いた幅の、狭いほう(狭い画面で横にはみ出さない)。
+     位置のずらしは <Term> が出すときに測って決める。 */
+  max-width: min(var(--size-measure), calc(100vw - var(--space-6) - var(--space-6)));
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: var(--border-hairline) solid light-dark(transparent, var(--color-border-inverse));
+  background: var(--color-accent-deep);
+  color: var(--color-text-inverse);
+  font-size: var(--text-sm);
+  font-weight: normal;
+  line-height: var(--leading-normal);
+}
+
+.bf-term:hover > .bf-term-tip,
+.bf-term:focus > .bf-term-tip {
+  display: block;
+}
+
+/* Esc で閉じたあとは、語から離れるまで出さない。 */
+.bf-term--dismissed > .bf-term-tip,
+.bf-term--dismissed:hover > .bf-term-tip,
+.bf-term--dismissed:focus > .bf-term-tip {
+  display: none;
+}
+
+/* ------------------------------------------------------------ 表(横罫だけ。1 画面に 1 枚) */
+
+.bf-fold-body table {
+  font-size: var(--text-sm);
+}
+
+/* 縦罫・縞の地・枠を消す(インクは情報に)。SSR の「実物」の断片の中の表は、実装の見た目のまま触らない。 */
+.bf-shell .vp-doc table:not(.screen-preview table, .parts-demo table) {
+  margin: var(--space-2) 0 0;
+  border-collapse: collapse;
+}
+
+.bf-shell .vp-doc tr:not(.screen-preview tr, .parts-demo tr) {
+  border-top: 0;
+  background: transparent;
+}
+
+.bf-shell .vp-doc :is(th, td):not(.screen-preview *, .parts-demo *) {
+  padding: var(--space-3) var(--space-4) var(--space-3) 0;
+  border: 0;
+  border-bottom: var(--border-hairline) solid light-dark(var(--color-border), var(--color-night-border));
+  background: transparent;
+  vertical-align: top;
+}
+
+.bf-shell .vp-doc th:not(.screen-preview *, .parts-demo *) {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------ 新しい形の章(docs/book/spec/)の状態と役の印 */
+
+/* 状態の印: 地の色 = 区分(始まり・進行中・終わり・否定的。既存のバッジの組を使い、夜は地と文字を入れ替える = .bf-pill--negative と同じ)。
+   色だけで区分を伝えない(区分の語は表の列にある)。終点は二重の枠。段の番号「2/6」は印の頭に小さく。 */
+.bf-state {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  border: var(--border-hairline) solid transparent;
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  white-space: nowrap;
+}
+
+.bf-state--start {
+  color: light-dark(var(--color-badge-neutral-fg), var(--color-badge-neutral-bg));
+  background: light-dark(var(--color-badge-neutral-bg), var(--color-badge-neutral-fg));
+}
+
+.bf-state--progress {
+  color: light-dark(var(--color-badge-info-fg), var(--color-badge-info-bg));
+  background: light-dark(var(--color-badge-info-bg), var(--color-badge-info-fg));
+}
+
+.bf-state--done {
+  color: light-dark(var(--color-badge-positive-fg), var(--color-badge-positive-bg));
+  background: light-dark(var(--color-badge-positive-bg), var(--color-badge-positive-fg));
+}
+
+.bf-state--negative {
+  color: light-dark(var(--color-badge-critical-fg), var(--color-badge-critical-bg));
+  background: light-dark(var(--color-badge-critical-bg), var(--color-badge-critical-fg));
+}
+
+.bf-state--final {
+  border-color: currentColor;
+  box-shadow: inset 0 0 0 var(--border-hairline) currentColor;
+}
+
+.bf-state-no {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  opacity: var(--opacity-subtle);
+}
+
+/* 役の印: 形 = 概念(誰にでも付く役 = 丸 / 対象との関係で決まる役 = 角 / 内部実行・未ログイン = 点線の枠)。
+   点の色は種類の拾い読みの助けで、役は名前で読む(点は飾り。文字の可読性に依らない)。 */
+.bf-rl {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  border: var(--border-hairline) solid light-dark(var(--color-border-strong), var(--color-night-text-secondary));
+  border-radius: var(--radius-pill);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  white-space: nowrap;
+}
+
+.bf-rl::before {
+  content: '';
+  width: var(--space-2);
+  height: var(--space-2);
+  border-radius: 50%;
+  background: light-dark(var(--color-accent), var(--color-focus-inverse));
+}
+
+.bf-rl--relation {
+  border-radius: var(--radius-sm);
+}
+
+.bf-rl--relation::before {
+  border-radius: 0;
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+  background: light-dark(var(--color-text-muted), var(--color-night-text-secondary));
+}
+
+.bf-rl--internal {
+  border-style: dashed;
+}
+
+.bf-rl--internal::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 var(--border-hairline) currentColor;
+}
+
+.bf-rl--minor {
+  font-size: var(--text-xs);
+  color: light-dark(var(--color-text-muted), var(--color-night-text-secondary));
+}

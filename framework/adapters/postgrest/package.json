@@ -1,0 +1,32 @@
+{
+  "name": "@kaninabe/adapter-postgrest",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PostgREST の形(from().select().eq() / rpc())で runtime の中立のポート(事実の読み取り・定型 RPC・保存点の複合 RPC)を実装する adapter。runtime に依存し、runtime はこれを知らない。",
+  "exports": {
+    ".": {
+      "test": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing/closed-surface": "./testing/closed-surface.mts"
+  },
+  "scripts": {
+    "build": "node ../../runtime/scripts/check-dist-fresh.mjs --invalidate && tsc -p tsconfig.build.json",
+    "check:exports": "node ../../runtime/scripts/check-exports.mjs",
+    "lint": "eslint --max-warnings 0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@kaninabe/runtime": "file:../../runtime"
+  },
+  "devDependencies": {
+    "@kaninabe/lint-config": "file:../../lint-config",
+    "typescript": "^5",
+    "vitest": "^4.1.12"
+  },
+  "files": [
+    "dist"
+  ]
+}

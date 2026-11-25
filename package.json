@@ -1,0 +1,47 @@
+{
+  "name": "kaninabe",
+  "version": "0.1.0",
+  "private": true,
+  "description": "仕組み(framework)と製品(product)を束ねるワークスペースの根。docs と legacy/spec-tools は入れない(検査器のツールチェーンを製品のビルドに混ぜないため。ADR-0013)。検査器の scripts はここから `legacy/spec-tools` の同名へ取り次ぐ。",
+  "workspaces": [
+    "framework/lint-config",
+    "framework/runtime",
+    "framework/adapters/postgrest",
+    "framework/adapters/supabase-session",
+    "framework/adapters/log-axiom"
+  ],
+  "scripts": {
+    "book": "npm --prefix legacy/spec-tools run book --",
+    "build:framework": "npm run build --workspace @kaninabe/runtime --workspace @kaninabe/adapter-postgrest --workspace @kaninabe/adapter-supabase-session --workspace @kaninabe/adapter-log-axiom && node framework/runtime/scripts/check-dist-fresh.mjs --write",
+    "check:exports": "npm run check:exports --workspace @kaninabe/runtime --workspace @kaninabe/adapter-postgrest --workspace @kaninabe/adapter-supabase-session --workspace @kaninabe/adapter-log-axiom",
+    "check:exports:write": "npm run check:exports --workspace @kaninabe/runtime --workspace @kaninabe/adapter-postgrest --workspace @kaninabe/adapter-supabase-session --workspace @kaninabe/adapter-log-axiom -- --write",
+    "deps:check": "npm --prefix legacy/spec-tools run deps:check --",
+    "deps:check:gate": "npm --prefix legacy/spec-tools run deps:check:gate --",
+    "deps:check:offline": "npm --prefix legacy/spec-tools run deps:check:offline --",
+    "docs:build": "npm --prefix docs run build",
+    "generate": "npm --prefix legacy/spec-tools run generate --",
+    "generate:check": "npm --prefix legacy/spec-tools run generate:check --",
+    "hooks:install": "git config core.hooksPath .githooks",
+    "lint:framework": "npm run lint --workspace @kaninabe/lint-config --workspace @kaninabe/runtime --workspace @kaninabe/adapter-postgrest --workspace @kaninabe/adapter-supabase-session --workspace @kaninabe/adapter-log-axiom",
+    "lint:spec-tools": "npm --prefix legacy/spec-tools run lint --",
+    "prepare": "npm run build:framework",
+    "samples:db": "npm --prefix legacy/spec-tools run samples:db --",
+    "secrets:scan": "gitleaks dir . --no-banner --redact",
+    "spec:diff": "npm --prefix legacy/spec-tools run spec:diff --",
+    "test:spec-tools": "npm --prefix legacy/spec-tools run test --",
+    "test:unit": "vitest run --coverage",
+    "typecheck:framework": "npm run typecheck --workspace @kaninabe/runtime --workspace @kaninabe/adapter-postgrest --workspace @kaninabe/adapter-supabase-session --workspace @kaninabe/adapter-log-axiom",
+    "typecheck:spec-tools": "npm --prefix legacy/spec-tools run typecheck --",
+    "verify": "npm --prefix legacy/spec-tools run verify --"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "overrides": {
+    "handlebars": "4.7.10"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^4.1.12",
+    "vitest": "^4.1.12"
+  }
+}

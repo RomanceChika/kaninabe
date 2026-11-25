@@ -1,0 +1,32 @@
+{
+  "name": "@kaninabe/adapter-log-axiom",
+  "version": "0.1.0",
+  "private": true,
+  "description": "セキュリティログをホストの外の Axiom へ送る adapter(取り込みの URL・ヘッダ・形式・応答の読み分け)。`@kaninabe/runtime/log-sink` の中立の口の実装。鍵の有無で有効にするか決める配線は製品が持つ(オプトイン)。Next.js に依らない。",
+  "exports": {
+    ".": {
+      "test": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "node ../../runtime/scripts/check-dist-fresh.mjs --invalidate && tsc -p tsconfig.build.json",
+    "check:exports": "node ../../runtime/scripts/check-exports.mjs",
+    "lint": "eslint --max-warnings 0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@kaninabe/runtime": "file:../../runtime"
+  },
+  "devDependencies": {
+    "@kaninabe/adapter-postgrest": "file:../postgrest",
+    "@kaninabe/lint-config": "file:../../lint-config",
+    "typescript": "^5",
+    "vitest": "^4.1.12"
+  },
+  "files": [
+    "dist"
+  ]
+}

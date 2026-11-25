@@ -1,0 +1,27 @@
+# H5 のテスト用の設定(宣言の範囲に収まっている形)。
+[api]
+enabled = true
+schemas = ["api"]
+
+[auth]
+enabled = true
+enable_signup = true
+enable_anonymous_sign_ins = false
+
+[auth.email]
+enable_signup = false
+
+[auth.sms]
+enable_signup = false
+
+[auth.external.github]
+enabled = true
+
+[auth.external.apple]
+enabled = false
+
+[auth.web3.solana]
+enabled = false
+
+[auth.third_party.firebase]
+enabled = false

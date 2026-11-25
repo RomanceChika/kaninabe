@@ -1,0 +1,330 @@
+{
+  "name": "@kaninabe/runtime",
+  "version": "0.1.0",
+  "private": true,
+  "description": "仕組みの実行時コード(状態機械・権限・ガードの評価器・実行計画の型・実行器・拒否の分類・受信口の段取り)。DB への口は中立のポート(`ports`)で、PostgREST などの接続の方式は adapter パッケージが持つ。製品は依存として import する。",
+  "exports": {
+    "./engine": {
+      "test": "./src/domain/engine/index.ts",
+      "types": "./dist/domain/engine/index.d.ts",
+      "default": "./dist/domain/engine/index.js"
+    },
+    "./engine/types": {
+      "test": "./src/domain/engine/types.ts",
+      "types": "./dist/domain/engine/types.d.ts",
+      "default": "./dist/domain/engine/types.js"
+    },
+    "./plan": {
+      "test": "./src/plan/types.ts",
+      "types": "./dist/plan/types.d.ts",
+      "default": "./dist/plan/types.js"
+    },
+    "./result": {
+      "test": "./src/domain/result.ts",
+      "types": "./dist/domain/result.d.ts",
+      "default": "./dist/domain/result.js"
+    },
+    "./platform-op": {
+      "test": "./src/domain/platform-op.ts",
+      "types": "./dist/domain/platform-op.d.ts",
+      "default": "./dist/domain/platform-op.js"
+    },
+    "./action-error": {
+      "test": "./src/domain/action-error.ts",
+      "types": "./dist/domain/action-error.d.ts",
+      "default": "./dist/domain/action-error.js"
+    },
+    "./step-decision": {
+      "test": "./src/domain/step-decision.ts",
+      "types": "./dist/domain/step-decision.d.ts",
+      "default": "./dist/domain/step-decision.js"
+    },
+    "./form": {
+      "test": "./src/domain/form.ts",
+      "types": "./dist/domain/form.d.ts",
+      "default": "./dist/domain/form.js"
+    },
+    "./url": {
+      "test": "./src/domain/url.ts",
+      "types": "./dist/domain/url.d.ts",
+      "default": "./dist/domain/url.js"
+    },
+    "./navigation": {
+      "test": "./src/navigation/server.ts",
+      "types": "./dist/navigation/server.d.ts",
+      "default": "./dist/navigation/server.js"
+    },
+    "./navigation/client": {
+      "test": "./src/navigation/client.ts",
+      "types": "./dist/navigation/client.d.ts",
+      "default": "./dist/navigation/client.js"
+    },
+    "./text-input": {
+      "test": "./src/domain/text-input.ts",
+      "types": "./dist/domain/text-input.d.ts",
+      "default": "./dist/domain/text-input.js"
+    },
+    "./regexp": {
+      "test": "./src/domain/regexp.ts",
+      "types": "./dist/domain/regexp.d.ts",
+      "default": "./dist/domain/regexp.js"
+    },
+    "./markdown": {
+      "test": "./src/domain/markdown.ts",
+      "types": "./dist/domain/markdown.d.ts",
+      "default": "./dist/domain/markdown.js"
+    },
+    "./neutralize": {
+      "test": "./src/domain/neutralize.ts",
+      "types": "./dist/domain/neutralize.d.ts",
+      "default": "./dist/domain/neutralize.js"
+    },
+    "./markdown-view": {
+      "test": "./src/domain/markdown-view.ts",
+      "types": "./dist/domain/markdown-view.d.ts",
+      "default": "./dist/domain/markdown-view.js"
+    },
+    "./form-changes": {
+      "test": "./src/domain/form-changes.ts",
+      "types": "./dist/domain/form-changes.d.ts",
+      "default": "./dist/domain/form-changes.js"
+    },
+    "./form-refresh": {
+      "test": "./src/domain/form-refresh.ts",
+      "types": "./dist/domain/form-refresh.d.ts",
+      "default": "./dist/domain/form-refresh.js"
+    },
+    "./preflight": {
+      "test": "./src/domain/preflight.ts",
+      "types": "./dist/domain/preflight.d.ts",
+      "default": "./dist/domain/preflight.js"
+    },
+    "./datetime": {
+      "test": "./src/domain/datetime.ts",
+      "types": "./dist/domain/datetime.d.ts",
+      "default": "./dist/domain/datetime.js"
+    },
+    "./ports": {
+      "test": "./src/operation/ports.ts",
+      "types": "./dist/operation/ports.d.ts",
+      "default": "./dist/operation/ports.js"
+    },
+    "./intent": {
+      "test": "./src/domain/intent.ts",
+      "types": "./dist/domain/intent.d.ts",
+      "default": "./dist/domain/intent.js"
+    },
+    "./log-sink": {
+      "test": "./src/operation/log-sink.ts",
+      "types": "./dist/operation/log-sink.d.ts",
+      "default": "./dist/operation/log-sink.js"
+    },
+    "./security-log": {
+      "test": "./src/operation/security-log.ts",
+      "types": "./dist/operation/security-log.d.ts",
+      "default": "./dist/operation/security-log.js"
+    },
+    "./inbound": {
+      "test": "./src/inbound/run-inbound.ts",
+      "types": "./dist/inbound/run-inbound.d.ts",
+      "default": "./dist/inbound/run-inbound.js"
+    },
+    "./secret": {
+      "test": "./src/inbound/secret.ts",
+      "types": "./dist/inbound/secret.d.ts",
+      "default": "./dist/inbound/secret.js"
+    },
+    "./inbound/signature": {
+      "test": "./src/inbound/signature.ts",
+      "types": "./dist/inbound/signature.d.ts",
+      "default": "./dist/inbound/signature.js"
+    },
+    "./http/browser-defense": {
+      "test": "./src/http/browser-defense.ts",
+      "types": "./dist/http/browser-defense.d.ts",
+      "default": "./dist/http/browser-defense.js"
+    },
+    "./http/response": {
+      "test": "./src/http/response.ts",
+      "types": "./dist/http/response.d.ts",
+      "default": "./dist/http/response.js"
+    },
+    "./http/redirect": {
+      "test": "./src/http/redirect.ts",
+      "types": "./dist/http/redirect.d.ts",
+      "default": "./dist/http/redirect.js"
+    },
+    "./http/route-guard": {
+      "test": "./src/http/route-guard.ts",
+      "types": "./dist/http/route-guard.d.ts",
+      "default": "./dist/http/route-guard.js"
+    },
+    "./http/safe-fetch": {
+      "test": "./src/http/safe-fetch.ts",
+      "types": "./dist/http/safe-fetch.d.ts",
+      "default": "./dist/http/safe-fetch.js"
+    },
+    "./http/paid-entry": {
+      "test": "./src/http/paid-entry.ts",
+      "types": "./dist/http/paid-entry.d.ts",
+      "default": "./dist/http/paid-entry.js"
+    },
+    "./http/request-origin": {
+      "test": "./src/http/request-origin.ts",
+      "types": "./dist/http/request-origin.d.ts",
+      "default": "./dist/http/request-origin.js"
+    },
+    "./refusal": {
+      "test": "./src/refusal/classify.ts",
+      "types": "./dist/refusal/classify.d.ts",
+      "default": "./dist/refusal/classify.js"
+    },
+    "./refusal/refusal-codes": {
+      "test": "./src/refusal/refusal-codes.ts",
+      "types": "./dist/refusal/refusal-codes.d.ts",
+      "default": "./dist/refusal/refusal-codes.js"
+    },
+    "./bindings": {
+      "test": "./src/domain/bindings.ts",
+      "types": "./dist/domain/bindings.d.ts",
+      "default": "./dist/domain/bindings.js"
+    },
+    "./template": {
+      "test": "./src/operation/_template/run-plan.ts",
+      "types": "./dist/operation/_template/run-plan.d.ts",
+      "default": "./dist/operation/_template/run-plan.js"
+    },
+    "./template/actor": {
+      "test": "./src/operation/_template/actor.ts",
+      "types": "./dist/operation/_template/actor.d.ts",
+      "default": "./dist/operation/_template/actor.js"
+    },
+    "./template/actor-roles": {
+      "test": "./src/operation/_template/actor-roles.ts",
+      "types": "./dist/operation/_template/actor-roles.d.ts",
+      "default": "./dist/operation/_template/actor-roles.js"
+    },
+    "./template/facts": {
+      "test": "./src/operation/_template/facts.ts",
+      "types": "./dist/operation/_template/facts.d.ts",
+      "default": "./dist/operation/_template/facts.js"
+    },
+    "./template/mfa": {
+      "test": "./src/operation/_template/mfa-requirement.ts",
+      "types": "./dist/operation/_template/mfa-requirement.d.ts",
+      "default": "./dist/operation/_template/mfa-requirement.js"
+    },
+    "./template/outcome": {
+      "test": "./src/operation/_template/outcome.ts",
+      "types": "./dist/operation/_template/outcome.d.ts",
+      "default": "./dist/operation/_template/outcome.js"
+    },
+    "./template/transition": {
+      "test": "./src/operation/_template/transition.ts",
+      "types": "./dist/operation/_template/transition.d.ts",
+      "default": "./dist/operation/_template/transition.js"
+    },
+    "./template/update": {
+      "test": "./src/operation/_template/update.ts",
+      "types": "./dist/operation/_template/update.d.ts",
+      "default": "./dist/operation/_template/update.js"
+    },
+    "./template/update-fields": {
+      "test": "./src/operation/_template/update-fields.ts",
+      "types": "./dist/operation/_template/update-fields.d.ts",
+      "default": "./dist/operation/_template/update-fields.js"
+    },
+    "./template/evaluate": {
+      "test": "./src/operation/_template/run-plan-evaluate.ts",
+      "types": "./dist/operation/_template/run-plan-evaluate.d.ts",
+      "default": "./dist/operation/_template/run-plan-evaluate.js"
+    },
+    "./sql/eq-subject": {
+      "test": "./src/sql/eq-subject.ts",
+      "types": "./dist/sql/eq-subject.d.ts",
+      "default": "./dist/sql/eq-subject.js"
+    },
+    "./sql/sql-condition": {
+      "test": "./src/sql/sql-condition.ts",
+      "types": "./dist/sql/sql-condition.d.ts",
+      "default": "./dist/sql/sql-condition.js"
+    },
+    "./testing/contract/counterexamples": "./testing/contract/counterexamples.mts",
+    "./testing/contract/drivers": "./testing/contract/drivers.mts",
+    "./testing/contract/groups": "./testing/contract/groups.mts",
+    "./testing/contract/record": "./testing/contract/record.mts",
+    "./testing/contract/scripted": "./testing/contract/scripted.mts",
+    "./testing/contract/types": "./testing/contract/types.mts",
+    "./testing/e2e/db-guard": "./testing/e2e/db-guard.mts",
+    "./testing/e2e/next-build-isolation": "./testing/e2e/next-build-isolation.mts",
+    "./testing/e2e/walker-rng": "./testing/e2e/walker-rng.mts",
+    "./testing/equivalence/expect": "./testing/equivalence/expect.mts",
+    "./testing/equivalence/resend": "./testing/equivalence/resend.mts",
+    "./testing/equivalence/oracle": "./testing/equivalence/oracle.mts",
+    "./testing/equivalence/types": "./testing/equivalence/types.mts",
+    "./testing/equivalence/world": "./testing/equivalence/world.mts",
+    "./testing/git/setup-without-git-env": "./testing/git/setup-without-git-env.mts",
+    "./testing/git/without-git-env": "./testing/git/without-git-env.mts",
+    "./testing/harness/ports": "./testing/harness/ports.mts",
+    "./testing/http/next-async-context": "./testing/http/next-async-context.mts",
+    "./testing/http/paid-gate": "./testing/http/paid-gate.mts",
+    "./testing/http/route-isolation": "./testing/http/route-isolation.mts",
+    "./testing/local/db-lock": "./testing/local/db-lock.mts",
+    "./testing/local/docker-alive": "./testing/local/docker-alive.mts",
+    "./testing/local/expected-project": "./testing/local/expected-project.mts",
+    "./testing/local/global-setup": "./testing/local/global-setup.mts",
+    "./testing/local/local-supabase": "./testing/local/local-supabase.mts",
+    "./testing/local/setup-env": "./testing/local/setup-env.mts",
+    "./testing/local/stack-mark": "./testing/local/stack-mark.mts",
+    "./testing/local/supabase-ready": "./testing/local/supabase-ready.mts",
+    "./testing/pg/insert-order": "./testing/pg/insert-order.mts",
+    "./testing/pg/ports": "./testing/pg/ports.mts",
+    "./testing/pg/types": "./testing/pg/types.mts",
+    "./testing/rls/expect": "./testing/rls/expect.mts",
+    "./testing/rls/oracle": "./testing/rls/oracle.mts",
+    "./testing/rls/types": "./testing/rls/types.mts",
+    "./testing/rls/world": "./testing/rls/world.mts",
+    "./testing/save/expect": "./testing/save/expect.mts",
+    "./testing/save/oracle": "./testing/save/oracle.mts",
+    "./testing/save/resend": "./testing/save/resend.mts",
+    "./testing/save/resend-race": "./testing/save/resend-race.mts",
+    "./testing/save/types": "./testing/save/types.mts",
+    "./testing/save/world": "./testing/save/world.mts"
+  },
+  "scripts": {
+    "build": "node scripts/check-dist-fresh.mjs --invalidate && tsc -p tsconfig.build.json",
+    "check:exports": "node scripts/check-exports.mjs",
+    "lint": "eslint --max-warnings 0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "rehype-sanitize": "6.0.0",
+    "rehype-stringify": "10.0.1",
+    "remark-parse": "11.0.0",
+    "remark-rehype": "11.1.2",
+    "unified": "11.0.5",
+    "zod": "^4.6.7"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "next": "^16.0.0"
+  },
+  "devDependencies": {
+    "@kaninabe/lint-config": "file:../lint-config",
+    "@types/hast": "3.0.5",
+    "@types/mdast": "4.0.4",
+    "@types/node": "^24.13.3",
+    "@types/pg": "^8.23.1",
+    "@types/react": "19.2.18",
+    "@vitest/coverage-v8": "^4.1.12",
+    "pg": "^8.23.0",
+    "react": "19.2.8",
+    "typescript": "^5",
+    "vitest": "^4.1.12"
+  },
+  "files": [
+    "dist",
+    "testing"
+  ]
+}

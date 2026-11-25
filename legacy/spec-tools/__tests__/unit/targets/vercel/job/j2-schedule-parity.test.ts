@@ -55,6 +55,14 @@ describe('J2(ホストの後段): Cron の登録の双方向一致', () => {
     expect(messages).toEqual(['ジョブ run_other の口 /api/other/run が app/vercel.json に登録されていません']);
   });
 
+  it('登録との突合の指摘は、両方向とも生成を止めない印(grounding: implementation)が付く', () => {
+    const job = scheduledJob('run_other', { endpoint: '/api/other/run', cron: '0 3 * * *' });
+    const findings = verify(jobModel([job]));
+
+    expect(findings).toHaveLength(2);
+    expect(findings.map((finding) => finding.grounding)).toEqual(['implementation', 'implementation']);
+  });
+
   it('Cron にあるのにカタログに無ければエラー(定期実行が仕様に現れない)', () => {
     const job = notScheduledJob('detect_reachability', 'まだ結線していない');
 

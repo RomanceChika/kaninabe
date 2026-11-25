@@ -38,8 +38,9 @@ export function cronConfigFile(roots: ProductRoots): string | null {
 export const CRON_CONFIG_FILE_NAME = 'vercel.json';
 
 /** J2 の指摘を組み立てる。 */
-function j2Finding(args: Omit<Finding, 'verifier' | 'severity'>): Finding {
-  return { verifier: VERIFIER_ID, severity: 'error', ...args };
+/** Cron の登録(ホストの設定ファイル = 実装の木)との突合の指摘。生成を止めない(`grounding: 'implementation'`)。 */
+function j2Finding(args: Omit<Finding, 'verifier' | 'severity' | 'grounding'>): Finding {
+  return { verifier: VERIFIER_ID, severity: 'error', ...args, grounding: 'implementation' };
 }
 
 /** Cron の登録 1 件。 */

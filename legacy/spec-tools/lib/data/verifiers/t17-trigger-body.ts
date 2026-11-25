@@ -42,6 +42,11 @@
  * 1 文字も含まない migration を宣言していて誰も捕まえなかった —— 「手で書いた」という宣言の
  * 根拠が本当にそこにあるかを言えないなら、宣言は嘘を許す。`supabase/migrations` が無い構成
  * (仕様だけを持つ fixture)ではこの下位検査を何も見ない(K1 / J3 と同じ扱い)。
+ *
+ * 名指しの指摘は手書きの migration(実装の木)との突合なので `grounding: 'implementation'` を付ける。
+ * 生成が migration の置き場を作った直後は手書きの本文がまだ無いのが普通で、そこで生成を止めると
+ * 2 回目の生成(`generate --check`)が 1 回目の出力のせいで止まる。本文の出どころが言えない
+ * 指摘(`finding`)は仕様だけで決まるので印を付けず、生成を止める。
  */
 
 import path from 'node:path';
@@ -266,6 +271,7 @@ function namedMigration(
           `${roots.migrations}/ にあるファイル名をそのまま書く(その関数の本文を作っている migration)。` +
           '名前が違うと「手で書いた」という宣言の根拠がどこにも無い',
         counterexample: { function: fn.name, migration: named },
+        grounding: 'implementation',
       }),
     ];
   }
@@ -278,6 +284,7 @@ function namedMigration(
         'その関数の本文を作っている migration を名指す(`create [or replace] function public.{関数名}` が' +
         'ある側。同じ束の別のファイルや、トリガだけを作り直したファイルを名指していないか確かめる)',
       counterexample: { function: fn.name, migration: named },
+      grounding: 'implementation',
     }),
   ];
 }

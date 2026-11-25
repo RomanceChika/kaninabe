@@ -255,6 +255,13 @@ describe('T17 handwritten が名指した migration', () => {
     expect(messages[0]).toContain('の字は 1 つもありません');
   });
 
+  it('名指しの指摘は手書きの migration との突合なので、生成を止めない印(grounding: implementation)が付く', () => {
+    const missing = verifyTriggerBody(domain(OTHER), dataTableModel([handwritten('99999999999999_nope.sql')]), ROOT, TEST_ROOTS);
+    const wrong = verifyTriggerBody(domain(OTHER), dataTableModel([handwritten('20260101000002_other.sql')]), ROOT, TEST_ROOTS);
+
+    expect([...missing, ...wrong].map((finding) => finding.grounding)).toEqual(['implementation', 'implementation']);
+  });
+
   it('リポジトリの場所を渡さない構成では名指しを見ない', () => {
     expect(
       verifyTriggerBody(domain(OTHER), dataTableModel([handwritten('99999999999999_nope.sql')]), undefined, TEST_ROOTS),

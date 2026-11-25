@@ -133,7 +133,7 @@ export const SETUP_STEPS = [
 function installEnv(env = process.env) {
   const clean = { ...env };
   for (const key of Object.keys(clean)) {
-    if (/^npm_(?:config|lifecycle|package)_/i.test(key) || key === 'NODE_ENV' || key === 'INIT_CWD') delete clean[key];
+    if (/^npm_(?:lifecycle|package)_/i.test(key) || /^npm_config_(?:omit|production|only|include|ignore_scripts|prefix|workspace|workspaces)$/i.test(key) || key === 'NODE_ENV' || key === 'INIT_CWD') delete clean[key];
   }
   return clean;
 }
@@ -151,13 +151,19 @@ export function npmCommand(env = process.env, platform = process.platform) {
 /** Runs `npm ci` in kaninabe's root and in the legacy tool folder; returns the first failing status or 0. */
 function setup(args) {
   if (args.length > 0) {
+    if (args.includes('--help') || args.includes('-h')) {
+      console.log(USAGE);
+      return 0;
+    }
     console.error(`kaninabe setup: takes no arguments (got ${args.join(' ')}); it runs \`npm ci\` in the kaninabe folder and in legacy/spec-tools`);
-    return args.includes('--help') || args.includes('-h') ? 0 : 1;
+    return 1;
   }
   const npm = npmCommand();
   const env = installEnv();
   for (const [dir, npmArgs] of SETUP_STEPS) {
-    const result = spawnSync(npm.command, [...npm.prefix, ...npmArgs], { cwd: path.join(KANINABE_ROOT, dir), stdio: 'inherit', env, shell: npm.shell });
+    const result = npm.shell
+      ? spawnSync(`${npm.command} ${npmArgs.join(' ')}`, { cwd: path.join(KANINABE_ROOT, dir), stdio: 'inherit', env, shell: true })
+      : spawnSync(npm.command, [...npm.prefix, ...npmArgs], { cwd: path.join(KANINABE_ROOT, dir), stdio: 'inherit', env });
     if (result.error !== undefined) console.error(`kaninabe setup: ${result.error.message}`);
     if (result.signal) console.error(`kaninabe setup: npm was stopped by ${result.signal}`);
     if ((result.status ?? 1) !== 0) return result.status ?? 1;

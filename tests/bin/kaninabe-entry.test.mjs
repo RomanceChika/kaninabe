@@ -107,10 +107,11 @@ describe('setup', () => {
   function fakeNpm(failOn) {
     const dir = temp();
     const log = path.join(dir, 'calls.log');
-    writeFileSync(path.join(dir, 'npm'), `#!/bin/sh\necho "$PWD $*" >> "${log}"\ncount=$(wc -l < "${log}")\n[ "$count" = "${failOn}" ] && exit 7\nexit 0\n`);
+    writeFileSync(path.join(dir, 'npm'), `#!/bin/sh\necho "$PWD $*" >> "${log}"\necho "env:$NODE_ENV:$npm_config_omit:$npm_lifecycle_event" >> "${log}.env"\ncount=$(($(wc -l < "${log}")))\n[ "$count" = "${failOn}" ] && exit 7\nexit 0\n`);
     chmodSync(path.join(dir, 'npm'), 0o755);
     const env = { PATH: `${dir}${path.delimiter}${process.env.PATH}`, HOME: dir };
-    return { env, calls: () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : []) };
+    const lines = (file) => (existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n') : []);
+    return { env, calls: () => lines(log), seenEnv: () => lines(`${log}.env`) };
   }
 
   it('runs both installs in order, from a folder with no product.md', () => {
@@ -136,7 +137,9 @@ describe('setup', () => {
     const run = (...args) => spawnSync(process.execPath, [BIN, 'setup', ...args], { cwd: temp(), encoding: 'utf8', env: fake.env });
 
     assert.equal(run('--root', 'x').status, 1);
-    assert.equal(run('--help').status, 0);
+    const help = run('--help');
+    assert.equal(help.status, 0);
+    assert.match(help.stdout, /usage: kaninabe/);
     assert.deepEqual(fake.calls(), []);
   });
 
@@ -148,6 +151,7 @@ describe('setup', () => {
 
     assert.equal(result.status, 0, result.stderr);
     assert.equal(fake.calls().length, 2);
+    assert.deepEqual(fake.seenEnv(), ['env:::', 'env:::']);
   });
 
   it('npmCommand: node on npm-cli.js when it exists, npm.cmd through the shell on Windows, plain npm elsewhere', () => {

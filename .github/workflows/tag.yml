@@ -1,0 +1,65 @@
+name: tag
+
+# Creates the annotated tag v<version> for the commit on dev whose ci run succeeded, when package.json holds a
+# version that has no tag yet. A tag that already exists is never touched (the run says so and succeeds).
+# Tags cannot be updated or deleted afterwards, so every refusal here is deliberate:
+#   - only a successful ci run of a push to dev in this repository (never a fork, never another branch)
+#   - the version must be a semantic version and must not be lower than the highest stable tag
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [dev]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tag-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.head_branch == 'dev'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - name: Create the tag for a new version
+        env:
+          TAGGED_SHA: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "package.json version is not a semantic version: refusing"; exit 1
+          fi
+          tag="v$version"
+          git fetch --tags --force --quiet
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            if ! git merge-base --is-ancestor "$tag" "$TAGGED_SHA"; then
+              echo "::warning::$tag exists but is not an ancestor of the dev tip (history was rewritten?)"
+            fi
+            echo "$tag already exists at $(git rev-parse --short "$tag^{commit}"); nothing to do"
+            exit 0
+          fi
+          highest=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | grep -v -- '-' | sort -V | tail -1 || true)
+          core=${version%%-*}
+          if [ -n "$highest" ] && [ "$(printf '%s\n%s\n' "${highest#v}" "$core" | sort -V | head -1)" != "${highest#v}" ]; then
+            echo "version $version is lower than the highest stable tag $highest: refusing"; exit 1
+          fi
+          if [ -n "$highest" ] && [[ $version != *-* ]] && [ "${highest#v}" = "$core" ]; then
+            echo "$highest already exists"; exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "$tag" "$TAGGED_SHA"
+          git push origin "refs/tags/$tag"
+          echo "created $tag at $(git rev-parse --short "$TAGGED_SHA")"

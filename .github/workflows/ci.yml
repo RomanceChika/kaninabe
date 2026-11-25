@@ -64,6 +64,8 @@ jobs:
       - run: npm run lint:framework
       - run: npm run typecheck:spec-tools
       - run: npm run lint:spec-tools
+      - run: npm run check:fence
+      - run: npm run test:bin
       - run: npm run verify -- --fail-on-unclassified
       - run: npm run test:unit
       - run: npm run test:spec-tools

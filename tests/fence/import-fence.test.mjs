@@ -4,7 +4,11 @@
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { checkTree, specifiersOf, violationsOf } from '../../scripts/check-import-fence.mjs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { checkTree, specifiersOf, violationsOf, walk } from '../../scripts/check-import-fence.mjs';
 
 /** Rules broken by `text` when it is the content of `file`. */
 function rulesFor(file, text) {
@@ -64,8 +68,48 @@ describe('violationsOf', () => {
   });
 });
 
+describe('computed specifiers and escapes', () => {
+  it('flags a specifier it cannot read in bin, scripts, tests and framework code', () => {
+    assert.equal(rulesFor('bin/a.mjs', 'await import(name);').length, 1);
+    assert.equal(rulesFor('framework/runtime/src/a.ts', 'await import(`../x/${n}`);').length, 1);
+    assert.equal(rulesFor('framework/runtime/src/a.ts', "require.resolve('./a');").length, 0);
+    assert.equal(rulesFor('framework/runtime/src/a.ts', "require.resolve('../../../legacy/x');").length, 1);
+    assert.equal(rulesFor('framework/runtime/src/a.ts', "createRequire(import.meta.url)('x');").length, 1);
+    assert.deepEqual(rulesFor('legacy/spec-tools/lib/a.ts', 'await import(name);'), []);
+  });
+
+  it('flags a path that leaves the repository, and @kaninabe/v2 from legacy; fixtures folders are not exempt', () => {
+    assert.equal(rulesFor('framework/runtime/src/a.ts', "import x from '../../../../app/src/x.js';").length, 1);
+    assert.equal(rulesFor('legacy/spec-tools/lib/a.ts', "import x from '../../../../../app/x.js';").length, 1);
+    assert.equal(rulesFor('legacy/spec-tools/lib/a.ts', "import x from '@kaninabe/v2/x';").length, 1);
+    assert.equal(rulesFor('framework/runtime/fixtures/a.ts', "import x from '../../../legacy/x.js';").length, 1);
+  });
+});
+
 describe('the real tree', () => {
-  it('has no violation', () => {
+  it('scans many files and has no violation', () => {
+    assert.ok(walk(path.resolve('framework')).length > 100);
     assert.deepEqual(checkTree(), []);
+  });
+
+  it('a planted violation is reported, and the command exits 1', () => {
+    const tree = realpathSync(mkdtempSync(path.join(tmpdir(), 'fence-')));
+    try {
+      mkdirSync(path.join(tree, 'framework/runtime/src'), { recursive: true });
+      mkdirSync(path.join(tree, 'legacy/spec-tools'), { recursive: true });
+      writeFileSync(path.join(tree, 'framework/runtime/src/a.ts'), "import x from '../../../legacy/y.js';\n");
+      writeFileSync(path.join(tree, 'legacy/spec-tools/b.ts'), 'export {};\n');
+      assert.equal(checkTree(tree).length, 1);
+      assert.deepEqual(checkTree(tree).map((l) => l.split('  ')[0]), ['framework/runtime/src/a.ts:1']);
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+    const empty = realpathSync(mkdtempSync(path.join(tmpdir(), 'fence-empty-')));
+    try {
+      assert.equal(checkTree(empty).length, 1);
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+    }
+    assert.equal(spawnSync(process.execPath, ['scripts/check-import-fence.mjs'], { encoding: 'utf8' }).status, 0);
   });
 });

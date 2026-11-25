@@ -8,7 +8,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -92,5 +92,49 @@ describe('commands', () => {
     const unknown = run('nope');
     assert.equal(unknown.status, 1);
     assert.match(unknown.stderr, /unknown command 'nope'/);
+  });
+});
+
+describe('end to end', () => {
+  const SAMPLE = path.join(ROOT, 'legacy/spec-tools/__tests__/fixtures/samples/library');
+  const run = (cwd, ...args) => spawnSync(process.execPath, [BIN, ...args], { cwd, encoding: 'utf8', env: { ...process.env, INIT_CWD: '' } });
+
+  /** A product tree (the library sample). The nested-copy choice of root is covered by the resolveRoot tests above. */
+  function productTree() {
+    const product = temp();
+    cpSync(SAMPLE, product, { recursive: true });
+    return { product, sub: path.join(product, 'docs') };
+  }
+
+  it('started through a symlink, it still runs', () => {
+    const dir = temp();
+    const link = path.join(dir, 'kaninabe-link.mjs');
+    symlinkSync(BIN, link);
+
+    const result = spawnSync(process.execPath, [link, '--help'], { encoding: 'utf8' });
+
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /usage: kaninabe/);
+  });
+
+  it('verify from a folder inside the product reads that product, and a relative path argument is resolved from where it was typed', () => {
+    const { product, sub } = productTree();
+
+    const bare = run(sub, 'verify');
+    assert.equal(bare.status, 0, bare.stdout + bare.stderr);
+    assert.match(bare.stdout, /集約 4 件/);
+
+    const withPath = run(product, 'verify', 'docs/specs/domain');
+    assert.equal(withPath.status, 0, withPath.stdout + withPath.stderr);
+    assert.match(withPath.stdout, /集約 4 件/);
+  });
+
+  it('a path argument outside the root is refused with exit 1', () => {
+    const { product } = productTree();
+
+    const result = run(product, 'verify', '/tmp');
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /is not inside the product root/);
   });
 });

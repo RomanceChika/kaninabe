@@ -10,12 +10,13 @@
  * Imports: `node:` built-ins only (see scripts/check-import-fence.mjs).
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
-const KANINABE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const SELF = realpathSync(fileURLToPath(import.meta.url));
+const KANINABE_ROOT = path.resolve(path.dirname(SELF), '..');
 const LEGACY = path.join(KANINABE_ROOT, 'legacy', 'spec-tools');
 const RUNTIME_SCRIPTS = path.join(KANINABE_ROOT, 'framework', 'runtime', 'scripts');
 const PRODUCT_DECL = 'product.md';
@@ -39,6 +40,15 @@ commands: ${Object.keys(COMMANDS).join(', ')}
         current one that holds product.md and is not kaninabe itself; when only kaninabe
         itself has one (developing kaninabe), that one.`;
 
+/** Real path when the directory exists (symlinks and case folded the same way for every comparison). */
+function real(dir) {
+  try {
+    return realpathSync(dir);
+  } catch {
+    return dir;
+  }
+}
+
 /**
  * Picks the product root: an explicit `--root`, else the nearest ancestor holding product.md that is not
  * kaninabe's own root, else kaninabe's own root (kaninabe developed on its own).
@@ -48,6 +58,7 @@ commands: ${Object.keys(COMMANDS).join(', ')}
  * @returns {{ok: true, root: string, rest: string[]} | {ok: false, message: string}}
  */
 export function resolveRoot(args, cwd, kaninabeRoot = KANINABE_ROOT) {
+  const kaninabe = real(kaninabeRoot);
   const rest = [];
   let explicit;
   for (let i = 0; i < args.length; i += 1) {
@@ -64,25 +75,47 @@ export function resolveRoot(args, cwd, kaninabeRoot = KANINABE_ROOT) {
     }
   }
   if (explicit !== undefined) {
-    const root = path.resolve(cwd, explicit);
+    const root = real(path.resolve(cwd, explicit));
     if (!existsSync(path.join(root, PRODUCT_DECL))) return { ok: false, message: `no ${PRODUCT_DECL} in ${root}` };
     return { ok: true, root, rest };
   }
   let own = false;
-  for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
+  for (let dir = real(path.resolve(cwd)); ; dir = path.dirname(dir)) {
     if (existsSync(path.join(dir, PRODUCT_DECL))) {
-      if (dir !== kaninabeRoot) return { ok: true, root: dir, rest };
+      if (dir !== kaninabe) return { ok: true, root: dir, rest };
       own = true;
     }
     if (path.dirname(dir) === dir) break;
   }
-  if (own) return { ok: true, root: kaninabeRoot, rest };
+  if (own) return { ok: true, root: kaninabe, rest };
   return { ok: false, message: `no ${PRODUCT_DECL} found above ${path.resolve(cwd)}; pass --root` };
 }
 
+/**
+ * Makes positional arguments absolute against the directory the command was typed in (the legacy CLI would
+ * otherwise resolve them against its own folder), and refuses a path whose nearest product.md is not the root
+ * (the legacy verifier searches upward from a given path and ignores --root).
+ */
+export function absolutePaths(rest, cwd, root) {
+  const out = [];
+  for (const arg of rest) {
+    if (arg.startsWith('--')) {
+      out.push(arg);
+      continue;
+    }
+    const abs = real(path.resolve(cwd, arg));
+    let nearest = abs;
+    while (!existsSync(path.join(nearest, PRODUCT_DECL)) && path.dirname(nearest) !== nearest) nearest = path.dirname(nearest);
+    if (nearest !== root) return { ok: false, message: `${arg} is not inside the product root ${root}` };
+    out.push(abs);
+  }
+  return { ok: true, rest: out };
+}
+
 /** Runs one node script, inheriting the terminal; returns its exit status. */
-function runNode(args, cwd) {
-  const result = spawnSync(process.execPath, args, { cwd, stdio: 'inherit', env: process.env });
+function runNode(args, cwd, env = process.env) {
+  const result = spawnSync(process.execPath, args, { cwd, stdio: 'inherit', env });
+  if (result.error !== undefined) console.error(`kaninabe: ${result.error.message}`);
   return result.status ?? 1;
 }
 
@@ -112,9 +145,18 @@ function main(argv) {
     console.error('kaninabe: tools not installed; run `npm --prefix legacy/spec-tools ci` in the kaninabe folder');
     return 1;
   }
-  return runNode([tsx, path.join(LEGACY, 'cli', entry.cli), '--root', resolved.root, ...resolved.rest], LEGACY);
+  const here = process.cwd();
+  // Only `verify` takes a path (a spec folder). Other commands have options with values (`--port 3000`), which must pass through untouched;
+  // they resolve relative arguments from INIT_CWD, which is set below to the directory the command was typed in.
+  const paths = command === 'verify' ? absolutePaths(resolved.rest, here, resolved.root) : { ok: true, rest: resolved.rest };
+  if (!paths.ok) {
+    console.error(`kaninabe ${command}: ${paths.message}`);
+    return 1;
+  }
+  const env = { ...process.env, INIT_CWD: here };
+  return runNode([tsx, path.join(LEGACY, 'cli', entry.cli), '--root', resolved.root, ...paths.rest], LEGACY, env);
 }
 
-if (process.argv[1] !== undefined && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] !== undefined && real(path.resolve(process.argv[1])) === SELF) {
   process.exit(main(process.argv.slice(2)));
 }

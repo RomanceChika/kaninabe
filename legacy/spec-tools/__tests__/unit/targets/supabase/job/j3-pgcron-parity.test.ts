@@ -14,6 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { verifyPgCronParity } from '../../../../../lib/targets/supabase/job/j3-pgcron-parity.js';
+import { pgCronSkipNote } from '../../../../../lib/verify/jobs-group.js';
 import { jobModel, scheduledJob } from '../../../../helpers/job-builder.js';
 import { TEST_ROOTS } from '../../../../helpers/product-roots.js';
 
@@ -81,5 +82,26 @@ describe('J3: pg_cron ジョブの接地', () => {
 
   it('カタログを読めていなければ何も見ない', () => {
     expect(verifyPgCronParity({ roots: TEST_ROOTS, jobs: { available: true, catalog: null }, repoRoot: REPO_ROOT })).toEqual([]);
+  });
+
+  it('migration の置き場そのものが無ければ突合せず、実行ログの一言がスキップを名指す', () => {
+    const roots = { ...TEST_ROOTS, migrations: 'no-such-migrations' };
+    const jobs = jobModel([scheduledJob('ghost_job', { cron: '*/10 * * * *', scheduler: 'database' })]);
+
+    expect(verifyPgCronParity({ roots, jobs, repoRoot: REPO_ROOT })).toEqual([]);
+    expect(pgCronSkipNote(jobs, REPO_ROOT, roots)).toBe(
+      '(no-such-migrations が無いため、scheduler: database のジョブ 1 件の J3 の cron.schedule の突合はスキップ)',
+    );
+  });
+
+  it('置き場が在れば実行ログの一言は出ない(突合する)', () => {
+    expect(pgCronSkipNote(jobModel([goodJob()]), REPO_ROOT, TEST_ROOTS)).toBe('');
+  });
+
+  it('scheduler: database のジョブが無ければ、置き場が無くても一言は出ない', () => {
+    const roots = { ...TEST_ROOTS, migrations: 'no-such-migrations' };
+    const job = scheduledJob('run_due_jobs', { cron: '*/10 * * * *', scheduler: 'host' });
+
+    expect(pgCronSkipNote(jobModel([job]), REPO_ROOT, roots)).toBe('');
   });
 });

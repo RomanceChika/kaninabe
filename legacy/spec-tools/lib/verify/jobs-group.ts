@@ -20,7 +20,8 @@ import type { ProductLayout } from '../model/product/layout.js';
 import type { ProductRoots } from '../model/product/types.js';
 import type { ActionSpecModel } from '../model/trace/types.js';
 import type { ScreenSpecModel } from '../model/screen/types.js';
-import { detectRepoRoot } from '../io/paths.js';
+import path from 'node:path';
+import { detectRepoRoot, isDirectory } from '../io/paths.js';
 
 /**
  * ジョブ仕様検証(J 群)を実行し、実行状況を一行で残す。
@@ -77,9 +78,10 @@ export function runJobs(
     for (const line of closedWorldLines(result, [])) log(line);
     return result.findings;
   }
-  const scope = result.appGrounded
+  const baseScope = result.appGrounded
     ? 'J1〜J7'
     : 'J1〜J7(実装の木が無いため J2 の実装・Route Handler・Cron 登録の突合はスキップ。HTTP の入口の閉世界も実装の木を走査するのでスキップ)';
+  const scope = baseScope + pgCronSkipNote(jobs, detectRepoRoot(domainRoot), roots);
   const unchecked =
     result.scanOriginUnchecked.length === 0
       ? ''
@@ -133,4 +135,18 @@ function closedWorldLines(result: JobRunResult, collisionGaps: readonly Unusable
     lines.push('J2: 未実施 — 置き場の配置が HTTP の入口(http-entry)の逆引きを持たず走査の根を決められないため、実装の木の入口がどの宣言に当たるか(閉世界)は見ていません。');
   }
   return lines;
+}
+
+/**
+ * `scheduler: database` のジョブがあるのに migration の置き場が無いとき、J3(cron.schedule の突合)を実行しなかったことの一言。
+ * J3 は置き場が無い製品では突合しない(`j3-pgcron-parity.ts`)ので、黙って緑に見せないためにここで名指す。当たらなければ空文字。
+ *
+ * @param jobs 読み込んだジョブカタログ
+ * @param repoRoot リポジトリルートの絶対パス
+ * @param roots 製品の根(migration の置き場)
+ */
+export function pgCronSkipNote(jobs: JobSpecModel, repoRoot: string, roots: ProductRoots): string {
+  const databaseJobs = (jobs.catalog?.jobs ?? []).filter((decl) => decl.schedule?.scheduler === 'database').length;
+  if (databaseJobs === 0 || isDirectory(path.join(repoRoot, roots.migrations))) return '';
+  return `(${roots.migrations} が無いため、scheduler: database のジョブ ${databaseJobs} 件の J3 の cron.schedule の突合はスキップ)`;
 }

@@ -15,10 +15,14 @@
  * (再スケジュールは新しい migration で unschedule → schedule し直す運用のため)。
  * その場合は**ファイル名(≒適用順)が最後のものを現在の登録とみなす**
  * (migrations.md の採番規則により、ファイル名の辞書順 = 適用順)。
+ *
+ * **migration の置き場そのものが無い製品では突合しない**(T17 が手書きの本文の実在を見るのと同じ線。仕様だけを先に書いて
+ * migration の木をまだ持たない段の製品を、登録の欠けで止めない)。実行しなかったことは J 群の実行ログが名指す
+ * (`lib/verify/jobs-group.ts` の `pgCronSkipNote`)。置き場が在れば、空でも突合する(空の置き場は登録の欠けとして赤になる)。
  */
 
 import path from 'node:path';
-import { toRelative, walkFiles } from '../../../io/paths.js';
+import { isDirectory, toRelative, walkFiles } from '../../../io/paths.js';
 import { tryReadText } from '../../../io/read-text.js';
 import type { Finding } from '../../../kernel/finding.js';
 import type { JobDecl, JobSpecModel } from '../../../model/job/types.js';
@@ -96,6 +100,7 @@ export function verifyPgCronParity(input: PgCronParityInput): Finding[] {
     (decl): decl is JobDecl & { schedule: NonNullable<JobDecl['schedule']> } =>
       decl.schedule?.scheduler === 'database' && decl.schedule.cron !== undefined,
   );
+  if (!isDirectory(path.join(input.repoRoot, input.roots.migrations))) return [];
   const registered = readPgCronEntries(input.repoRoot, input.roots.migrations);
   const findings: Finding[] = [];
   const declaredNames = new Set<string>();

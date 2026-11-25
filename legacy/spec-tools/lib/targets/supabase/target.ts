@@ -15,14 +15,14 @@
 
 import type { Target } from '../../target-api/contract.js';
 import { SUPABASE_AUTH_CONFIG } from './config/h5-auth-config.js';
-import { verifyPgCronParity } from './job/j3-pgcron-parity.js';
+import { pgCronSkipped, verifyPgCronParity } from './job/j3-pgcron-parity.js';
 import { SUPABASE_PLATFORM_PROFILE } from './platform-profile.js';
 
 /** Supabase(プラットフォーム)の後段。 */
 export const SUPABASE_TARGET: Target = {
   id: 'supabase',
   role: 'platform',
-  verifiers: [{ group: 'job', id: 'J3', verify: verifyPgCronParity }],
+  verifiers: [{ group: 'job', id: 'J3', verify: verifyPgCronParity, skipped: pgCronSkipped }],
   generators: [],
   platform: SUPABASE_PLATFORM_PROFILE,
   authConfig: SUPABASE_AUTH_CONFIG,

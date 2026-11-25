@@ -13,8 +13,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { verifyPgCronParity } from '../../../../../lib/targets/supabase/job/j3-pgcron-parity.js';
-import { pgCronSkipNote } from '../../../../../lib/verify/jobs-group.js';
+import { pgCronSkipped, verifyPgCronParity } from '../../../../../lib/targets/supabase/job/j3-pgcron-parity.js';
 import { jobModel, scheduledJob } from '../../../../helpers/job-builder.js';
 import { TEST_ROOTS } from '../../../../helpers/product-roots.js';
 
@@ -84,24 +83,34 @@ describe('J3: pg_cron ジョブの接地', () => {
     expect(verifyPgCronParity({ roots: TEST_ROOTS, jobs: { available: true, catalog: null }, repoRoot: REPO_ROOT })).toEqual([]);
   });
 
-  it('migration の置き場そのものが無ければ突合せず、実行ログの一言がスキップを名指す', () => {
-    const roots = { ...TEST_ROOTS, migrations: 'no-such-migrations' };
+  it('仕様だけの段(migration の置き場も実装の木も無い)では突合せず、後段の一言がスキップを名指す', () => {
+    const roots = { ...TEST_ROOTS, migrations: 'no-such-migrations', app: 'no-such-app' };
     const jobs = jobModel([scheduledJob('ghost_job', { cron: '*/10 * * * *', scheduler: 'database' })]);
 
     expect(verifyPgCronParity({ roots, jobs, repoRoot: REPO_ROOT })).toEqual([]);
-    expect(pgCronSkipNote(jobs, REPO_ROOT, roots)).toBe(
-      '(no-such-migrations が無いため、scheduler: database のジョブ 1 件の J3 の cron.schedule の突合はスキップ)',
+    expect(pgCronSkipped({ roots, jobs, repoRoot: REPO_ROOT })).toBe(
+      'no-such-migrations と実装の木が無いため、scheduler: database のジョブ 1 件の J3 の cron.schedule の突合はスキップ',
     );
   });
 
-  it('置き場が在れば実行ログの一言は出ない(突合する)', () => {
-    expect(pgCronSkipNote(jobModel([goodJob()]), REPO_ROOT, TEST_ROOTS)).toBe('');
+  it('実装の木が在るのに migration の置き場が無ければ突合する(置き場の綴りの誤りを黙って緑にしない)', () => {
+    const roots = { ...TEST_ROOTS, migrations: 'no-such-migrations' };
+    const jobs = jobModel([scheduledJob('ghost_job', { cron: '*/10 * * * *', scheduler: 'database' })]);
+
+    expect(verifyPgCronParity({ roots, jobs, repoRoot: REPO_ROOT }).map((finding) => finding.message)).toEqual([
+      'ジョブ ghost_job(scheduler: database)が no-such-migrations の cron.schedule に登録されていません',
+    ]);
+    expect(pgCronSkipped({ roots, jobs, repoRoot: REPO_ROOT })).toBeNull();
   });
 
-  it('scheduler: database のジョブが無ければ、置き場が無くても一言は出ない', () => {
-    const roots = { ...TEST_ROOTS, migrations: 'no-such-migrations' };
+  it('置き場が在れば一言は出ない(突合する)', () => {
+    expect(pgCronSkipped({ roots: TEST_ROOTS, jobs: jobModel([goodJob()]), repoRoot: REPO_ROOT })).toBeNull();
+  });
+
+  it('cron を持つ scheduler: database のジョブが無ければ、仕様だけの段でも一言は出ない', () => {
+    const roots = { ...TEST_ROOTS, migrations: 'no-such-migrations', app: null };
     const job = scheduledJob('run_due_jobs', { cron: '*/10 * * * *', scheduler: 'host' });
 
-    expect(pgCronSkipNote(jobModel([job]), REPO_ROOT, roots)).toBe('');
+    expect(pgCronSkipped({ roots, jobs: jobModel([job]), repoRoot: REPO_ROOT })).toBeNull();
   });
 });

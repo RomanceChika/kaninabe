@@ -38,7 +38,7 @@ import { REACHABILITY_VERIFIER_IDS } from './z3-reachability.js';
  * 載せるのは**実装の木を読む検査だけ**で、免除ではない(読み込み・綴り・参照の検査は載せない)。載せ忘れは単体テストが見る:
  * 実装の木が空の題材を検証して出る error は、検査 ID がここにあるか、指摘に `grounding: 'implementation'` の印があること(`generation-blockers.test.ts`)。
  *
- * **仕様だけで決まる指摘と実装との突合の指摘を同じ ID が出す検査**(A2 の置き場・G8 の宣言・H2 の着地・J2 の接地・V10 の執行点)は、ここに載せず、
+ * **仕様だけで決まる指摘と実装との突合の指摘を同じ ID が出す検査**(A2 の置き場・G8 の宣言・H2 の着地・J2 の接地と Cron の登録・T17 の手書きの migration の名指し・V10 の執行点)は、ここに載せず、
  * 突合の側の指摘にだけ印(`Finding.grounding`)を付けた。印の付いた指摘は止めず、印の無い指摘(仕様の誤り)は止める。
  */
 export const IMPLEMENTATION_COMPARISON_CHECK_IDS: readonly string[] = [

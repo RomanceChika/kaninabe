@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { verifyPgCronParity } from '../../../../lib/targets/supabase/job/j3-pgcron-parity.js';
+import { pgCronSkipped, verifyPgCronParity } from '../../../../lib/targets/supabase/job/j3-pgcron-parity.js';
 import { SUPABASE_PLATFORM_PROFILE } from '../../../../lib/targets/supabase/platform-profile.js';
 import { SUPABASE_TARGET } from '../../../../lib/targets/supabase/target.js';
 import { specModel } from '../../../helpers/model-builder.js';
@@ -35,5 +35,13 @@ describe('SUPABASE_TARGET', () => {
     expect(registered).toEqual(verifyPgCronParity(input));
     // 片方向(カタログにあって migration に無い)と逆方向(fixture の run_due_jobs がカタログに無い)の 2 件。
     expect(registered.map((finding) => finding.verifier)).toEqual(['J3', 'J3']);
+  });
+
+  it('登録した J3 は、突合しなかった分の一言(skipped)も後段が言う(コアは中身を知らない)', () => {
+    const jobs = jobModel([scheduledJob('spec_only', { scheduler: 'database', cron: '5 5 * * *' })]);
+    const input = { domain: specModel([]), jobs, repoRoot: REPO_ROOT, roots: { ...TEST_ROOTS, migrations: 'none', app: null } };
+    const note = SUPABASE_TARGET.verifiers[0]?.skipped?.(input);
+    expect(note).toBe(pgCronSkipped(input));
+    expect(note).toContain('J3');
   });
 });

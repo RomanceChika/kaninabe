@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { COMMANDS, resolveRoot } from '../../bin/kaninabe.mjs';
+import { COMMANDS, SETUP_STEPS, resolveRoot } from '../../bin/kaninabe.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const BIN = path.join(ROOT, 'bin', 'kaninabe.mjs');
@@ -92,6 +92,19 @@ describe('commands', () => {
     const unknown = run('nope');
     assert.equal(unknown.status, 1);
     assert.match(unknown.stderr, /unknown command 'nope'/);
+  });
+});
+
+describe('setup', () => {
+  it('installs from the lockfile in kaninabe root and in the legacy tool folder, both of which exist with a lockfile', () => {
+    for (const [dir, args] of SETUP_STEPS) {
+      assert.deepEqual(args, ['ci']);
+      assert.ok(existsSync(path.join(ROOT, dir, 'package-lock.json')), dir);
+    }
+  });
+
+  it('is listed in the usage text', () => {
+    assert.match(spawnSync(process.execPath, [BIN, '--help'], { encoding: 'utf8' }).stdout, /setup/);
   });
 });
 

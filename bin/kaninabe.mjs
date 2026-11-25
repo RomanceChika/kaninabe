@@ -34,7 +34,10 @@ export const COMMANDS = {
 
 const USAGE = `usage: kaninabe <command> [--root <product-root>] [command options]
 
-commands: ${Object.keys(COMMANDS).join(', ')}
+commands: setup, ${Object.keys(COMMANDS).join(', ')}
+
+setup   installs what kaninabe needs from a lockfile (npm ci here and in legacy/spec-tools); run it once
+        after the folder is mounted and again after the pin moves
 
 --root  directory that holds product.md. Without it, the nearest directory above the
         current one that holds product.md and is not kaninabe itself; when only kaninabe
@@ -119,8 +122,26 @@ function runNode(args, cwd, env = process.env) {
   return result.status ?? 1;
 }
 
+/** The two lockfile installs `setup` runs: [directory relative to kaninabe's root, npm arguments]. */
+export const SETUP_STEPS = [
+  ['.', ['ci']],
+  ['legacy/spec-tools', ['ci']],
+];
+
+/** Runs `npm ci` in kaninabe's root and in the legacy tool folder; returns the first failing status or 0. */
+function setup() {
+  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  for (const [dir, args] of SETUP_STEPS) {
+    const result = spawnSync(npm, args, { cwd: path.join(KANINABE_ROOT, dir), stdio: 'inherit', env: process.env });
+    if (result.error !== undefined) console.error(`kaninabe setup: ${result.error.message}`);
+    if ((result.status ?? 1) !== 0) return result.status ?? 1;
+  }
+  return 0;
+}
+
 function main(argv) {
   const [command, ...args] = argv;
+  if (command === 'setup') return setup();
   if (command === undefined || command === '--help' || command === '-h') {
     console.log(USAGE);
     return command === undefined ? 1 : 0;

@@ -8,6 +8,7 @@ Status: pre-1.0 (0.1.0). The spec DSL, the checks and the shape of generated out
 
 | path | what it is |
 |---|---|
+| `bin/kaninabe.mjs` | the one command-line entry (`verify`, `generate`, ...). It decides the product root and passes it explicitly |
 | `legacy/spec-tools` | spec parser, verifiers and generators (`verify`, `generate`) |
 | `framework/runtime`, `framework/adapters/*` | runtime packages used by generated code |
 | `framework/lint-config` | lint rules for generated and hand-written code |
@@ -23,7 +24,14 @@ npm ci && npm --prefix legacy/spec-tools ci
 npm run verify -- --fail-on-unclassified
 npm run test:unit
 npm run test:spec-tools
+npm run check:fence && npm run test:bin
+
+# from a product that mounts kaninabe as ./kaninabe
+node kaninabe/bin/kaninabe.mjs verify
+node kaninabe/bin/kaninabe.mjs generate
 ```
+
+`scripts/check-import-fence.mjs` checks who may import whom (see its header for the rules).
 
 ## Secret safety
 

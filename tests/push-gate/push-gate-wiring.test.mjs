@@ -1226,7 +1226,7 @@ describe('gitleaks-public.sh git: a history that cannot be read is exit 2, never
   });
 });
 
-describe('what gitleaks says it scanned must match our own list (review round 9, L2)', () => {
+describe('what gitleaks says it scanned is checked against our own list (review round 9, L2)', () => {
   const words2 = () => words();
   const wrapper = path.join(scripts, 'gitleaks-public.sh');
   const wrapWith = (scanned) => {
@@ -1237,16 +1237,28 @@ describe('what gitleaks says it scanned must match our own list (review round 9,
     return { status: r.status, out: r.stdout + r.stderr };
   };
 
-  it('the gate stops (2) when gitleaks scanned 0 commits of a non-empty list, scanned another number, or says nothing', () => {
+  it('the gate stops (2) when gitleaks scanned 0 commits of a list that adds lines, more commits than the list, or says nothing', () => {
     commit(sb, { 'b.txt': 'two\n' });
-    for (const scanned of ['0', '1', '3', 'none']) {
+    for (const scanned of ['0', '3', 'none']) {
       const r = runGate(sb, ['--mode', 'words', '--all'], { ...words2(), SHIM_SCANNED: scanned });
       assert.equal(r.status, 2, `${scanned}: ${r.out}`);
       assert.ok(r.out.includes('push-gate: step gitleaks could not confirm what it scanned'), r.out);
       assert.ok(!r.out.includes('push-gate: passed'), r.out);
     }
-    const ok = runGate(sb, ['--mode', 'words', '--all'], { ...words2(), SHIM_SCANNED: '2' });
-    assert.equal(ok.status, 0, ok.out);
+    // gitleaks counts only the commits whose patch has something to scan (a deletion-only or empty commit is not counted),
+    // so fewer than the list is fine when it is not zero
+    for (const scanned of ['1', '2']) {
+      const ok = runGate(sb, ['--mode', 'words', '--all'], { ...words2(), SHIM_SCANNED: scanned });
+      assert.equal(ok.status, 0, `${scanned}: ${ok.out}`);
+    }
+  });
+
+  it('0 scanned is right for a list whose commits add nothing (a deletion-only commit), and not an error', () => {
+    const before = git(sb, 'rev-parse', 'HEAD');
+    removeFile(sb, 'a.txt');
+    const r = runGate(sb, ['--mode', 'words', '--base', before], { ...words2(), SHIM_SCANNED: '0' });
+    assert.equal(r.status, 0, r.out);
+    assert.ok(r.out.includes('(mode words, 1 commit(s))'), r.out);
   });
 
   it('the same check applies when gitleaks reports findings', () => {
@@ -1261,16 +1273,30 @@ describe('what gitleaks says it scanned must match our own list (review round 9,
     assert.ok(!r.out.includes('commits scanned'), r.out);
   });
 
-  it('the old-step wrapper (git) stops (2) on 0, on another number and on no count; an equal count is ok', () => {
+  it('the old-step wrapper (git) stops (2) on 0 of a list that adds lines, on more than the list and on no count; 1 or 2 is ok', () => {
     commit(sb, { 'b.txt': 'two\n' });
-    for (const scanned of [0, 1, 3, null]) {
+    for (const scanned of [0, 3, null]) {
       const r = wrapWith(scanned);
       assert.equal(r.status, 2, `${scanned}: ${r.out}`);
       assert.ok(r.out.includes('gitleaks git: could not confirm what it scanned'), r.out);
     }
-    const ok = wrapWith(2);
-    assert.equal(ok.status, 0, ok.out);
-    assert.ok(!ok.out.includes('commits scanned'), 'the tool log is not printed');
+    for (const scanned of [1, 2]) {
+      const ok = wrapWith(scanned);
+      assert.equal(ok.status, 0, `${scanned}: ${ok.out}`);
+      assert.ok(!ok.out.includes('commits scanned'), 'the tool log is not printed');
+    }
+  });
+
+  it('0 scanned is right for a history of one empty commit', () => {
+    const d = path.join(sb.dir, 'empty-commit-repo');
+    mkdirSync(d);
+    spawnSync('git', ['-c', 'user.name=Tester', '-c', 'user.email=tester@users.noreply.github.com', 'init', '-q', '-b', 'main'], { cwd: d, env: sb.env() });
+    spawnSync('git', ['-c', 'user.name=Tester', '-c', 'user.email=tester@users.noreply.github.com', 'commit', '-q', '--allow-empty', '-m', 'empty'], { cwd: d, env: sb.env() });
+    const f = path.join(sb.dir, 'zero-gitleaks');
+    writeFileSync(f, '#!/bin/sh\necho "INF 0 commits scanned." >&2\nexit 0\n');
+    chmodSync(f, 0o755);
+    const r = spawnSync('/bin/sh', [wrapper, 'git', d], { cwd: d, encoding: 'utf8', env: sb.env({ GL_BIN: f }) });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
   });
 });
 

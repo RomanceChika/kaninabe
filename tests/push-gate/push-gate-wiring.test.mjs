@@ -491,6 +491,37 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     assert.ok(histories[0].includes(git(sb, 'rev-parse', 'HEAD')) && !histories[0].includes(before), histories[0]);
   });
 
+  it('prints the wall time of each step and the total in whole seconds, as numbers only (review round 12, C1a)', () => {
+    commit(sb, { '.github/workflows/ci.yml': 'name: x\n' });
+    const r = runGate(sb, ['--mode', 'words', '--all'], words());
+    assert.equal(r.status, 0, r.out);
+    for (const re of [
+      /^push-gate: step gitleaks: ok \(\d+ commit\(s\)\) in \d+ s$/m,
+      /^push-gate: step scan-public: ok \(\d+ commit\(s\)\) in \d+ s$/m,
+      /^push-gate: step workflows: ok \(\d+ file\(s\)\) in \d+ s$/m,
+      /^push-gate: passed \(mode words, \d+ commit\(s\)\) in \d+ s$/m,
+    ]) assert.ok(re.test(r.out), `${re}: ${r.out}`);
+    const bad = runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_GITLEAKS_EXIT: '99', SHIM_REPORT_gitleaks: HIT, CI: 'true' });
+    assert.ok(/^push-gate: step gitleaks: FAILED \(.*\) in \d+ s$/m.test(bad.out), bad.out);
+    assert.ok(/^push-gate: FAILED \(gitleaks\) in \d+ s$/m.test(bad.out), bad.out);
+  });
+
+  describe('a commit message above 64 KiB stops the gate, so that the chunking of gitleaks stdin cannot apply to messages (review round 12, P3)', () => {
+    const withMessage = (bytes) => {
+      const f = path.join(sb.dir, 'msg.txt');
+      writeFileSync(f, `${'m'.repeat(bytes - 1)}\n`);
+      git(sb, 'commit', '-q', '--allow-empty', '-F', f);
+    };
+    it('a message of 64 KiB passes, one byte over stops (2) with a fixed reason', () => {
+      withMessage(65536);
+      assert.equal(runGate(sb, ['--mode', 'words', '--all'], words()).status, 0);
+      withMessage(65537 + 100);
+      const r = runGate(sb, ['--mode', 'words', '--all'], words());
+      stops(r, 2, 'push-gate: step gitleaks could not run (a commit message is over 64 KiB)');
+      assert.ok(!r.out.includes('mmmmmmmm'), 'the message is not printed');
+    });
+  });
+
   describe('what gitleaks says it scanned is checked, commit by commit (review round 11, P1)', () => {
     it('a commit that adds text must be reported as 1 scanned: 0, 2, and no number all stop the gate (2)', () => {
       for (const scanned of ['0', '2', 'none']) {
@@ -1242,6 +1273,21 @@ describe('gitleaks-public.sh git: a history that cannot be read is exit 2, never
     return { status: r.status, out: r.stdout + r.stderr };
   };
   const gitIn = (cwd, ...args) => spawnSync('git', ['-c', 'user.name=Tester', '-c', 'user.email=tester@users.noreply.github.com', ...args], { cwd, encoding: 'utf8', env: sb.env() });
+
+  it('prints the wall time in whole seconds, as numbers only, in git and dir mode (review round 12, C1a)', () => {
+    for (const mode of ['git', 'dir']) {
+      const f = path.join(sb.dir, 'time-gitleaks');
+      writeFileSync(f, '#!/bin/sh\n[ "$1" != git ] || echo "6:02PM INF 1 commits scanned." >&2\nexit 0\n');
+      chmodSync(f, 0o755);
+      const r = spawnSync('/bin/sh', [wrapper, mode, sb.repo], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ GL_BIN: f }) });
+      assert.ok(new RegExp(`^gitleaks ${mode}: ok in \\d+ s$`, 'm').test(r.stdout + r.stderr), `${mode}: ${r.stdout + r.stderr}`);
+      const bad = path.join(sb.dir, 'time-bad-gitleaks');
+      writeFileSync(bad, `#!/bin/sh\n[ "$1" != git ] || echo "6:02PM INF 1 commits scanned." >&2\nprev=; for a in "$@"; do [ "$prev" != --report-path ] || echo x > "$a"; prev=$a; done\nexit 99\n`);
+      chmodSync(bad, 0o755);
+      const b = spawnSync('/bin/sh', [wrapper, mode, sb.repo], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ GL_BIN: bad }) });
+      assert.ok(new RegExp(`^gitleaks ${mode}: FAILED \\(\\d+ finding\\(s\\)\\) in \\d+ s$`, 'm').test(b.stdout + b.stderr), `${mode}: ${b.stdout + b.stderr}`);
+    }
+  });
 
   it('what the tool says it scanned must fit each commit: a commit with text that is not 1 scanned (0, 2, no number) is exit 2', () => {
     for (const line of ['6:02PM INF 0 commits scanned.', '6:02PM INF 2 commits scanned.', '6:02PM INF done']) {

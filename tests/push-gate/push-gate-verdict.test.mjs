@@ -551,8 +551,10 @@ describe('scripts/gitleaks-public.sh with the real gitleaks: nothing in the scan
   });
 });
 
-describe('real gitleaks: the number of commits it reports equals our list (review round 9, L2)', () => {
-  it('holds with a merge commit and the root commit, for the gate and for the old-step wrapper', () => {
+describe('real gitleaks: the old-step wrapper reads a history with a merge and a root commit (review round 12, P1)', () => {
+  // (The gate's own run over merges, roots and every other kind of commit is the commit-kinds matrix below; a key in a merge
+  // resolution and in an octopus merge are the tests after it. What only this test holds is the wrapper's `git` mode on them.)
+  it('passes, and says ok', () => {
     commit({ 'a.txt': 'one\n' });
     git('checkout', '-q', '-b', 'side');
     commit({ 'b.txt': 'two\n' });
@@ -560,23 +562,9 @@ describe('real gitleaks: the number of commits it reports equals our list (revie
     commit({ 'c.txt': 'three\n' });
     git('merge', '-q', '--no-ff', 'side', '-m', 'merge');
     commit({ 'd.txt': 'four\n' });
-    const r = general();
-    assert.equal(r.status, 0, r.out);
-    assert.ok(r.out.includes('push-gate: passed (mode general, 5 commit(s))'), r.out);
     const w = spawnSync('/bin/sh', [path.join(path.dirname(gate), 'gitleaks-public.sh'), 'git', '.'], { cwd: repo, encoding: 'utf8', env: env() });
     assert.equal(w.status, 0, w.stdout + w.stderr);
     assert.ok((w.stdout + w.stderr).includes('gitleaks git: ok'), w.stdout + w.stderr);
-  });
-
-  it('a key in the merged-in branch is still found with the count check in place', () => {
-    const key = fakeKey();
-    commit({ 'a.txt': 'one\n' });
-    git('checkout', '-q', '-b', 'side');
-    commit({ 'conf.txt': `token = ${key}\n` });
-    git('checkout', '-q', 'main');
-    commit({ 'c.txt': 'three\n' });
-    git('merge', '-q', '--no-ff', 'side', '-m', 'merge');
-    stoppedOnKey(general(), key);
   });
 });
 
@@ -679,7 +667,8 @@ describe('push-gate.sh with the real tools: history is read by gitleaks git, one
     const c = (message, ...a) => git('commit', '-q', '-m', message, ...a);
     commit({ 'a.txt': 'a\n' }, 'text add');
     commit({ 'a.txt': 'b\n' }, 'line replace');
-    git('rm', '-q', 'a.txt'); c('removal only');
+    commit({ 'l.txt': 'x\ny\nz\n' }, 'pre-l'); commit({ 'l.txt': 'x\n' }, 'lines removed from an existing file');
+    git('rm', '-q', 'a.txt'); c('file deleted');
     symlinkSync('target', path.join(repo, 'link')); git('add', 'link'); c('symlink add');
     commit({ 'blank.txt': '\n' }, 'blank line add');
     c('empty', '--allow-empty');
@@ -706,11 +695,25 @@ describe('push-gate.sh with the real tools: history is read by gitleaks git, one
     assert.ok(r.out.includes('push-gate: passed'), r.out);
   });
 
-  it('a key only in the resolution of a merge, and a key in an octopus merge, are found', () => {
+  it('a key only in the resolution of a merge is found', () => {
     commit({ 'a.txt': 'one\n' });
     git('checkout', '-q', '-b', 's1'); commit({ 'conf.txt': 'one\n' }, 's1'); git('checkout', '-q', 'main'); commit({ 'conf.txt': 'two\n' }, 'm1');
     spawnSync('git', ['merge', 's1'], { cwd: repo, env: { ...process.env, ...env(), PATH: process.env.PATH } });
     writeFileSync(path.join(repo, 'conf.txt'), `token = ${fakeKey()}\n`); git('add', 'conf.txt'); git('commit', '-q', '-m', 'resolve');
+    const r = general();
+    assert.equal(r.status, 1, r.out);
+    assert.ok(patches(r) >= 1, r.out);
+  });
+
+  it('a key carried only by an octopus merge is found, even when the next commit removes it', () => {
+    commit({ 'a.txt': 'one\n' });
+    for (const b of ['o1', 'o2', 'o3']) { git('checkout', '-q', '-b', b, 'main'); commit({ [`${b}.txt`]: `${b}\n` }, b); }
+    git('checkout', '-q', 'main');
+    const merged = spawnSync('git', ['-c', 'user.name=Tester', '-c', 'user.email=tester@users.noreply.github.com', 'merge', '--no-commit', 'o1', 'o2', 'o3'], { cwd: repo, encoding: 'utf8', env: { ...process.env, ...env(), PATH: process.env.PATH } });
+    assert.equal(merged.status, 0, merged.stdout + merged.stderr);
+    writeFileSync(path.join(repo, 'carried.txt'), `token = ${fakeKey()}\n`); git('add', 'carried.txt'); git('commit', '-q', '-m', 'octopus');
+    assert.equal(git('rev-list', '--parents', '-1', 'HEAD').split(' ').length, 4, 'the commit has three parents and its own id');
+    git('rm', '-q', 'carried.txt'); git('commit', '-q', '-m', 'remove it');
     const r = general();
     assert.equal(r.status, 1, r.out);
     assert.ok(patches(r) >= 1, r.out);

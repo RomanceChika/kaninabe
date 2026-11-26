@@ -15,10 +15,15 @@
  * (再スケジュールは新しい migration で unschedule → schedule し直す運用のため)。
  * その場合は**ファイル名(≒適用順)が最後のものを現在の登録とみなす**
  * (migrations.md の採番規則により、ファイル名の辞書順 = 適用順)。
+ *
+ * **仕様だけの段の製品では突合しない** —— migration の置き場も実装の木(`roots.app`)も無いとき(`pgCronUnchecked`)。
+ * 仕様だけを先に書いて、まだ何も生成していない製品を登録の欠けで止めない。実装の木が在るのに置き場が無いなら突合する
+ * (置き場の綴りの誤りを黙って緑にしない。全件が登録の欠けとして赤になる)。置き場が在れば、空でも突合する。
+ * 突合しなかったことは、この後段が登録する一言(`skipped`)を J 群の実行ログが名指す。
  */
 
 import path from 'node:path';
-import { toRelative, walkFiles } from '../../../io/paths.js';
+import { appGrounded, isDirectory, toRelative, walkFiles } from '../../../io/paths.js';
 import { tryReadText } from '../../../io/read-text.js';
 import type { Finding } from '../../../kernel/finding.js';
 import type { JobDecl, JobSpecModel } from '../../../model/job/types.js';
@@ -83,6 +88,29 @@ export interface PgCronParityInput {
 }
 
 /**
+ * 仕様だけの段(migration の置き場も実装の木も無い)で、突合しないか。
+ *
+ * @param input 検査の入力(リポジトリルートと製品の根)
+ * @returns 突合しないなら true
+ */
+function pgCronUnchecked(input: Pick<PgCronParityInput, 'repoRoot' | 'roots'>): boolean {
+  if (isDirectory(path.join(input.repoRoot, input.roots.migrations))) return false;
+  return !appGrounded(input.repoRoot, input.roots.app);
+}
+
+/**
+ * 突合しなかった分の一言(J 群の実行ログに出す。突合した・対象が無いときは null)。
+ *
+ * @param input 検査の入力
+ * @returns 一言(句点なし)か null
+ */
+export function pgCronSkipped(input: PgCronParityInput): string | null {
+  const count = (input.jobs.catalog?.jobs ?? []).filter((decl) => decl.schedule?.scheduler === 'database' && decl.schedule.cron !== undefined).length;
+  if (count === 0 || !pgCronUnchecked(input)) return null;
+  return `${input.roots.migrations} と実装の木が無いため、scheduler: database のジョブ ${count} 件の J3 の cron.schedule の突合はスキップ`;
+}
+
+/**
  * カタログの `scheduler: database` 行を、migration の `cron.schedule` 登録に接地させる。
  *
  * @param input 読み込み済みのジョブカタログとリポジトリルート
@@ -96,6 +124,7 @@ export function verifyPgCronParity(input: PgCronParityInput): Finding[] {
     (decl): decl is JobDecl & { schedule: NonNullable<JobDecl['schedule']> } =>
       decl.schedule?.scheduler === 'database' && decl.schedule.cron !== undefined,
   );
+  if (pgCronUnchecked(input)) return [];
   const registered = readPgCronEntries(input.repoRoot, input.roots.migrations);
   const findings: Finding[] = [];
   const declaredNames = new Set<string>();

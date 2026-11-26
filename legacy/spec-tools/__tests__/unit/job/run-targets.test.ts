@@ -85,6 +85,17 @@ describe('後段ありの全部入り(Supabase + Vercel)', () => {
     expect(found[6]?.[1]).toContain('pg_cron 登録');
     expect(found[7]?.[1]).toContain('too_often');
   });
+
+  it('後段の検査が全部突合した木では、突合しなかった分の一言(targetSkips)は空', () => {
+    expect(result.targetSkips).toEqual([]);
+  });
+
+  it('仕様だけの段(migration の置き場も実装の木も無い)では、J3 を登録した後段の一言が targetSkips に載る', () => {
+    const jobs = jobModel([scheduledJob('spec_only', { scheduler: 'database', cron: '5 5 * * *' })]);
+    const specOnly = run(TEST_TARGETS, { jobs, roots: { ...TEST_ROOTS, migrations: 'none', app: null } });
+    expect(specOnly.targetSkips).toHaveLength(1);
+    expect(specOnly.targetSkips[0]).toContain('J3 の cron.schedule の突合はスキップ');
+  });
 });
 
 describe('後段なし(プラットフォームの後段が検査を登録しない)', () => {

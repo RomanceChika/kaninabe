@@ -117,6 +117,8 @@ export interface JobRunResult {
   readonly entryClosedWithheld: EntryClosedResult['withheld'];
   /** 閉世界の走査で読めなかった場所(リポジトリルート相対。空なら完全な走査。実行ログが「阻害」で名指す)。 */
   readonly entryClosedUnreadable: EntryClosedResult['unreadable'];
+  /** 後段が登録した検査のうち、この木で突合しなかった分の一言(後段が言う。口の表の並び。実行ログが見出しに添える)。 */
+  readonly targetSkips: readonly string[];
 }
 
 /**
@@ -151,6 +153,7 @@ export function runJobVerification(input: JobRunInput): JobRunResult {
       entryClosed: closed.status,
       entryClosedWithheld: closed.withheld,
       entryClosedUnreadable: closed.unreadable,
+      targetSkips: [],
     };
   }
   const jobs = input.jobs.catalog?.jobs ?? [];
@@ -175,6 +178,7 @@ export function runJobVerification(input: JobRunInput): JobRunResult {
     entryClosed: closed.status,
     entryClosedWithheld: closed.withheld,
     entryClosedUnreadable: closed.unreadable,
+    targetSkips: [...targets.byId.values()].flatMap((check) => check.skipped?.(checkInput) ?? []),
   };
 }
 

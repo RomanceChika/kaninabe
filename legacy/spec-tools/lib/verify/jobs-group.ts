@@ -77,9 +77,10 @@ export function runJobs(
     for (const line of closedWorldLines(result, [])) log(line);
     return result.findings;
   }
-  const scope = result.appGrounded
+  const baseScope = result.appGrounded
     ? 'J1〜J7'
     : 'J1〜J7(実装の木が無いため J2 の実装・Route Handler・Cron 登録の突合はスキップ。HTTP の入口の閉世界も実装の木を走査するのでスキップ)';
+  const scope = baseScope + result.targetSkips.map((note) => `(${note})`).join('');
   const unchecked =
     result.scanOriginUnchecked.length === 0
       ? ''

@@ -42,6 +42,11 @@ export interface JobTargetVerifier {
   readonly id: string;
   /** 検査を実行し、違反を返す(ジョブカタログを読めていなければ空)。 */
   verify(input: JobCheckInput): Finding[];
+  /**
+   * この木で突合しなかった分の一言(句点なし。全部突合した・対象が無いなら null)。J 群の実行ログが見出しに添える
+   * (後段が自分の検査の飛ばし方を言う。コアは中身を知らない)。省けば、飛ばす分が無い検査。
+   */
+  skipped?(input: JobCheckInput): string | null;
 }
 
 /** 口 1 つ(ルール ID と、それを受け持つ後段の役割)。 */

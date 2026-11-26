@@ -1,0 +1,47 @@
+name: pr-gate
+
+# What a merge writes, checked before the merge, by code the pull request cannot change:
+#   - the title and body, which become the squash commit message (scan-pr-text.sh)
+#   - the review record: Opus and Codex both said nothing more needs fixing at the current head
+# `pull_request_target` runs this workflow and its scripts from the base branch, so a pull request cannot switch the
+# gate off by editing it. The pull request's code is never checked out or run here: only the event's title, body and
+# head sha are read, as data. A change to this file or to the scripts takes effect once it is on the base branch.
+# Merge only when this run, for the head sha you merge, has concluded success (a missing run is not a pass).
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      # Read from the event file, never from env (the log prints a step's env). The word list is the Actions secret
+      # SCAN_WORDS, written to a temp file and never printed; the script prints only rule names.
+      - name: Scan the title and body (the squash commit message)
+        env:
+          SCAN_WORDS: ${{ secrets.SCAN_WORDS }}
+        run: |
+          words="$RUNNER_TEMP/scan-words"; umask 077
+          if [ -n "$SCAN_WORDS" ]; then printf '%s\n' "$SCAN_WORDS" > "$words"; export SCAN_WORDS_FILE="$words"
+          else echo "SCAN_WORDS is not set"; exit 1; fi
+          jq -r '.pull_request.title, "", (.pull_request.body // "")' "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/pr-text"
+          sh scripts/scan-pr-text.sh "$RUNNER_TEMP/pr-text"
+          rm -f "$words"
+      - name: The review record names the head commit
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/pr-body"
+          sh scripts/check-review-record.sh "$RUNNER_TEMP/pr-body" "$HEAD_SHA"

@@ -3,8 +3,6 @@ name: ci
 on:
   push:
   pull_request:
-    # `edited`: the title and body become the squash commit message, so a change to them is checked again.
-    types: [opened, edited, synchronize, reopened]
 
 permissions:
   contents: read
@@ -47,30 +45,7 @@ jobs:
             echo "SCAN_WORDS is not set"; exit 1
           fi
           sh scripts/scan-public.sh
-          # The squash commit on the base branch is made at merge time from this title and body, so it is checked here,
-          # before the merge (scan-public.sh above sees only the commits that already exist).
-          # Read from the event file, not from env: the log prints a step's env, and the text is never printed.
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            jq -r '.pull_request.title, "", (.pull_request.body // "")' "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/pr-text"
-            sh scripts/scan-pr-text.sh "$RUNNER_TEMP/pr-text"
-          fi
           rm -f "$words"
-
-  # A review is recorded against a commit; a push after it moves the head and this fails until the new diff is reviewed.
-  review-record:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: The review record names the head commit
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/pr-body"
-          sh scripts/check-review-record.sh "$RUNNER_TEMP/pr-body" "$HEAD_SHA"
 
   checks:
     runs-on: ubuntu-latest

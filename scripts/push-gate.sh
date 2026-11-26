@@ -118,24 +118,24 @@ fi
 neutral_export "$head_sha" "$tmp/head" || die "could not export HEAD"
 failed=
 
-# Step 1: gitleaks, three ways: the lines that the commits add (made here, below), each commit message, and the tree of HEAD
-# exported cleanly (not the working tree). gitleaks is never asked to read the history: the gate makes what is scanned. For each
-# listed commit `git diff-tree` runs in the neutral repository (neutral_added_lines), every status checked, and the added lines
-# of all of them are one stream for `gitleaks stdin`. Findings exit 99 (so that gitleaks' own errors, which exit 1, are told
-# apart from findings); anything else is "could not run", and so is an error line in gitleaks' log with exit 0 or 99. The
-# reports are templates that write an x per finding: the output holds counts, nothing from the tool's own text.
+# Step 1: gitleaks, three ways: the history, each commit message, and the tree of HEAD exported cleanly (not the working tree).
+# The history is read by `gitleaks git`, ONE COMMIT AT A TIME, each commit checked on its own (scan_history in neutral-git.sh:
+# gitleaks cuts large input into chunks and can lose a secret at a chunk boundary, so a stream of the whole range is not used).
+# Findings exit 99 (so that gitleaks' own errors, which exit 1, are told apart from findings); anything else is "could not run",
+# and so is an error line in gitleaks' log with exit 0 or 99. The reports are templates that write an x per finding: the output
+# holds counts, nothing from the tool's own text.
 # Nothing in the scanned tree may change what is read: the configuration is the fixed file next to this script (not
 # .gitleaks.toml of the tree, not GITLEAKS_CONFIG / GITLEAKS_CONFIG_TOML); the ignore file is a path that does not exist
 # (not the default ".", where a .gitleaksignore of the tree would be read); inline `gitleaks:allow` comments are not
 # honoured; no baseline is given. The environment is not the caller's (see clean above), so no GITLEAKS_* variable gets in.
-# gitleaks also reads <source>/.gitleaksignore whatever --gitleaks-ignore-path says, so the exported tree has every
-# .gitleaksignore taken out before the scan (a stream has no source directory).
+# gitleaks also reads <source>/.gitleaksignore whatever --gitleaks-ignore-path says, so the history is scanned with the neutral
+# git directory as the source (it holds no such file) and the exported tree has every .gitleaksignore taken out before the scan.
 gl_config="$here/gitleaks-gate.toml"
 [ -f "$gl_config" ] && [ -r "$gl_config" ] || die "gitleaks-gate.toml is missing next to the gate"
 # gl <subcommand> <arguments...>: gitleaks with the fixed flags; every path is one quoted argument (spaces are fine).
 gl() {
   gl_sub=$1; shift
-  clean GIT_ATTR_SOURCE="$ng_empty" gitleaks "$gl_sub" --no-banner --redact --exit-code 99 --log-level error --config "$gl_config" \
+  clean GIT_ATTR_SOURCE="$ng_empty" gitleaks "$gl_sub" --no-banner --redact --exit-code 99 --log-level "${gl_level:-error}" --config "$gl_config" \
     --gitleaks-ignore-path "$tmp/no-gitleaksignore" --ignore-gitleaks-allow "$@"
 }
 # gl_check <exit status>: what a run's status and log mean. An error line in the log is "could not run" even with exit 0 or 99.
@@ -147,17 +147,9 @@ gl_check() {
 }
 if [ "$count" -gt 0 ]; then
   printf '%s\n' '{{ range . }}x{{ "\n" }}{{ end }}' > "$tmp/gitleaks.tpl"
-  patch_n=0
-  neutral_added_lines "$tmp/commits" "$tmp/added.txt" || die "step gitleaks could not run (could not read the patch of a commit)"
-  if [ -s "$tmp/added.txt" ]; then
-    rc=0
-    gl stdin --report-format template --report-template "$tmp/gitleaks.tpl" --report-path "$tmp/gitleaks.out" < "$tmp/added.txt" > /dev/null 2> "$tmp/gl.log" || rc=$?
-    gl_check "$rc"
-    if [ "$rc" = 99 ]; then
-      report_ok "$tmp/gitleaks.out" || die "step gitleaks could not read the result"
-      patch_n=$(grep -c . "$tmp/gitleaks.out" || true); echo x > "$tmp/gl.found"
-    fi
-  fi
+  scan_history "$tmp/commits" "$tmp/gitleaks.tpl" "$tmp" || die "step gitleaks $hist_err"
+  patch_n=$hist_n
+  if [ "$patch_n" -gt 0 ]; then echo x > "$tmp/gl.found"; fi
   : > "$tmp/gl.msgs"
   for c in $(cat "$tmp/commits"); do
     neutral_git log -1 --format=%B "$c" > "$tmp/msg" 2>/dev/null || die "step gitleaks could not run (could not read a commit message)"

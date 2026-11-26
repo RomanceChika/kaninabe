@@ -9,11 +9,14 @@
 # (the real repository is $ng_repo, set by the caller)
 # neutral_git_setup <dir>   prepares <dir>/neutral.git; on failure prints the reason in $ng_error and returns 1
 # neutral_git <args...>     runs git (read-only use: grep, ls-tree) against the commits of the real repository
-# neutral_added_lines <list> <out>  the lines that the commits named in <list> (one id per line) add, as one stream in <out>: for
-#                           each commit `git diff-tree` (merges against each parent, no renames, no external diff or textconv,
-#                           attributes from the empty tree, no config), every status checked; only the added lines are kept.
-#                           Returns 1 if any read fails (a stream that is not complete is never scanned as if it were)
+# neutral_adds_text <sha>   succeeds when the commit adds at least one line of text (a changed-line count above 0 in
+#                           `git diff-tree --numstat`, merges against each parent, renames followed as git log does); returns 1
+#                           when it adds none (a binary file, a deletion, a mode change, an empty file, a pure rename) and 2
+#                           when the patch could not be read
 # log_has_error <log>       succeeds when a gitleaks log holds an error line (ERR, FTL or PNC; colour codes ignored)
+# scan_history <list> <report-args...>  `gitleaks git` over the neutral repository, ONE COMMIT AT A TIME, for the commit ids in
+#                           <list>; the caller defines gl <subcommand> <args...> (gitleaks with the fixed flags). Sets $hist_n to the
+#                           number of findings, and on failure returns 2 with the reason in $hist_err. See the function.
 # neutral_export <sha> <dir> writes the files of the commit into <dir> exactly as committed (no export-ignore, no
 #                           export-subst, no end-of-line or filter conversion)
 ng_error=
@@ -56,15 +59,40 @@ neutral_export() {
   ng_env GIT_DIR="$ng_dir" GIT_WORK_TREE="$2" GIT_INDEX_FILE="$ng_dir/export-index" git read-tree "$1" >/dev/null 2>&1 \
     && ng_env GIT_DIR="$ng_dir" GIT_WORK_TREE="$2" GIT_INDEX_FILE="$ng_dir/export-index" git --attr-source="$ng_empty" checkout-index -a -f >/dev/null 2>&1
 }
-# neutral_added_lines <list> <out>: see the head of this file. The headers of a diff ("+++ b/path") stay in the stream; every
-# line that begins with "+" is kept, with the "+" taken off. A binary file has no added lines in a diff ("Binary files differ").
-neutral_added_lines() {
-  : > "$2" || return 1
-  while IFS= read -r nal_c; do
-    [ -n "$nal_c" ] || continue
-    neutral_git diff-tree --root -m -p -U0 --no-ext-diff --no-textconv --no-color --no-renames "$nal_c" > "$2.raw" 2>/dev/null || return 1
-    LC_ALL=C sed -n 's/^+//p' "$2.raw" >> "$2" || return 1
-  done < "$1"
-  rm -f "$2.raw"
+neutral_adds_text() {
+  nat_raw=$ng_dir/numstat.raw
+  neutral_git diff-tree --root -m -M --numstat -z --no-ext-diff --no-textconv --no-color "$1" > "$nat_raw" 2>/dev/null || return 2
+  tr '\000' '\n' < "$nat_raw" | awk -F'\t' '$1 ~ /^[0-9]+$/ && $1 > 0 { f = 1 } END { exit f ? 0 : 1 }'
 }
 log_has_error() { tr -d '\033' < "$1" | sed 's/\[[0-9;]*m//g' | grep -Eq '^[^ ]+ (ERR|FTL|PNC) '; }
+# gl_scanned <log>: the number in gitleaks' "N commits scanned." line (colour codes removed), or nothing. The log is private.
+gl_scanned() { tr -d '\033' < "$1" | sed 's/\[[0-9;]*m//g' | sed -n 's/.*[^0-9]\([0-9][0-9]*\) commits scanned.*/\1/p' | tail -1; }
+# scan_history <list> <template-file> <tmp>: why one commit at a time: gitleaks cuts large input (`stdin`, `dir`) into chunks and
+# loses a secret that straddles a boundary; `git` reads a patch whole. Each commit is also checked on its own, so that "the patch
+# was readable and gitleaks read it" is confirmed per commit: (a) neutral_adds_text (status checked); (b) gitleaks git with
+# --log-opts="-1 -m <id>" (ids only, never names; the info log goes to a private file and is never printed); (c) its "N commits
+# scanned" must be a number: 1 when (a) found text, 0 or 1 otherwise. Findings (exit 99) must come with a readable report (an x per
+# finding) and are summed in $hist_n. Any other status, an error line in the log, a patch that cannot be read, or a count that does
+# not fit returns 2 with the reason in $hist_err.
+scan_history() {
+  hist_n=0; hist_err=
+  while IFS= read -r sh_c; do
+    [ -n "$sh_c" ] || continue
+    sh_t=0; neutral_adds_text "$sh_c" || sh_t=$?
+    [ "$sh_t" != 2 ] || { hist_err="could not run (could not read the patch of a commit)"; return 2; }
+    rm -f "$3/hist.out"; sh_rc=0; gl_level=info
+    gl git --report-format template --report-template "$2" --report-path "$3/hist.out" --log-opts="-1 -m $sh_c" "$ng_dir" > /dev/null 2> "$3/hist.log" || sh_rc=$?
+    gl_level=error
+    case $sh_rc in 0 | 99) ;; *) hist_err="could not run (exit $sh_rc)"; return 2 ;; esac
+    if log_has_error "$3/hist.log"; then hist_err="could not run (it logged an error)"; return 2; fi
+    if [ "$sh_rc" = 99 ]; then
+      if [ -s "$3/hist.out" ] && grep -q . "$3/hist.out" && ! grep . "$3/hist.out" | grep -qvx x; then hist_n=$((hist_n + $(grep -c . "$3/hist.out")))
+      else hist_err="could not read the result"; return 2; fi
+    fi
+    sh_n=$(gl_scanned "$3/hist.log")
+    case $sh_n in '' | *[!0-9]*) hist_err="could not confirm what it scanned"; return 2 ;; esac
+    if [ "$sh_t" = 0 ]; then [ "$sh_n" -eq 1 ] || { hist_err="could not confirm what it scanned"; return 2; }
+    else [ "$sh_n" -le 1 ] || { hist_err="could not confirm what it scanned"; return 2; }; fi
+  done < "$1"
+  return 0
+}

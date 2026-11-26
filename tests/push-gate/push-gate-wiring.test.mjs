@@ -518,7 +518,7 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
       git(sb, 'commit', '-q', '-m', 'delete');
       assert.equal(runGate(sb, ['--mode', 'words', '--base', before], { ...words(), SHIM_SCANNED: '0' }).status, 0);
       commit(sb, { 'empty.txt': '' });
-      assert.equal(runGate(sb, ['--mode', 'words', '--base', before], { ...words(), SHIM_SCANNED: '0' }).status, 2, 'the later commits add text');
+      assert.equal(runGate(sb, ['--mode', 'words', '--base', before], { ...words(), SHIM_SCANNED: '0' }).status, 0, 'an empty file adds no text');
       const only = git(sb, 'rev-parse', 'HEAD');
       commit(sb, { 'blank.txt': '\n' });
       assert.equal(runGate(sb, ['--mode', 'words', '--base', only], { ...words(), SHIM_SCANNED: '0' }).status, 2, 'a blank line is added text');
@@ -557,7 +557,7 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
   it('says how much gitleaks found without printing any of it: counts, and the commits of messages', () => {
     const r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_GITLEAKS_EXIT: '99', SHIM_REPORT_gitleaks: HIT });
     assert.equal(r.status, 1, r.out);
-    assert.ok(r.out.includes('push-gate: step gitleaks: FAILED (1 finding(s) in patches, 2 in commit messages, 1 in the tree of HEAD)'), r.out);
+    assert.ok(r.out.includes('push-gate: step gitleaks: FAILED (2 finding(s) in patches, 2 in commit messages, 1 in the tree of HEAD)'), r.out);
     assert.equal((r.out.match(/commit message of [0-9a-f]{8}/g) ?? []).length, 2, r.out);
   });
 
@@ -1170,7 +1170,7 @@ describe('push-gate.sh: a result that cannot be read is not "zero findings", and
       SHIM_OUT_actionlint: '.github/workflows/ci.yml:3: [Evil Kind!]|.github/workflows/ci.yml:4: [syntax-check]|',
     }));
     assert.equal(r.status, 1, r.out);
-    assert.ok(r.out.includes('(2 finding(s) in patches, 2 in commit messages, 2 in the tree of HEAD)'), r.out);
+    assert.ok(r.out.includes('(4 finding(s) in patches, 2 in commit messages, 2 in the tree of HEAD)'), r.out);
     assert.ok(r.out.includes('push-gate: step workflows: FAILED (2 problem(s))'), r.out);
     for (const leak of ['Evil', 'syntax-check', 'rule ', 'ci.yml']) assert.ok(!r.out.includes(leak), `"${leak}" reached the public output: ${r.out}`);
   });

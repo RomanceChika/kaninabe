@@ -6,8 +6,9 @@
 #   - the configuration is the gate's fixed file (scripts/gitleaks-gate.toml), never one in the scanned tree or in the
 #     environment; the ignore file is a path that does not exist and inline `gitleaks:allow` comments are not honoured;
 #   - `dir` scans a copy of the directory without its .git and without any .gitleaksignore (gitleaks reads
-#     <source>/.gitleaksignore whatever flag says); `git` never has gitleaks read the history: the added lines of every
-#     commit are made here from the neutral repository (see neutral-git.sh) and scanned as one stream;
+#     <source>/.gitleaksignore whatever flag says); `git` reads the history from the neutral repository (see neutral-git.sh),
+#     one commit at a time, each commit checked on its own (gitleaks cuts large input into chunks and can lose a key that
+#     straddles a boundary, so a stream is not used for history);
 #   - an error line in gitleaks' log, with exit 0 or with findings, is "could not run".
 # Usage: gitleaks-public.sh dir|git [<path>]     ($GL_BIN names the gitleaks binary; default: gitleaks on PATH)
 # Exit 0 = nothing found, 1 = found, 2 = could not run, or could not read the result (a result that cannot be read is never
@@ -30,9 +31,8 @@ printf '%s\n' '{{ range . }}x{{ "\n" }}{{ end }}' > "$tmp/rules.tpl"
 # gl <subcommand> <arguments...>: the tool with the fixed flags, in an environment of explicit inputs only.
 gl() {
   gl_sub=$1; shift
-  ng_env ${ng_empty:+"GIT_ATTR_SOURCE=$ng_empty"} "$bin" "$gl_sub" --no-banner --redact --exit-code 99 --log-level error --config "$cfg" \
-    --gitleaks-ignore-path "$tmp/no-gitleaksignore" --ignore-gitleaks-allow \
-    --report-format template --report-template "$tmp/rules.tpl" --report-path "$tmp/rules.out" "$@"
+  ng_env ${ng_empty:+"GIT_ATTR_SOURCE=$ng_empty"} "$bin" "$gl_sub" --no-banner --redact --exit-code 99 --log-level "${gl_level:-error}" --config "$cfg" \
+    --gitleaks-ignore-path "$tmp/no-gitleaksignore" --ignore-gitleaks-allow "$@"
 }
 could_not_run() { echo "gitleaks $mode: could not run (exit $1)"; exit 2; }
 
@@ -43,7 +43,7 @@ if [ "$mode" = dir ]; then
   tar -C "$target" --exclude=.git -cf "$tmp/src.tar" . > /dev/null 2>&1 || could_not_run 2
   tar -C "$tmp/src" -xf "$tmp/src.tar" > /dev/null 2>&1 || could_not_run 2
   find "$tmp/src" -name .gitleaksignore -exec rm -f {} + || could_not_run 2
-  ( cd "$tmp/src" && gl dir . ) > /dev/null 2> "$tmp/gl.log" || rc=$?
+  ( cd "$tmp/src" && gl dir --report-format template --report-template "$tmp/rules.tpl" --report-path "$tmp/rules.out" . ) > /dev/null 2> "$tmp/gl.log" || rc=$?
 else
   cd "$target" 2>/dev/null || could_not_run 2
   repo_resolve || could_not_run 2
@@ -70,10 +70,12 @@ else
     # shellcheck disable=SC2046
     neutral_git rev-list $(cat "$tmp/commit-tips.u") > "$tmp/commits" 2>/dev/null || could_not_run 2
     [ -s "$tmp/commits" ] || could_not_run 2
-    neutral_added_lines "$tmp/commits" "$tmp/added.txt" || could_not_run 2
-    # an empty stream (no commit adds a line) has nothing to scan; every commit was still read, each status checked
-    if [ -s "$tmp/added.txt" ]; then
-      gl stdin < "$tmp/added.txt" > /dev/null 2> "$tmp/gl.log" || rc=$?
+    # one commit at a time, each checked (scan_history in neutral-git.sh); the findings are summed and the count is the result
+    scan_history "$tmp/commits" "$tmp/rules.tpl" "$tmp" || { echo "gitleaks git: $hist_err"; exit 2; }
+    if [ "$hist_n" -gt 0 ]; then
+      echo "gitleaks git: FAILED ($hist_n finding(s))"
+      echo "  (details: run gitleaks yourself on your own copy, for example: gitleaks git .)"
+      exit 1
     fi
   else
     echo "gitleaks git: ok"; exit 0

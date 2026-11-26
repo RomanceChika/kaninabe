@@ -16,7 +16,7 @@
 #     can hide or flatten what follows), no invisible character, and no carriage return except before a line feed;
 #   - fences only at the start of a line, outside any other block (a fence indented into a list item ends where
 #     GitHub ends the item, which a line-based reader cannot follow), so they can be tracked by character and length;
-#     no footnote (GitHub moves it after the record); exactly one `## Review` line, outside fenced code;
+#     no `[^` anywhere (a footnote, even one defined inside a quote or a list item, is shown after the record); exactly one `## Review` line, outside fenced code;
 #   - nothing after it but blank lines and exactly one `- opus:` and one `- codex:` line, so it is the last section;
 #   - no line before it that looks like a record line (opus: or codex: once markup is stripped), even in fenced code.
 # What passes is therefore a visible `Review` heading as the last thing on the page, holding the two lines that name the
@@ -50,7 +50,7 @@ out=$(LC_ALL=C awk '
       seen = 1; next }
     t = low; gsub(/[^a-z:]/, "", t)
     if (t ~ /^(opus|codex):/) { print "E a record line appears before ## Review"; stop = 1; exit }
-    if (line ~ /^[ \t]*\[\^/) { print "E the body has a footnote (it is shown after the record)"; stop = 1; exit }
+    if (index(line, "[^")) { print "E the body has a footnote or [^ (a footnote is shown after the record)"; stop = 1; exit }
     if ((index(line, "```") || index(line, "~~~")) && line !~ /^(```|~~~)/) {
       print "E a fence or a run of three backticks or tildes that does not start the line"; stop = 1; exit }
     ch = substr(line, 1, 1)

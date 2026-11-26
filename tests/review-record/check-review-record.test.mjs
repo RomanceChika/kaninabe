@@ -55,6 +55,7 @@ describe('check-review-record.sh', () => {
     for (const body of [record(OLD), record(HEAD, OLD)]) failsWith(body, 'reviewed bbbbbbbb');
     for (const body of [record('', ''), record(HEAD.slice(0, 39)), record(HEAD.toUpperCase())]) failsWith(body, 'not a full commit sha');
     failsWith(`${record()}- opus: ${HEAD}\n`, 'exactly one - opus:');
+    failsWith(`${record()}- codex: ${HEAD}\n`, 'exactly one - codex:');
     failsWith(`${record()}\n${record()}`, LAST);
     failsWith('no record\n', 'found none');
   });
@@ -98,7 +99,10 @@ describe('check-review-record.sh', () => {
   });
 
   it('fails on a footnote, which GitHub shows after the record', () => {
-    failsWith(`a[^1]\n\n[^1]: note\n\n${record()}`, 'footnote');
+    for (const body of [`a[^1]\n\n[^1]: note\n\n${record()}`, `a[^1]\n\n> [^1]: note\n\n${record()}`,
+      `a[^1]\n\n- [^1]: note\n\n${record()}`, `a[^1]\n\n  [^1]: note\n\n${record()}`]) {
+      failsWith(body, 'footnote');
+    }
   });
 
   it('holds the section to the exact heading and record lines', () => {
@@ -115,6 +119,8 @@ describe('check-review-record.sh', () => {
 
   it('exits 2 on a malformed head or an unreadable body, and never prints the body', () => {
     assert.equal(check(record(), 'xyz').status, 2);
+    assert.equal(check(record(HEAD.slice(0, 39), HEAD.slice(0, 39)), HEAD.slice(0, 39)).status, 2);
+    assert.equal(check(record('g'.repeat(40), 'g'.repeat(40)), 'g'.repeat(40)).status, 2);
     assert.equal(check(record(), `${HEAD}\n${HEAD}`).status, 2);
     assert.equal(spawnSync('sh', [script, '/nonexistent/body', HEAD]).status, 2);
     const r = check(`秘密の語\n${record(OLD)}`);

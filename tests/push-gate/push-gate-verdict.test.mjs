@@ -477,14 +477,14 @@ describe('scripts/gitleaks-public.sh: what the old CI steps print, with the real
     commit({ 'secret-dir/conf.txt': `note token = ${key} trailing words\n` }, 'a message');
   };
 
-  it('a finding prints a rule name and a count, and no path, commit id, author, line or key', () => {
+  it('a finding prints a count, and no rule name, path, commit id, author, line or key', () => {
     const key = fakeKey();
     secretRepo(key);
     for (const mode of ['dir', 'git']) {
       const r = run([mode, '.']);
       assert.equal(r.status, 1, r.out);
       assert.ok(r.out.includes(`gitleaks ${mode}: FAILED (1 finding(s))`), r.out);
-      assert.ok(r.out.includes('rule github-pat: 1'), r.out);
+      assert.ok(!/rule /.test(r.out) && !r.out.includes('github-pat'), r.out);
       for (const leak of ['secret-dir', 'conf.txt', 'Some Author', 'trailing words', key.slice(4, 20), git('rev-parse', 'HEAD').slice(0, 8)]) {
         assert.ok(!r.out.includes(leak), `"${leak}" reached the output: ${r.out}`);
       }
@@ -527,7 +527,7 @@ describe('scripts/gitleaks-public.sh with the real gitleaks: nothing in the scan
     commit({ 'conf.txt': `token = ${key}\n`, '.gitleaksignore': 'conf.txt:github-pat:1\n' });
     let r = run(['dir', '.']);
     assert.equal(r.status, 1, `.gitleaksignore: ${r.out}`);
-    assert.ok(r.out.includes('rule github-pat: 1'), r.out);
+    assert.ok(r.out.includes('FAILED (1 finding(s))'), r.out);
     commit({ 'conf.txt': `token = ${key} # gitleaks:allow\n` });
     for (const mode of ['dir', 'git']) {
       r = run([mode, '.']);
@@ -547,7 +547,7 @@ describe('scripts/gitleaks-public.sh with the real gitleaks: nothing in the scan
     git('replace', c2, git('rev-parse', 'HEAD~2'));
     const r = run(['git', '.']);
     assert.equal(r.status, 1, r.out);
-    assert.ok(r.out.includes('rule github-pat: 1'), r.out);
+    assert.ok(r.out.includes('FAILED (1 finding(s))'), r.out);
   });
 });
 
@@ -577,6 +577,81 @@ describe('real gitleaks: the number of commits it reports equals our list (revie
     commit({ 'c.txt': 'three\n' });
     git('merge', '-q', '--no-ff', 'side', '-m', 'merge');
     stoppedOnKey(general(), key);
+  });
+});
+
+describe('push-gate.sh with the real tools: the gate hands gitleaks the added lines of every commit (review round 10, N1)', () => {
+  const patches = (r) => Number(/\((\d+) finding\(s\) in patches/.exec(r.out)?.[1] ?? NaN);
+  const filler = (bytes, lineLen = 100) => {
+    const line = `${'lorem ipsum dolor sit amet '.repeat(10).slice(0, lineLen - 1)}\n`;
+    return line.repeat(Math.ceil(bytes / line.length));
+  };
+  const pem = () => {
+    const body = randomBytes(420).toString('base64').match(/.{1,64}/g).join('\n');
+    return `${['-----BEGIN', 'RSA PRIVATE', 'KEY-----'].join(' ')}\n${body}\n${['-----END', 'RSA PRIVATE', 'KEY-----'].join(' ')}\n`;
+  };
+
+  it('a multi-line private key added across lines is found', () => {
+    commit({ 'a.txt': 'one\n' });
+    commit({ 'id.pem': pem() });
+    const r = general();
+    assert.equal(r.status, 1, r.out);
+    assert.ok(patches(r) >= 1, r.out);
+  });
+
+  it('a key in a file on gitleaks\' default path allowlist (node_modules, a .svg) is found in the added lines', () => {
+    commit({ 'a.txt': 'one\n' });
+    commit({ 'node_modules/pkg/cfg.txt': `token = ${fakeKey()}\n`, 'logo.svg': `<!-- token = ${fakeKey()} -->\n` });
+    const r = general();
+    assert.equal(r.status, 1, r.out);
+    assert.ok(patches(r) >= 2, r.out);
+  });
+
+  it('CRLF line endings and a path with spaces do not hide a key', () => {
+    commit({ 'a.txt': 'one\n' });
+    commit({ 'my dir/a b.txt': `token = ${fakeKey()}\r\nsecond\r\n` });
+    const r = general();
+    assert.equal(r.status, 1, r.out);
+    assert.ok(patches(r) >= 1, r.out);
+  });
+
+  it('a key on a removed line, and a key in a file the commit removes, do not block a commit that only removes them', () => {
+    const key = fakeKey();
+    commit({ 'a.txt': 'one\n' });
+    const added = commit({ 'conf.txt': `keep\ntoken = ${key}\n`, 'gone.txt': `token = ${fakeKey()}\n` });
+    git('rm', '-q', 'gone.txt');
+    commit({ 'conf.txt': 'keep\n' }, 'remove the line');
+    const r = gateRun(['--mode', 'general', '--base', added]);
+    assert.equal(r.status, 0, r.out);
+    stoppedOnKey(general(), key); // the commits that added them are still found when they are in the range
+  });
+
+  it('a 3 MB single added line, and about 50 MB of added lines in all, do not hide a key placed after them', () => {
+    const key = fakeKey();
+    commit({ 'a.txt': 'one\n' });
+    const baseline = (() => {
+      commit({ 'plain.txt': `token = ${key}\n` });
+      const r = general();
+      git('reset', '-q', '--hard', 'HEAD~1');
+      return patches(r);
+    })();
+    assert.ok(baseline >= 1);
+    commit({ 'long.txt': `${'lorem ipsum '.repeat(250000)}\ntoken = ${key}\n` });
+    const longLine = general();
+    assert.equal(longLine.status, 1, longLine.out);
+    assert.equal(patches(longLine), baseline, `3 MB line: ${longLine.out}`);
+    git('reset', '-q', '--hard', 'HEAD~1');
+    commit({ 'huge.txt': `${filler(50 * 1024 * 1024)}token = ${key}\n` });
+    const huge = general();
+    assert.equal(huge.status, 1, huge.out);
+    assert.equal(patches(huge), baseline, `50 MB: ${huge.out}`);
+  });
+
+  it('KNOWN GAP (scanner change): a key in a file that git treats as binary is not in the patch, so it is not found (as before)', () => {
+    commit({ 'a.txt': 'one\n' });
+    commit({ 'blob.bin': Buffer.concat([Buffer.from([0, 1, 2, 0]), Buffer.from(`token = ${fakeKey()}\n`)]).toString('latin1') });
+    const r = general();
+    assert.equal(r.status, 0, r.out);
   });
 });
 

@@ -46,16 +46,16 @@ const SHIM_BODY = (name, exitVar) => `#!/bin/sh
 . "$(dirname "$0")/shim.env"
 printf '%s\\n' "${name} $* #env:\${GITLEAKS_CONFIG-unset}:\${GITLEAKS_CONFIG_TOML-unset}" >> "$SHIM_LOG"
 [ -z "\${SHIM_OUT_${name}:-}" ] || printf '%s' "\${SHIM_OUT_${name}}"
-if [ "${name}" = gitleaks ] && [ "$1" = git ]; then
-  n=\${SHIM_SCANNED:-}
-  if [ -z "$n" ]; then o=; last=; for a in "$@"; do case $a in --log-opts=*) o=\${a#--log-opts=}; o=\${o#-m } ;; esac; last=$a; done; n=$(git --git-dir="$last" rev-list $o 2>/dev/null | wc -l | tr -d ' '); fi
-  [ "$n" = none ] || echo "INF $n commits scanned." >&2
+if [ "${name}" = gitleaks ]; then
+  [ -z "\${SHIM_STDERR_gitleaks:-}" ] || printf '%b\\n' "\${SHIM_STDERR_gitleaks}" >&2
+  # what the gate hands to the patch scan (the run that has a report path) is kept for the test to read
+  if [ "$1" = stdin ] && [ -n "\${SHIM_STDIN_DUMP:-}" ]; then case "$*" in *--report-path*) cat > "$SHIM_STDIN_DUMP" ;; esac; fi
 fi
 if [ -n "\${SHIM_REPORT_${name}:-}" ]; then prev=; for a in "$@"; do [ "$prev" != --report-path ] || printf '%s' "\${SHIM_REPORT_${name}}" > "$a"; prev=$a; done; fi
 exit "\${${exitVar}:-0}"
 `;
-/** What a gitleaks finding looks like in the gate's report template: rule, file:line, short commit id. */
-const HIT = 'github-pat a.txt:1 abcdef12\n';
+/** What one gitleaks finding looks like in the gate's report template: a line with an x, nothing from the tool's own text. */
+const HIT = 'x\n';
 const shq = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
 
 function which(name) {
@@ -301,9 +301,10 @@ describe('push-gate.sh: the tools fail closed', () => {
   it('runs gitleaks over the commits in range, redacted, without a banner', () => {
     const r = runGate(sb, ['--mode', 'words', '--all'], words());
     assert.equal(r.status, 0, r.out);
-    const call = sb.calls().find((l) => l.startsWith('gitleaks git'));
+    const call = sb.calls().find((l) => l.startsWith('gitleaks stdin') && l.includes('--report-path'));
     assert.ok(call, sb.calls().join('\n'));
-    assert.ok(call.includes('--no-banner') && call.includes('--redact') && call.includes('--log-opts='), call);
+    assert.ok(call.includes('--no-banner') && call.includes('--redact'), call);
+    assert.ok(!sb.calls().some((l) => l.startsWith('gitleaks git')), 'gitleaks is not asked to read the history');
   });
 
   it('actionlint reporting a problem fails the gate; actionlint erroring stops it', () => {
@@ -465,25 +466,42 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     assert.deepEqual(sb.calls(), []);
   });
 
-  it('asks gitleaks for the history with merges diffed, each commit message, and the tree of HEAD', () => {
+  it('hands gitleaks the added lines of every commit as one stream, each commit message, and the tree of HEAD; it never reads the history itself', () => {
     const r = runGate(sb, ['--mode', 'words', '--all'], words());
     assert.equal(r.status, 0, r.out);
     const calls = sb.calls();
-    const gitCall = calls.find((l) => l.startsWith('gitleaks git'));
-    assert.ok(gitCall, calls.join('\n'));
-    // The history is read from the neutral repository (objects only: no config, no info/, no refs) and the range is shas.
-    assert.ok(/--log-opts=-m [0-9a-f]{40}\b/.test(gitCall) && !/--log-opts=[^ ]* HEAD/.test(gitCall) && !gitCall.includes('--log-opts=-m HEAD'), `the range is not given as shas: ${gitCall}`);
-    assert.ok(gitCall.trimEnd().endsWith('/neutral.git #env:unset:unset') || / \S+\/neutral\.git #env:/.test(gitCall), `the source is not the neutral repository: ${gitCall}`);
-    assert.ok(!gitCall.includes(path.join(sb.repo, '.git')), `the real git directory is the source: ${gitCall}`);
-    assert.equal(calls.filter((l) => l.startsWith('gitleaks stdin')).length, 2, 'one per commit message');
+    assert.ok(!calls.some((l) => l.startsWith('gitleaks git')), `gitleaks reads the history: ${calls.join('\n')}`);
+    assert.equal(calls.filter((l) => l.startsWith('gitleaks stdin')).length, 3, 'one per commit message and one for the added lines');
+    assert.equal(calls.filter((l) => l.startsWith('gitleaks stdin') && l.includes('--report-path')).length, 1, 'one stream of added lines');
     assert.ok(calls.some((l) => l.startsWith('gitleaks dir')), calls.join('\n'));
+  });
+
+  it('the stream holds the added lines of the listed commits only: not removed lines, not commits outside the range', () => {
+    const dump = path.join(sb.dir, 'stream.txt');
+    commit(sb, { 'k.txt': 'keepline\nremovedline\n' });
+    const before = git(sb, 'rev-parse', 'HEAD');
+    commit(sb, { 'k.txt': 'keepline\nnewline\n' });
+    const r = runGate(sb, ['--mode', 'words', '--base', before], { ...words(), SHIM_STDIN_DUMP: dump });
+    assert.equal(r.status, 0, r.out);
+    const stream = readFileSync(dump, 'utf8');
+    assert.ok(stream.includes('newline'), stream);
+    assert.ok(!stream.includes('removedline') && !stream.includes('keepline'), `a removed or context line is in the stream: ${stream}`);
+    assert.ok(!stream.includes('one'), 'a commit before the range is in the stream');
+  });
+
+  it('a commit that adds nothing (an empty commit) needs no run of gitleaks on a stream; every listed commit is still read (a failing read stops the gate)', () => {
+    const before = git(sb, 'rev-parse', 'HEAD');
+    git(sb, 'commit', '-q', '--allow-empty', '-m', 'empty');
+    const r = runGate(sb, ['--mode', 'words', '--base', before], words());
+    assert.equal(r.status, 0, r.out);
+    assert.ok(!sb.calls().some((l) => l.startsWith('gitleaks stdin') && l.includes('--report-path')), sb.calls().join('\n'));
   });
 
   it('closes every way a file in the tree could change what gitleaks reads: fixed config, no ignore file, no inline allow', () => {
     const r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), GITLEAKS_CONFIG: '/nonexistent/allow.toml', GITLEAKS_CONFIG_TOML: 'x' });
     assert.equal(r.status, 0, r.out);
     const calls = sb.calls().filter((l) => l.startsWith('gitleaks '));
-    assert.equal(calls.length, 4, 'git, stdin x2, dir');
+    assert.equal(calls.length, 4, 'stdin x2 for messages, stdin for the added lines, dir');
     for (const call of calls) {
       assert.ok(call.includes('--config') && call.includes('gitleaks-gate.toml'), `no fixed config: ${call}`);
       assert.ok(call.includes('--gitleaks-ignore-path'), `no ignore path: ${call}`);
@@ -499,12 +517,11 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     assert.ok(r.out.includes('push-gate: passed (mode words, 2 commit(s))'), r.out);
   });
 
-  it('names where gitleaks found something without printing it: messages and the tree are reported by place', () => {
+  it('says how much gitleaks found without printing any of it: counts, and the commits of messages', () => {
     const r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_GITLEAKS_EXIT: '99', SHIM_REPORT_gitleaks: HIT });
     assert.equal(r.status, 1, r.out);
+    assert.ok(r.out.includes('push-gate: step gitleaks: FAILED (1 finding(s) in patches, 2 in commit messages, 1 in the tree of HEAD)'), r.out);
     assert.equal((r.out.match(/commit message of [0-9a-f]{8}/g) ?? []).length, 2, r.out);
-    assert.ok(r.out.includes('tree of HEAD'), r.out);
-    assert.ok(r.out.includes('push-gate: step gitleaks: FAILED'), r.out);
   });
 
   it('a gitleaks error while reading a message or the tree stops the gate', () => {
@@ -576,13 +593,14 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     assert.ok(!out.includes('notes.txt') && !out.includes(WORD) && !out.includes(sb.words), out);
   });
 
-  it('in CI the public output is rule names and counts only; locally it names places', () => {
+  it('in CI the public output is counts only; locally the word and workflow checks name places', () => {
     commit(sb, { 'notes.txt': `${WORD}\n`, '.github/workflows/ci.yml': 'name: x\n' });
     const env = { ...words(), SHIM_ACTIONLINT_EXIT: '1', SHIM_OUT_actionlint: '.github/workflows/ci.yml:3: [syntax-check]|' };
     const ci = runGate(sb, ['--mode', 'words', '--all'], { ...env, CI: 'true' });
     assert.equal(ci.status, 1, ci.out);
     assert.ok(ci.out.includes('word list: 1 file(s)'), ci.out);
-    assert.ok(ci.out.includes('rule syntax-check: 1'), ci.out);
+    assert.ok(ci.out.includes('push-gate: step workflows: FAILED (1 problem(s))'), ci.out);
+    assert.ok(!/rule /.test(ci.out) && !ci.out.includes('syntax-check'), `a name from a tool is in the CI output: ${ci.out}`);
     assert.ok(!ci.out.includes('notes.txt'), `a path leaked into the CI output: ${ci.out}`);
     assert.ok(!ci.out.includes('ci.yml:3'), `a path leaked into the CI output: ${ci.out}`);
     const local = runGate(sb, ['--mode', 'words', '--all'], env);
@@ -1085,7 +1103,7 @@ describe('pre-push hook: the review is bound to the destination, the head and th
   });
 });
 
-describe('push-gate.sh: public labels are trusted fixed labels, and a result that cannot be read is not "zero findings" (review round 8)', () => {
+describe('push-gate.sh: a result that cannot be read is not "zero findings", and public output carries counts only (review rounds 8 and 10)', () => {
   const env = (extra) => ({ ...words(), CI: 'true', ...extra });
 
   it('a gitleaks exit for findings with no report, an empty report or a report that does not parse is "could not read the result" (2), not findings', () => {
@@ -1106,27 +1124,26 @@ describe('push-gate.sh: public labels are trusted fixed labels, and a result tha
     assert.ok(r.out.includes('push-gate: step workflows could not read the result'), r.out);
   });
 
-  it('a rule or kind name from the tool is printed only in a fixed shape; anything else is counted as "other"', () => {
+  it('nothing derived from the output of a tool is printed in CI: no rule or kind names, only counts', () => {
     commit(sb, { '.github/workflows/ci.yml': 'name: x\n' });
     const r = runGate(sb, ['--mode', 'words', '--all'], env({
       SHIM_GITLEAKS_EXIT: '99',
-      SHIM_REPORT_gitleaks: 'Evil_Rule-Text a.txt:1 abcdef12\ngithub-pat b.txt:2 abcdef12\nx;rm-rf c.txt:3 abcdef12\n',
+      SHIM_REPORT_gitleaks: 'x\nx\n',
       SHIM_ACTIONLINT_EXIT: '1',
       SHIM_OUT_actionlint: '.github/workflows/ci.yml:3: [Evil Kind!]|.github/workflows/ci.yml:4: [syntax-check]|',
     }));
     assert.equal(r.status, 1, r.out);
-    assert.ok(r.out.includes('rule github-pat: 2'), r.out); // once in the patches, once in the tree
-    assert.ok(r.out.includes('rule syntax-check: 1'), r.out);
-    assert.ok(r.out.includes('rule other: '), r.out);
-    for (const leak of ['Evil_Rule', 'Evil Kind', 'x;rm-rf', 'a.txt', 'ci.yml']) assert.ok(!r.out.includes(leak), `"${leak}" reached the public output: ${r.out}`);
+    assert.ok(r.out.includes('(2 finding(s) in patches, 2 in commit messages, 2 in the tree of HEAD)'), r.out);
+    assert.ok(r.out.includes('push-gate: step workflows: FAILED (2 problem(s))'), r.out);
+    for (const leak of ['Evil', 'syntax-check', 'rule ', 'ci.yml']) assert.ok(!r.out.includes(leak), `"${leak}" reached the public output: ${r.out}`);
   });
 });
 
-describe('gitleaks-public.sh (the old CI steps): fixed labels, and an unreadable result is not "ok" (review round 8)', () => {
+describe('gitleaks-public.sh (the old CI steps): counts only, and an unreadable result is not "ok" (review rounds 8 and 10)', () => {
   const wrapper = path.join(scripts, 'gitleaks-public.sh');
-  const fake = (exitCode, report, scanned = 1) => {
+  const fake = (exitCode, report) => {
     const f = path.join(sb.dir, 'fake-gitleaks');
-    writeFileSync(f, `#!/bin/sh\n${scanned === null ? '' : `echo "INF ${scanned} commits scanned." >&2\n`}prev=\nfor a in "$@"; do [ "$prev" != --report-path ] || ${report === undefined ? ':' : `printf '%s' ${shq(report)} > "$a"`}; prev=$a; done\nexit ${exitCode}\n`);
+    writeFileSync(f, `#!/bin/sh\nprev=\nfor a in "$@"; do [ "$prev" != --report-path ] || ${report === undefined ? ':' : `printf '%s' ${shq(report)} > "$a"`}; prev=$a; done\nexit ${exitCode}\n`);
     chmodSync(f, 0o755);
     return f;
   };
@@ -1135,13 +1152,15 @@ describe('gitleaks-public.sh (the old CI steps): fixed labels, and an unreadable
     return { status: r.status, out: r.stdout + r.stderr };
   };
 
-  it('prints a rule name only in a fixed shape; any other text from the tool is counted as "other"', () => {
-    const r = wrap('dir', fake(99, 'github-pat\nEvil Text; rm -rf\nUPPER_case\ngithub-pat\n'));
+  it('prints a count and nothing derived from the output of the tool', () => {
+    const r = wrap('dir', fake(99, 'x\nx\nx\n'));
     assert.equal(r.status, 1, r.out);
-    assert.ok(r.out.includes('gitleaks dir: FAILED (4 finding(s))'), r.out);
-    assert.ok(r.out.includes('rule github-pat: 2'), r.out);
-    assert.ok(r.out.includes('rule other: 2'), r.out);
-    for (const leak of ['Evil', 'rm -rf', 'UPPER']) assert.ok(!r.out.includes(leak), `"${leak}" reached the output: ${r.out}`);
+    assert.ok(r.out.includes('gitleaks dir: FAILED (3 finding(s))'), r.out);
+    assert.ok(!/rule /.test(r.out), r.out);
+    const bad = wrap('dir', fake(99, 'github-pat\nEvil Text; rm -rf\n'));
+    assert.equal(bad.status, 2, `a report that is not what the template writes is unreadable: ${bad.out}`);
+    assert.ok(bad.out.includes('could not read the result'), bad.out);
+    for (const leak of ['github-pat', 'Evil', 'rm -rf']) assert.ok(!bad.out.includes(leak), bad.out);
   });
 
   it('findings with no report or an empty report are "could not read the result" (2), never zero findings', () => {
@@ -1159,7 +1178,7 @@ describe('gitleaks-public.sh (the old CI steps): fixed labels, and an unreadable
     writeFileSync(path.join(sb.repo, '.gitleaksignore'), 'x:y:z:1\n');
     const logfile = path.join(sb.dir, 'args.log');
     const f = path.join(sb.dir, 'logging-gitleaks');
-    writeFileSync(f, `#!/bin/sh\necho "INF 1 commits scanned." >&2\nprintf '%s\\n' "$*" >> ${shq(logfile)}\nfor a in "$@"; do case $a in .*|/*) [ ! -e "$a/.gitleaksignore" ] || echo "IGNOREFILE $a" >> ${shq(logfile)} ;; esac; done\nexit 0\n`);
+    writeFileSync(f, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${shq(logfile)}\nfor a in "$@"; do case $a in .*|/*) [ ! -e "$a/.gitleaksignore" ] || echo "IGNOREFILE $a" >> ${shq(logfile)} ;; esac; done\nexit 0\n`);
     chmodSync(f, 0o755);
     for (const mode of ['dir', 'git']) assert.equal(wrap(mode, f).status, 0);
     const log = readFileSync(logfile, 'utf8');
@@ -1167,7 +1186,8 @@ describe('gitleaks-public.sh (the old CI steps): fixed labels, and an unreadable
     for (const line of log.split('\n').filter(Boolean)) {
       assert.ok(line.includes('gitleaks-gate.toml') && line.includes('--ignore-gitleaks-allow') && line.includes('--gitleaks-ignore-path'), line);
     }
-    assert.ok(log.split('\n').some((l) => l.startsWith('git ') && l.includes('neutral.git')), log);
+    assert.ok(log.split('\n').some((l) => l.startsWith('stdin ')), `the git scan is not a stream of added lines: ${log}`);
+    assert.ok(!log.split('\n').some((l) => l.startsWith('git ')), `gitleaks is asked to read the history: ${log}`);
   });
 });
 
@@ -1175,7 +1195,7 @@ describe('gitleaks-public.sh git: a history that cannot be read is exit 2, never
   const wrapper = path.join(scripts, 'gitleaks-public.sh');
   const okTool = () => {
     const f = path.join(sb.dir, 'ok-gitleaks');
-    writeFileSync(f, '#!/bin/sh\necho "INF 1 commits scanned." >&2\nexit 0\n');
+    writeFileSync(f, '#!/bin/sh\nexit 0\n');
     chmodSync(f, 0o755);
     return f;
   };
@@ -1223,80 +1243,6 @@ describe('gitleaks-public.sh git: a history that cannot be read is exit 2, never
     const r = wrapIn(d);
     assert.equal(r.status, 0, r.out);
     assert.ok(r.out.includes('gitleaks git: ok'), r.out);
-  });
-});
-
-describe('what gitleaks says it scanned is checked against our own list (review round 9, L2)', () => {
-  const words2 = () => words();
-  const wrapper = path.join(scripts, 'gitleaks-public.sh');
-  const wrapWith = (scanned) => {
-    const f = path.join(sb.dir, 'count-gitleaks');
-    writeFileSync(f, `#!/bin/sh\n${scanned === null ? '' : `echo "INF ${scanned} commits scanned." >&2\n`}exit 0\n`);
-    chmodSync(f, 0o755);
-    const r = spawnSync('/bin/sh', [wrapper, 'git', sb.repo], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ GL_BIN: f }) });
-    return { status: r.status, out: r.stdout + r.stderr };
-  };
-
-  it('the gate stops (2) when gitleaks scanned 0 commits of a list that adds lines, more commits than the list, or says nothing', () => {
-    commit(sb, { 'b.txt': 'two\n' });
-    for (const scanned of ['0', '3', 'none']) {
-      const r = runGate(sb, ['--mode', 'words', '--all'], { ...words2(), SHIM_SCANNED: scanned });
-      assert.equal(r.status, 2, `${scanned}: ${r.out}`);
-      assert.ok(r.out.includes('push-gate: step gitleaks could not confirm what it scanned'), r.out);
-      assert.ok(!r.out.includes('push-gate: passed'), r.out);
-    }
-    // gitleaks counts only the commits whose patch has something to scan (a deletion-only or empty commit is not counted),
-    // so fewer than the list is fine when it is not zero
-    for (const scanned of ['1', '2']) {
-      const ok = runGate(sb, ['--mode', 'words', '--all'], { ...words2(), SHIM_SCANNED: scanned });
-      assert.equal(ok.status, 0, `${scanned}: ${ok.out}`);
-    }
-  });
-
-  it('0 scanned is right for a list whose commits add nothing (a deletion-only commit), and not an error', () => {
-    const before = git(sb, 'rev-parse', 'HEAD');
-    removeFile(sb, 'a.txt');
-    const r = runGate(sb, ['--mode', 'words', '--base', before], { ...words2(), SHIM_SCANNED: '0' });
-    assert.equal(r.status, 0, r.out);
-    assert.ok(r.out.includes('(mode words, 1 commit(s))'), r.out);
-  });
-
-  it('the same check applies when gitleaks reports findings', () => {
-    commit(sb, { 'b.txt': 'two\n' });
-    const r = runGate(sb, ['--mode', 'words', '--all'], { ...words2(), SHIM_GITLEAKS_EXIT: '99', SHIM_REPORT_gitleaks: HIT, SHIM_SCANNED: '0' });
-    assert.equal(r.status, 2, r.out);
-    assert.ok(r.out.includes('could not confirm what it scanned'), r.out);
-  });
-
-  it('the gate never prints the gitleaks log', () => {
-    const r = runGate(sb, ['--mode', 'words', '--all'], { ...words2(), SHIM_SCANNED: '1' });
-    assert.ok(!r.out.includes('commits scanned'), r.out);
-  });
-
-  it('the old-step wrapper (git) stops (2) on 0 of a list that adds lines, on more than the list and on no count; 1 or 2 is ok', () => {
-    commit(sb, { 'b.txt': 'two\n' });
-    for (const scanned of [0, 3, null]) {
-      const r = wrapWith(scanned);
-      assert.equal(r.status, 2, `${scanned}: ${r.out}`);
-      assert.ok(r.out.includes('gitleaks git: could not confirm what it scanned'), r.out);
-    }
-    for (const scanned of [1, 2]) {
-      const ok = wrapWith(scanned);
-      assert.equal(ok.status, 0, `${scanned}: ${ok.out}`);
-      assert.ok(!ok.out.includes('commits scanned'), 'the tool log is not printed');
-    }
-  });
-
-  it('0 scanned is right for a history of one empty commit', () => {
-    const d = path.join(sb.dir, 'empty-commit-repo');
-    mkdirSync(d);
-    spawnSync('git', ['-c', 'user.name=Tester', '-c', 'user.email=tester@users.noreply.github.com', 'init', '-q', '-b', 'main'], { cwd: d, env: sb.env() });
-    spawnSync('git', ['-c', 'user.name=Tester', '-c', 'user.email=tester@users.noreply.github.com', 'commit', '-q', '--allow-empty', '-m', 'empty'], { cwd: d, env: sb.env() });
-    const f = path.join(sb.dir, 'zero-gitleaks');
-    writeFileSync(f, '#!/bin/sh\necho "INF 0 commits scanned." >&2\nexit 0\n');
-    chmodSync(f, 0o755);
-    const r = spawnSync('/bin/sh', [wrapper, 'git', d], { cwd: d, encoding: 'utf8', env: sb.env({ GL_BIN: f }) });
-    assert.equal(r.status, 0, r.stdout + r.stderr);
   });
 });
 
@@ -1350,6 +1296,35 @@ describe('gitleaks-public.sh dir: a failing archive step is exit 2 (review round
     const r = spawnSync('/bin/sh', [path.join(scripts, 'gitleaks-public.sh'), 'dir', sb.repo], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ GL_BIN: f }) });
     assert.equal(r.status, 2, r.stdout + r.stderr);
     assert.ok(!(r.stdout + r.stderr).includes('gitleaks dir: ok'), r.stdout + r.stderr);
+  });
+});
+
+describe('an error in the gitleaks log is "could not run", even when it exits 0 or reports findings (review round 10, M3)', () => {
+  const wrapper = path.join(scripts, 'gitleaks-public.sh');
+  for (const [label, line] of [['plain', '6:02PM ERR [stdin] boom error="x"'], ['coloured', '\\033[90m6:02PM\\033[0m \\033[31mERR\\033[0m boom'], ['fatal', '6:02PM FTL something']]) {
+    it(`the gate stops (2) on a ${label} ERR/FTL line, with exit 0 and with findings`, () => {
+      for (const extra of [{}, { SHIM_GITLEAKS_EXIT: '99', SHIM_REPORT_gitleaks: HIT }]) {
+        const r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), ...extra, SHIM_STDERR_gitleaks: line });
+        assert.equal(r.status, 2, r.out);
+        assert.ok(r.out.includes('push-gate: step gitleaks could not run (it logged an error)'), r.out);
+        assert.ok(!r.out.includes('boom'), 'the log is not printed');
+      }
+    });
+    it(`the old-step wrapper stops (2) on a ${label} ERR/FTL line (git and dir)`, () => {
+      const f = path.join(sb.dir, 'err-gitleaks');
+      writeFileSync(f, `#!/bin/sh\nprintf '%b\\n' ${shq(line)} >&2\nexit 0\n`);
+      chmodSync(f, 0o755);
+      for (const mode of ['git', 'dir']) {
+        const r = spawnSync('/bin/sh', [wrapper, mode, sb.repo], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ GL_BIN: f }) });
+        assert.equal(r.status, 2, `${mode}: ${r.stdout + r.stderr}`);
+        assert.ok((r.stdout + r.stderr).includes(`gitleaks ${mode}: could not run (it logged an error)`), r.stdout + r.stderr);
+        assert.ok(!(r.stdout + r.stderr).includes('boom'), 'the log is not printed');
+      }
+    });
+  }
+  it('INF and WRN lines are not errors', () => {
+    const r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_STDERR_gitleaks: '6:02PM WRN leaks found: 0\\n6:02PM INF done' });
+    assert.equal(r.status, 0, r.out);
   });
 });
 

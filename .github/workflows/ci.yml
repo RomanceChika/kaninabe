@@ -35,9 +35,6 @@ jobs:
         env:
           SCAN_WORDS: ${{ secrets.SCAN_WORDS }}
           IS_FORK: ${{ github.event.pull_request.head.repo.fork == true }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           words="$RUNNER_TEMP/scan-words"
           umask 077
@@ -52,8 +49,9 @@ jobs:
           sh scripts/scan-public.sh
           # The squash commit on the base branch is made at merge time from this title and body, so it is checked here,
           # before the merge (scan-public.sh above sees only the commits that already exist).
-          if [ -n "$PR_NUMBER" ]; then
-            printf '%s\n\n%s\n' "$PR_TITLE" "$PR_BODY" > "$RUNNER_TEMP/pr-text"
+          # Read from the event file, not from env: the log prints a step's env, and the text is never printed.
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            jq -r '.pull_request.title, "", (.pull_request.body // "")' "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/pr-text"
             sh scripts/scan-pr-text.sh "$RUNNER_TEMP/pr-text"
           fi
           rm -f "$words"

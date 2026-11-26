@@ -9,7 +9,8 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,6 +35,8 @@ const run = (args, cwd = repo, extra = {}) => {
   const r = spawnSync('/bin/sh', [range, ...args], { cwd, encoding: 'utf8', env: { ...env(), ...extra } });
   return { status: r.status, out: r.stdout, err: r.stderr, all: r.stdout + r.stderr };
 };
+/** The gate arguments of a --gate-args run: line 1 without the list id (line 2 is the range id). */
+const gateArgs = (r) => r.out.split('\n')[0].replace(/ --list-id [0-9a-f]{64}$/, '');
 const lines = (r) => r.out.split('\n').filter(Boolean);
 
 beforeEach(() => {
@@ -54,7 +57,7 @@ describe('push-range.sh', () => {
     const r = run([bare]);
     assert.equal(r.status, 0, r.all);
     assert.deepEqual(lines(r).sort(), [a, b].sort());
-    assert.equal(run(['--gate-args', bare]).out.trim(), '--all');
+    assert.equal(gateArgs(run(['--gate-args', bare])), '--all');
   });
 
   it('subtracts what the destination has, and prints the gate arguments that mean the same set', () => {
@@ -64,7 +67,7 @@ describe('push-range.sh', () => {
     const r = run([bare]);
     assert.equal(r.status, 0, r.all);
     assert.deepEqual(lines(r), [b]);
-    assert.equal(run(['--gate-args', bare]).out.trim(), `--not-on ${a}`);
+    assert.equal(gateArgs(run(['--gate-args', bare])), `--not-on ${a}`);
   });
 
   it('a remote name is read as its push URL', () => {
@@ -162,8 +165,8 @@ describe('push-range.sh: the place it asks is the place the push sends to', () =
     assert.equal(byUrl.status, 0, byUrl.all);
     assert.deepEqual(lines(byUrl).sort(), [a, b].sort(), 'what only the mirror has is not subtracted');
     assert.deepEqual(lines(byName).sort(), lines(byUrl).sort(), 'by name and by URL give the same commits');
-    assert.equal(run(['--gate-args', bare]).out.trim(), '--all');
-    assert.equal(run(['--gate-args', 'origin']).out.trim(), '--all');
+    assert.equal(gateArgs(run(['--gate-args', bare])), '--all');
+    assert.equal(gateArgs(run(['--gate-args', 'origin'])), '--all');
   });
 
   it('a rewrite that is only the same URL again changes nothing: the destination is asked and subtracted', () => {
@@ -259,6 +262,83 @@ describe('push-range.sh: refs/replace and info/grafts of the repository do not c
     git(repo, 'replace', a, c);
     assert.deepEqual(lines(run([bare])).sort(), [b, c].sort());
     assert.deepEqual(lines(run(['--head', c, bare])).sort(), [b, c].sort());
+  });
+});
+
+describe('push-range.sh: the range id binds the destination, the head and the exact commit list', () => {
+  const sha256 = (text) => createHash('sha256').update(text).digest('hex');
+  const idOf = (args, cwd = repo) => {
+    const r = run(['--gate-args', ...args], cwd);
+    assert.equal(r.status, 0, r.all);
+    const [first, second] = r.out.split('\n');
+    return { listId: /--list-id ([0-9a-f]{64})/.exec(first)[1], id: second.replace(/^range-id=/, ''), r };
+  };
+
+  it('is the sha256 of the documented inputs: the URL, the head and the ordered commit list, nothing else', () => {
+    const a = commit(repo, 'a.txt');
+    const b = commit(repo, 'b.txt');
+    const { listId, id } = idOf([bare]);
+    const ordered = git(repo, 'rev-list', 'HEAD').split('\n');
+    assert.deepEqual(ordered.sort(), [a, b].sort());
+    const list = git(repo, 'rev-list', 'HEAD');
+    assert.equal(listId, sha256(`head ${b}\n${list}\n`));
+    assert.equal(id, sha256(`kaninabe-range-v1\nurl ${bare}\nlist ${listId}\n`));
+  });
+
+  it('changes with the destination, with the remote state, and with the head; and not between two asks of the same state', () => {
+    commit(repo, 'a.txt');
+    const first = idOf([bare]).id;
+    assert.equal(idOf([bare]).id, first, 'the same state gives the same id');
+    const other = path.join(dir, 'other.git');
+    git(dir, 'init', '-q', '--bare', other);
+    assert.notEqual(idOf([other]).id, first, 'another destination');
+    git(repo, 'push', '-q', 'origin', 'main');
+    assert.notEqual(idOf([bare]).id, first, 'the destination now has the commit');
+    const state = idOf([bare]).id;
+    commit(repo, 'b.txt');
+    assert.notEqual(idOf([bare]).id, state, 'another head');
+  });
+
+  it('the default output (for the reviewer) names the command that records it', () => {
+    const a = commit(repo, 'a.txt');
+    const { id, r } = idOf([bare]);
+    const plain = run([bare]);
+    assert.deepEqual(lines(plain), [a]);
+    assert.ok(plain.err.includes(`git config kaninabe.contentReviewed "${a} ${id}"`), plain.err);
+    assert.ok(r.status === 0);
+  });
+});
+
+describe('push-range.sh: a forged commit-graph in the repository does not change the range', () => {
+  // The neutral repository borrows the objects directory, including objects/info/commit-graph. A commit-graph is not
+  // content-addressed: git reads parent links from it. Here the parent link of the tip is cut in the graph.
+  const forge = () => {
+    const file = path.join(repo, '.git', 'objects', 'info', 'commit-graph');
+    const buf = readFileSync(file);
+    const nchunks = buf[6];
+    const chunks = {};
+    for (let i = 0; i < nchunks; i += 1) {
+      const o = 8 + i * 12;
+      chunks[buf.subarray(o, o + 4).toString('latin1')] = Number(buf.readBigUInt64BE(o + 4));
+    }
+    return { file, buf, chunks };
+  };
+  it('lists the commits the objects hold even when the graph says the tip has no parent', () => {
+    const a = commit(repo, 'a.txt');
+    const b = commit(repo, 'b.txt');
+    const c = commit(repo, 'c.txt');
+    git(repo, 'commit-graph', 'write', '--reachable');
+    const { file, buf, chunks } = forge();
+    const oids = [];
+    for (let o = chunks.OIDL; o < chunks.OIDL + 20 * 3; o += 20) oids.push(buf.subarray(o, o + 20).toString('hex'));
+    const i = oids.indexOf(c);
+    assert.ok(i >= 0, 'the tip is in the graph');
+    buf.writeUInt32BE(0x70000000, chunks.CDAT + i * 36 + 20); // first parent: none
+    writeFileSync(file, buf);
+    assert.deepEqual(git(repo, 'rev-list', 'HEAD').split('\n'), [c], 'the forged graph is in effect for the real repository');
+    const r = run([bare]);
+    assert.equal(r.status, 0, r.all);
+    assert.deepEqual(lines(r).sort(), [a, b, c].sort());
   });
 });
 

@@ -46,8 +46,11 @@ const SHIM_BODY = (name, exitVar) => `#!/bin/sh
 . "$(dirname "$0")/shim.env"
 printf '%s\\n' "${name} $* #env:\${GITLEAKS_CONFIG-unset}:\${GITLEAKS_CONFIG_TOML-unset}" >> "$SHIM_LOG"
 [ -z "\${SHIM_OUT_${name}:-}" ] || printf '%s' "\${SHIM_OUT_${name}}"
+if [ -n "\${SHIM_REPORT_${name}:-}" ]; then prev=; for a in "$@"; do [ "$prev" != --report-path ] || printf '%s' "\${SHIM_REPORT_${name}}" > "$a"; prev=$a; done; fi
 exit "\${${exitVar}:-0}"
 `;
+/** What a gitleaks finding looks like in the gate's report template: rule, file:line, short commit id. */
+const HIT = 'github-pat a.txt:1 abcdef12\n';
 const shq = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
 
 function which(name) {
@@ -282,7 +285,7 @@ describe('push-gate.sh: the tools fail closed', () => {
   });
 
   it('gitleaks reporting a finding fails the gate; gitleaks erroring stops it', () => {
-    let r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_GITLEAKS_EXIT: '99' });
+    let r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_GITLEAKS_EXIT: '99', SHIM_REPORT_gitleaks: HIT });
     stops(r, 1, 'push-gate: step gitleaks: FAILED');
     r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_GITLEAKS_EXIT: '3' });
     stops(r, 2, 'push-gate: step gitleaks could not run (exit 3)');
@@ -300,7 +303,7 @@ describe('push-gate.sh: the tools fail closed', () => {
 
   it('actionlint reporting a problem fails the gate; actionlint erroring stops it', () => {
     commit(sb, { '.github/workflows/ci.yml': 'name: x\n' });
-    let r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_ACTIONLINT_EXIT: '1' });
+    let r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_ACTIONLINT_EXIT: '1', SHIM_OUT_actionlint: '.github/workflows/ci.yml:3: [syntax-check]|' });
     stops(r, 1, 'push-gate: step workflows: FAILED');
     r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_ACTIONLINT_EXIT: '3' });
     stops(r, 2, 'push-gate: step workflows could not run (exit 3)');
@@ -313,7 +316,7 @@ describe('push-gate.sh: the tools fail closed', () => {
 
   it('a failing step does not hide the others: every step runs and all failures are named', () => {
     commit(sb, { 'b.txt': `${WORD}\n` });
-    const r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_GITLEAKS_EXIT: '99' });
+    const r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_GITLEAKS_EXIT: '99', SHIM_REPORT_gitleaks: HIT });
     assert.equal(r.status, 1, r.out);
     assert.ok(r.out.includes('push-gate: FAILED (gitleaks, scan-public)'), r.out);
   });
@@ -380,7 +383,7 @@ describe('push-gate.sh: which commits are scanned', () => {
     const calls = sb.calls();
     assert.ok(!calls.some((l) => l.startsWith('gitleaks')), 'nothing to scan for secrets');
     assert.ok(calls.some((l) => l.startsWith('actionlint')), 'the workflows are still checked');
-    const bad = runGate(sb, ['--mode', 'words', '--base', 'HEAD'], { ...words(), SHIM_ACTIONLINT_EXIT: '1' });
+    const bad = runGate(sb, ['--mode', 'words', '--base', 'HEAD'], { ...words(), SHIM_ACTIONLINT_EXIT: '1', SHIM_OUT_actionlint: '.github/workflows/ci.yml:3: [syntax-check]|' });
     stops(bad, 1, 'push-gate: step workflows: FAILED');
   });
 
@@ -492,7 +495,7 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
   });
 
   it('names where gitleaks found something without printing it: messages and the tree are reported by place', () => {
-    const r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_GITLEAKS_EXIT: '99' });
+    const r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_GITLEAKS_EXIT: '99', SHIM_REPORT_gitleaks: HIT });
     assert.equal(r.status, 1, r.out);
     assert.equal((r.out.match(/commit message of [0-9a-f]{8}/g) ?? []).length, 2, r.out);
     assert.ok(r.out.includes('tree of HEAD'), r.out);
@@ -611,7 +614,19 @@ beforeEach(() => {
 });
 afterEach(() => sb.cleanup());
 
-const record = (sha) => git(sb, 'config', 'kaninabe.contentReviewed', sha);
+const rangeScript = path.join(scripts, 'push-range.sh');
+/** What push-range.sh prints for the destination: the gate arguments (line 1) and the range id (line 2). */
+const rangeFor = (url = path.join(sb.dir, 'origin.git')) => {
+  const r = spawnSync('/bin/sh', [rangeScript, '--gate-args', url], { cwd: sb.repo, encoding: 'utf8', env: sb.env() });
+  const [args, id] = r.stdout.split('\n');
+  return { status: r.status, args, id: (id ?? '').replace(/^range-id=/, ''), err: r.stderr };
+};
+/** Writes the review record the way the reviewer is told to: "<head sha> <range id>" for the push as it stands now. */
+const record = (sha, url) => {
+  const cur = git(sb, 'rev-parse', 'HEAD');
+  const id = sha === cur ? rangeFor(url).id : '0'.repeat(64);
+  git(sb, 'config', 'kaninabe.contentReviewed', `${sha} ${id}`);
+};
 const words = () => ({ SCAN_WORDS_FILE: sb.words });
 
 describe('pre-push hook', () => {
@@ -961,22 +976,209 @@ describe('pre-push hook: the ways a push can send something else than what the h
     assert.deepEqual(remoteRefs(origin), ['refs/heads/main']);
   });
 
-  it('several push URLs on one remote: the hook runs once per URL and asks each destination about itself', () => {
+  it('several push URLs on one remote: the hook runs once per URL, and the record is for one destination only', () => {
     const origin = path.join(sb.dir, 'origin.git');
     const second = path.join(sb.dir, 'second.git');
     git({ ...sb, cwd: sb.dir }, 'init', '-q', '--bare', second);
-    // the first destination has the commit that holds the word; the second has nothing
     const bad = commit(sb, { 'notes.txt': `${WORD}\n` });
     git(sb, 'push', '-q', '--no-verify', origin, 'main');
     const tip = removeFile(sb, 'notes.txt');
-    record(tip);
+    record(tip, origin);
     git(sb, 'config', 'remote.origin.pushurl', origin);
     git(sb, 'config', '--add', 'remote.origin.pushurl', second);
     const r = realPush({}, 'origin', 'main');
     assert.notEqual(r.status, 0, r.out);
-    assert.ok(r.out.includes('push-gate: step scan-public: FAILED'), `the second URL is scanned from scratch: ${r.out}`);
+    assert.ok(r.out.includes('pre-push: the push range changed since the review'), `the second URL is another destination: ${r.out}`);
     assert.deepEqual(remoteRefs(second), [], 'nothing reached the second destination');
     assert.ok(bad);
+  });
+});
+
+describe('pre-push hook: the review is bound to the destination, the head and the exact commits (review round 8)', () => {
+  const origin = () => path.join(sb.dir, 'origin.git');
+
+  it('a record made for the push as it stands passes', () => {
+    record(head);
+    const r = runHook(sb, { lines: [pushLine(head)], env: words() });
+    assert.equal(r.status, 0, r.out);
+  });
+
+  it('push-range prints the record value to write, and the id is a sha256 of the documented inputs only', () => {
+    const r = spawnSync('/bin/sh', [rangeScript, origin()], { cwd: sb.repo, encoding: 'utf8', env: sb.env() });
+    assert.equal(r.status, 0, r.stderr);
+    const { id } = rangeFor();
+    assert.match(id, /^[0-9a-f]{64}$/);
+    assert.ok(r.stderr.includes(`git config kaninabe.contentReviewed "${head} ${id}"`), r.stderr);
+  });
+
+  it('a record made for remote state A is refused when the remote changed: the branch was pushed, then deleted', () => {
+    record(head); // the destination has nothing: the range is the whole history
+    git(sb, 'push', '-q', 'origin', 'main'); // now it has the commit: the range is empty
+    let r = runHook(sb, { lines: [pushLine(head)], env: words() });
+    assert.notEqual(r.status, 0, r.out);
+    assert.ok(r.out.includes('pre-push: the push range changed since the review'), r.out);
+    assert.ok(r.out.includes('0 commit(s) now'), r.out);
+    assert.ok(r.out.includes('review must be redone on the new range'), r.out);
+    assert.deepEqual(sb.calls(), []);
+    record(head); // reviewed for state B (empty range)
+    spawnSync('git', ['update-ref', '-d', 'refs/heads/main'], { cwd: origin(), env: sb.env() }); // the branch is deleted
+    r = runHook(sb, { lines: [pushLine(head)], env: words() });
+    assert.notEqual(r.status, 0, r.out);
+    assert.ok(r.out.includes('1 commit(s) now'), r.out);
+    assert.ok(!r.out.includes(WORD));
+  });
+
+  it('a record made for remote state A is refused when the remote branch was moved back', () => {
+    git(sb, 'push', '-q', 'origin', 'main');
+    const c2 = commit(sb, { 'b.txt': 'two\n' });
+    const c3 = commit(sb, { 'c.txt': 'three\n' });
+    git(sb, 'push', '-q', 'origin', 'main'); // the destination has c3
+    commit(sb, { 'd.txt': 'four\n' });
+    const tip = git(sb, 'rev-parse', 'HEAD');
+    record(tip); // reviewed: only the tip is new
+    assert.equal(runHook(sb, { lines: [pushLine(tip, c3)], env: words() }).status, 0);
+    spawnSync('git', ['update-ref', 'refs/heads/main', c2], { cwd: origin(), env: sb.env() }); // moved back to c2
+    const r = runHook(sb, { lines: [pushLine(tip, c3)], env: words() });
+    assert.notEqual(r.status, 0, r.out);
+    assert.ok(r.out.includes('pre-push: the push range changed since the review'), r.out);
+    assert.ok(r.out.includes('2 commit(s) now'), r.out);
+  });
+
+  it('a record made for one destination is refused for another URL', () => {
+    record(head);
+    const other = path.join(sb.dir, 'other.git');
+    git({ ...sb, cwd: sb.dir }, 'init', '-q', '--bare', other);
+    const r = runHook(sb, { lines: [pushLine(head)], env: words(), url: other });
+    assert.notEqual(r.status, 0, r.out);
+    assert.ok(r.out.includes('pre-push: the push range changed since the review'), r.out);
+    assert.deepEqual(sb.calls(), []);
+  });
+
+  it('a record in the old form (the commit id alone) is refused, with the instruction', () => {
+    git(sb, 'config', 'kaninabe.contentReviewed', head);
+    const r = runHook(sb, { lines: [pushLine(head)], env: words() });
+    assert.notEqual(r.status, 0, r.out);
+    assert.ok(r.out.includes('the review record has the old form (a commit id only)'), r.out);
+    assert.ok(r.out.includes('sh scripts/push-range.sh'), r.out);
+    assert.deepEqual(sb.calls(), []);
+  });
+
+  it('the gate is told which commit list the id was computed from and stops if it scans another', () => {
+    const { args, id } = rangeFor();
+    assert.ok(id);
+    const listId = /--list-id ([0-9a-f]{64})/.exec(args)?.[1];
+    assert.ok(listId, `no list id in the gate arguments: ${args}`);
+    const base = ['--mode', 'words', ...args.replace(/ --list-id \S+/, '').split(' ')];
+    const ok = runGate(sb, [...base, '--list-id', listId], words());
+    assert.equal(ok.status, 0, ok.out);
+    const bad = runGate(sb, [...base, '--list-id', '0'.repeat(64)], words());
+    assert.equal(bad.status, 2, bad.out);
+    assert.ok(bad.out.includes('push-gate: the commits to scan are not the list the range id was computed from'), bad.out);
+    commit(sb, { 'later.txt': 'x\n' }); // the list now has another commit: the id of the earlier list no longer fits
+    const stale = runGate(sb, [...base, '--list-id', listId], words());
+    assert.equal(stale.status, 2, stale.out);
+  });
+});
+
+describe('push-gate.sh: public labels are trusted fixed labels, and a result that cannot be read is not "zero findings" (review round 8)', () => {
+  const env = (extra) => ({ ...words(), CI: 'true', ...extra });
+
+  it('a gitleaks exit for findings with no report, an empty report or a report that does not parse is "could not read the result" (2), not findings', () => {
+    for (const report of [undefined, '\n', 'not a finding line\n']) {
+      const e = { SHIM_GITLEAKS_EXIT: '99' };
+      if (report !== undefined) e.SHIM_REPORT_gitleaks = report;
+      const r = runGate(sb, ['--mode', 'words', '--all'], env(e));
+      assert.equal(r.status, 2, `${JSON.stringify(report)}: ${r.out}`);
+      assert.ok(r.out.includes('push-gate: step gitleaks could not read the result'), r.out);
+      assert.ok(!r.out.includes('FAILED (0 finding'), r.out);
+    }
+  });
+
+  it('an actionlint exit for problems with no readable output is "could not read the result" (2)', () => {
+    const r = runGate(sb, ['--mode', 'words', '--all'], env({ SHIM_ACTIONLINT_EXIT: '1' }));
+    assert.equal(r.status, 2, r.out);
+    assert.ok(r.out.includes('push-gate: step workflows could not read the result'), r.out);
+  });
+
+  it('a rule or kind name from the tool is printed only in a fixed shape; anything else is counted as "other"', () => {
+    commit(sb, { '.github/workflows/ci.yml': 'name: x\n' });
+    const r = runGate(sb, ['--mode', 'words', '--all'], env({
+      SHIM_GITLEAKS_EXIT: '99',
+      SHIM_REPORT_gitleaks: 'Evil_Rule-Text a.txt:1 abcdef12\ngithub-pat b.txt:2 abcdef12\nx;rm-rf c.txt:3 abcdef12\n',
+      SHIM_ACTIONLINT_EXIT: '1',
+      SHIM_OUT_actionlint: '.github/workflows/ci.yml:3: [Evil Kind!]|.github/workflows/ci.yml:4: [syntax-check]|',
+    }));
+    assert.equal(r.status, 1, r.out);
+    assert.ok(r.out.includes('rule github-pat: 1'), r.out);
+    assert.ok(r.out.includes('rule syntax-check: 1'), r.out);
+    assert.ok(r.out.includes('rule other: '), r.out);
+    for (const leak of ['Evil_Rule', 'Evil Kind', 'x;rm-rf', 'a.txt', 'ci.yml']) assert.ok(!r.out.includes(leak), `"${leak}" reached the public output: ${r.out}`);
+  });
+});
+
+describe('gitleaks-public.sh (the old CI steps): fixed labels, and an unreadable result is not "ok" (review round 8)', () => {
+  const wrapper = path.join(scripts, 'gitleaks-public.sh');
+  const fake = (exitCode, report) => {
+    const f = path.join(sb.dir, 'fake-gitleaks');
+    writeFileSync(f, `#!/bin/sh\nprev=\nfor a in "$@"; do [ "$prev" != --report-path ] || ${report === undefined ? ':' : `printf '%s' ${shq(report)} > "$a"`}; prev=$a; done\nexit ${exitCode}\n`);
+    chmodSync(f, 0o755);
+    return f;
+  };
+  const wrap = (mode, bin) => {
+    const r = spawnSync('/bin/sh', [wrapper, mode, sb.repo], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ GL_BIN: bin }) });
+    return { status: r.status, out: r.stdout + r.stderr };
+  };
+
+  it('prints a rule name only in a fixed shape; any other text from the tool is counted as "other"', () => {
+    const r = wrap('dir', fake(99, 'github-pat\nEvil Text; rm -rf\nUPPER_case\ngithub-pat\n'));
+    assert.equal(r.status, 1, r.out);
+    assert.ok(r.out.includes('gitleaks dir: FAILED (4 finding(s))'), r.out);
+    assert.ok(r.out.includes('rule github-pat: 2'), r.out);
+    assert.ok(r.out.includes('rule other: 2'), r.out);
+    for (const leak of ['Evil', 'rm -rf', 'UPPER']) assert.ok(!r.out.includes(leak), `"${leak}" reached the output: ${r.out}`);
+  });
+
+  it('findings with no report or an empty report are "could not read the result" (2), never zero findings', () => {
+    for (const mode of ['dir', 'git']) {
+      for (const report of [undefined, '\n']) {
+        const r = wrap(mode, fake(99, report));
+        assert.equal(r.status, 2, `${mode} ${JSON.stringify(report)}: ${r.out}`);
+        assert.ok(r.out.includes(`gitleaks ${mode}: could not read the result`), r.out);
+        assert.ok(!r.out.includes('0 finding'), r.out);
+      }
+    }
+  });
+
+  it('runs the tool with the fixed config and the neutralising flags, on a copy without .gitleaksignore (dir) or on the neutral repository (git)', () => {
+    writeFileSync(path.join(sb.repo, '.gitleaksignore'), 'x:y:z:1\n');
+    const logfile = path.join(sb.dir, 'args.log');
+    const f = path.join(sb.dir, 'logging-gitleaks');
+    writeFileSync(f, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${shq(logfile)}\nfor a in "$@"; do case $a in .*|/*) [ ! -e "$a/.gitleaksignore" ] || echo "IGNOREFILE $a" >> ${shq(logfile)} ;; esac; done\nexit 0\n`);
+    chmodSync(f, 0o755);
+    for (const mode of ['dir', 'git']) assert.equal(wrap(mode, f).status, 0);
+    const log = readFileSync(logfile, 'utf8');
+    assert.ok(!log.includes('IGNOREFILE'), `an ignore file was in the scanned source: ${log}`);
+    for (const line of log.split('\n').filter(Boolean)) {
+      assert.ok(line.includes('gitleaks-gate.toml') && line.includes('--ignore-gitleaks-allow') && line.includes('--gitleaks-ignore-path'), line);
+    }
+    assert.ok(log.split('\n').some((l) => l.startsWith('git ') && l.includes('neutral.git')), log);
+  });
+});
+
+describe('the scans stop for a repository they cannot read, instead of scanning less (review round 8)', () => {
+  it('a sha256 repository stops the gate and push-range (the neutral repository is sha1)', () => {
+    const dirSha256 = path.join(sb.dir, 'sha256');
+    mkdirSync(dirSha256);
+    const run = (cwd, ...args) => spawnSync('git', ['-c', 'user.name=Tester', '-c', 'user.email=tester@users.noreply.github.com', ...args], { cwd, encoding: 'utf8', env: sb.env() });
+    run(dirSha256, 'init', '-q', '--object-format=sha256', '-b', 'main');
+    writeFileSync(path.join(dirSha256, 'a.txt'), 'x\n');
+    run(dirSha256, 'add', 'a.txt');
+    run(dirSha256, 'commit', '-q', '-m', 'x');
+    const g = spawnSync('/bin/sh', [gate, '--mode', 'words', '--all'], { cwd: dirSha256, encoding: 'utf8', env: sb.env(words()) });
+    assert.equal(g.status, 2, g.stdout + g.stderr);
+    assert.ok(!(g.stdout + g.stderr).includes('push-gate: passed'));
+    const rg = spawnSync('/bin/sh', [rangeScript, path.join(sb.dir, 'origin.git')], { cwd: dirSha256, encoding: 'utf8', env: sb.env() });
+    assert.equal(rg.status, 2, rg.stdout + rg.stderr);
   });
 });
 }

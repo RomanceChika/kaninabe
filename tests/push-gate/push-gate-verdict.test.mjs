@@ -501,3 +501,53 @@ describe('scripts/gitleaks-public.sh: what the old CI steps print, with the real
     assert.equal(run(['nonsense']).status, 2);
   });
 });
+
+describe('scripts/gitleaks-public.sh with the real gitleaks: nothing in the scanned tree can change what it reads or prints (review round 8)', () => {
+  const run = (args) => {
+    const r = spawnSync('/bin/sh', [path.join(path.dirname(gate), 'gitleaks-public.sh'), ...args], { cwd: repo, encoding: 'utf8', env: env() });
+    return { status: r.status, out: r.stdout + r.stderr };
+  };
+
+  it('an in-tree config that names its own rule does not get its rule id into the output (the config is not read)', () => {
+    const marker = 'attackerchosenword';
+    commit({
+      '.gitleaks.toml': `[[rules]]\nid = "zz-attacker-chosen-text"\ndescription = "x"\nregex = '''${marker}'''\n`,
+      'x.txt': `${marker}\n`,
+    });
+    for (const mode of ['dir', 'git']) {
+      const r = run([mode, '.']);
+      assert.equal(r.status, 0, `${mode}: ${r.out}`);
+      assert.ok(!r.out.includes('zz-attacker'), r.out);
+      assert.ok(r.out.includes(`gitleaks ${mode}: ok`), r.out);
+    }
+  });
+
+  it('an in-tree .gitleaksignore and an inline gitleaks:allow do not silence a key', () => {
+    const key = fakeKey();
+    commit({ 'conf.txt': `token = ${key}\n`, '.gitleaksignore': 'conf.txt:github-pat:1\n' });
+    let r = run(['dir', '.']);
+    assert.equal(r.status, 1, `.gitleaksignore: ${r.out}`);
+    assert.ok(r.out.includes('rule github-pat: 1'), r.out);
+    commit({ 'conf.txt': `token = ${key} # gitleaks:allow\n` });
+    for (const mode of ['dir', 'git']) {
+      r = run([mode, '.']);
+      assert.equal(r.status, 1, `${mode} with inline allow: ${r.out}`);
+    }
+  });
+
+  it('state inside the repository (local config, info/attributes, a replace ref) does not silence the git scan either', () => {
+    const key = fakeKey();
+    commit({ 'a.txt': 'one\n' });
+    const c2 = commit({ 'conf.txt': `token = ${key}\n` });
+    git('rm', '-q', 'conf.txt');
+    git('commit', '-q', '-m', 'remove');
+    mkdirSync(path.join(repo, '.git', 'info'), { recursive: true });
+    writeFileSync(path.join(repo, '.git', 'info', 'attributes'), '* -diff\n');
+    git('config', 'color.diff', 'always');
+    git('replace', c2, git('rev-parse', 'HEAD~2'));
+    const r = run(['git', '.']);
+    assert.equal(r.status, 1, r.out);
+    assert.ok(r.out.includes('rule github-pat: 1'), r.out);
+  });
+});
+

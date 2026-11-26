@@ -78,7 +78,17 @@ failed=
 # and the tree of HEAD exported cleanly (not the working tree). Findings exit 99 (so that gitleaks' own errors, which
 # exit 1, are told apart from findings); anything else is "could not run". Reports are templates that hold only the
 # rule, the file, the line and the short commit id; a message is reported by its commit id alone.
-gl_flags="--no-banner --redact --exit-code 99 --log-level error"
+# Nothing in the scanned tree may change what is read: the configuration is the fixed file next to this script (not
+# .gitleaks.toml of the tree, not GITLEAKS_CONFIG / GITLEAKS_CONFIG_TOML); the ignore file is a path that does not exist
+# (not the default ".", where a .gitleaksignore of the tree would be read); inline `gitleaks:allow` comments are not
+# honoured; no baseline is given. Every GITLEAKS_* variable is dropped.
+for v in $(env | sed -n 's/^\(GITLEAKS_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
+# gitleaks also reads <source>/.gitleaksignore whatever --gitleaks-ignore-path says, so the history is scanned with the git
+# directory as the source (it holds no such file) and the exported tree has every .gitleaksignore taken out before the scan.
+gitdir=$(git rev-parse --absolute-git-dir) || die "could not find the git directory"
+gl_config="$here/gitleaks-gate.toml"
+[ -f "$gl_config" ] && [ -r "$gl_config" ] || die "gitleaks-gate.toml is missing next to the gate"
+gl_flags="--no-banner --redact --exit-code 99 --log-level error --config $gl_config --gitleaks-ignore-path $tmp/no-gitleaksignore --ignore-gitleaks-allow"
 if [ "$count" -gt 0 ]; then
   printf '%s\n' '{{ range . }}{{ .RuleID }} {{ .File }}:{{ .StartLine }} {{ printf "%.8s" .Commit }}{{ "\n" }}{{ end }}' > "$tmp/gitleaks.tpl"
   gl_report="--report-format template --report-template $tmp/gitleaks.tpl"
@@ -86,7 +96,7 @@ if [ "$count" -gt 0 ]; then
   gl_msgs=0
   rc=0
   # shellcheck disable=SC2086
-  gitleaks git $gl_flags $gl_report --report-path "$tmp/gitleaks.out" --log-opts="-m $revs" . > /dev/null 2>&1 || rc=$?
+  gitleaks git $gl_flags $gl_report --report-path "$tmp/gitleaks.out" --log-opts="-m $revs" "$gitdir" > /dev/null 2>&1 || rc=$?
   case $rc in 0) ;; 99) [ ! -f "$tmp/gitleaks.out" ] || grep . "$tmp/gitleaks.out" >> "$gl_lines" || true; echo x > "$tmp/gl.found" ;; *) die "step gitleaks could not run (exit $rc)" ;; esac
   : > "$tmp/gl.msgs"
   for c in $(cat "$tmp/commits"); do
@@ -98,6 +108,7 @@ if [ "$count" -gt 0 ]; then
   done
   mkdir "$tmp/head"
   git archive HEAD | tar -x -C "$tmp/head" || die "step gitleaks could not run (could not export HEAD)"
+  find "$tmp/head" -name .gitleaksignore -exec rm -f {} + || die "step gitleaks could not run (could not prepare the export of HEAD)"
   rm -f "$tmp/gitleaks.out"; rc=0; tree_n=0
   # shellcheck disable=SC2086
   ( cd "$tmp/head" && gitleaks dir $gl_flags $gl_report --report-path "$tmp/gitleaks.out" . ) > /dev/null 2>&1 || rc=$?

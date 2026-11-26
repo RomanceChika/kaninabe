@@ -153,3 +153,46 @@ describe('push-gate.sh with the real tools', () => {
     assert.ok(r.out.includes('(mode general, 2 commit(s))'), r.out);
   });
 });
+
+describe('push-gate.sh with the real tools: a file in the tree cannot silence gitleaks', () => {
+  /** What plain gitleaks (no --config, as the old scans call it) says about the repository: 0 means silenced. */
+  const plain = (extra = {}) =>
+    spawnSync('gitleaks', ['git', '--no-banner', '--log-level', 'error', '--exit-code', '99', '.'], {
+      cwd: repo, encoding: 'utf8', env: { ...env(extra), PATH: process.env.PATH },
+    }).status;
+  const ALLOW_ALL = '[extend]\nuseDefault = true\n[allowlist]\npaths = [".*"]\n';
+
+  it('a .gitleaks.toml that allowlists every path', () => {
+    const key = fakeKey();
+    commit({ '.gitleaks.toml': ALLOW_ALL });
+    commit({ 'conf.txt': `token = ${key}\n` });
+    assert.equal(plain(), 0, 'sanity: the in-tree config does silence a plain scan');
+    stoppedOnKey(general(), key);
+  });
+
+  it('a .gitleaksignore that lists the fingerprints of the finding', () => {
+    const key = fakeKey();
+    const sha = commit({ 'conf.txt': `token = ${key}\n` });
+    commit({ '.gitleaksignore': `${sha}:conf.txt:github-pat:1\nconf.txt:github-pat:1\n` });
+    assert.equal(plain(), 0, 'sanity: the ignore file does silence a plain scan');
+    stoppedOnKey(general(), key);
+  });
+
+  it('GITLEAKS_CONFIG in the environment, pointing at an allow-everything file', () => {
+    const key = fakeKey();
+    commit({ 'conf.txt': `token = ${key}\n` });
+    const allow = path.join(dir, 'allow.toml');
+    writeFileSync(allow, ALLOW_ALL);
+    assert.equal(plain({ GITLEAKS_CONFIG: allow }), 0, 'sanity: the variable does silence a plain scan');
+    stoppedOnKey(gateRun(['--mode', 'general', '--all'], { GITLEAKS_CONFIG: allow }), key);
+    const toml = gateRun(['--mode', 'general', '--all'], { GITLEAKS_CONFIG_TOML: ALLOW_ALL });
+    stoppedOnKey(toml, key);
+  });
+
+  it('an inline gitleaks:allow comment', () => {
+    const key = fakeKey();
+    commit({ 'conf.txt': `token = ${key} # gitleaks:allow\n` });
+    assert.equal(plain(), 0, 'sanity: the comment does silence a plain scan');
+    stoppedOnKey(general(), key);
+  });
+});

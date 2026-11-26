@@ -36,7 +36,7 @@ const CORE = [
 ];
 
 const SHIM_BODY = (name, exitVar) => `#!/bin/sh
-printf '%s\\n' "${name} $*" >> "$SHIM_LOG"
+printf '%s\\n' "${name} $* #env:\${GITLEAKS_CONFIG-unset}:\${GITLEAKS_CONFIG_TOML-unset}" >> "$SHIM_LOG"
 [ -z "\${SHIM_OUT_${name}:-}" ] || printf '%s' "\${SHIM_OUT_${name}}"
 exit "\${${exitVar}:-0}"
 `;
@@ -454,6 +454,19 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     assert.ok(calls.some((l) => l.startsWith('gitleaks git') && l.includes('--log-opts=-m HEAD')), calls.join('\n'));
     assert.equal(calls.filter((l) => l.startsWith('gitleaks stdin')).length, 2, 'one per commit message');
     assert.ok(calls.some((l) => l.startsWith('gitleaks dir')), calls.join('\n'));
+  });
+
+  it('closes every way a file in the tree could change what gitleaks reads: fixed config, no ignore file, no inline allow', () => {
+    const r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), GITLEAKS_CONFIG: '/nonexistent/allow.toml', GITLEAKS_CONFIG_TOML: 'x' });
+    assert.equal(r.status, 0, r.out);
+    const calls = sb.calls().filter((l) => l.startsWith('gitleaks '));
+    assert.equal(calls.length, 4, 'git, stdin x2, dir');
+    for (const call of calls) {
+      assert.ok(call.includes('--config') && call.includes('gitleaks-gate.toml'), `no fixed config: ${call}`);
+      assert.ok(call.includes('--gitleaks-ignore-path'), `no ignore path: ${call}`);
+      assert.ok(call.includes('--ignore-gitleaks-allow'), `inline allow honoured: ${call}`);
+      assert.ok(call.endsWith('#env:unset:unset'), `the config environment variables reach gitleaks: ${call}`);
+    }
   });
 
   it('names where gitleaks found something without printing it: messages and the tree are reported by place', () => {

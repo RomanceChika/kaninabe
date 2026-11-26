@@ -42,6 +42,7 @@
 | ログを出す | [logging.md](docs/rules/process/backend/system/standards/conventions/logging.md) |
 | どのサービスに何を載せるか | [ARCH-0001](docs/rules/architecture/system/common/ARCH-0001-compute-placement.md) |
 | 造語を足す・綴りを改める | [term-ledger-writing.md](docs/rules/process/common/specification/standards/term-ledger-writing.md)(造語は台帳に載せてから使う) |
+| PR を出す・review を頼む・CI の起動を変える・merge する | [development-flow.md](docs/rules/process/common/development-flow.md)(どの検査を・どこで・いつ回すか。merge の条件) |
 | ルール文書の追加・変更 | [how-to-create-rules.md](docs/rules/meta/playbooks/how-to-create-rules.md) + [placement_policy.md](docs/rules/meta/standards/placement_policy.md) |
 | 検証器・生成器(`legacy/spec-tools`)のコードを書く | [scripts-code-quality.md](docs/rules/process/common/tooling/standards/scripts-code-quality.md) |
 | 実行時パッケージ(`framework/runtime`)の位置づけ | [ADR-0013](docs/rules/decisions/common/ADR-0013-framework-runtime-package.md) |

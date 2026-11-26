@@ -31,7 +31,7 @@ scope: common
 - `.github/**` を変える PR は、**どちらのリポジトリでも、ほかの変更と混ぜず、2 人の reviewer に「必要な検査が飛ばされる経路」と「権限(`permissions` と、書き込みをする step)」を必ず見てもらう**。merge したら、何を変えたかを持ち主に知らせる(承認を待つ種類ではない)。
 - **書き込み・secret・production に届く job は、review を受けた定義からしか動かさない。** review を受けた定義とは、base 側の定義で動くもの(pr-gate、`dev` への push の CI、`dev` の定義で起動する tag と release の workflow)である。PR や branch への push で動く workflow(review の前の定義で動く)は、読み取りの権限だけにし、secret を参照しない。語の一覧による走査は pr-gate と `dev` への push の CI に置き、pr-gate は PR の commit を fetch して data として読んで走査する(実行しない。PR の code を base の checkout に混ぜない)。PR を開く前の branch への push には、CI の側の語の一覧の走査が入らない。そこを見るのは push の前の手元の走査だけである(known gaps に書く)。この形を守らせるために、pr-gate が PR の workflow の file を data として読み、起動の種類ごとに次を確かめて、破れていれば赤にする。同じ検査を push の前に手元でも回す(決まり)。
   - `pull_request` と、`dev` 以外への `push` で動く workflow: 書き込みの権限も secret も求めない。
-  - `workflow_dispatch` で動く workflow(起動する ref を選べ、その ref の定義で動く): 書き込みの権限か secret を求めるなら、それを使うどの job も、最初の step で `github.ref` が `dev` でなければ失敗して終わる。
+  - `workflow_dispatch` で動く workflow(起動する ref を選べ、その ref の定義で動く): 書き込みの権限か secret を求めるなら、それを使うどの job も、最初の step で `github.ref` が `dev` でなければ失敗して終わる。**これは、正しい定義を間違った ref で起動する操作の誤りを止めるだけである。** 書き換えられた ref の定義は、この step ごと消せる。権限を渡す側の制約は別に置く: secret は、使える plan では、`dev` と `main` からの起動だけに渡す設定(environment の branch の制限)に入れる。書き込みの先(`dev`、`main`、tag)は、使える plan では ruleset で守る。どちらも使えないリポジトリでは、渡す側の制約は無く、守るのは pr-gate の静的な検査と「`dev` のほかの ref から起動しない」という決まりだけである(known gaps に書く)。
   - `schedule` と `workflow_run`: default branch の定義でしか動かないので、対象にしない。
   - 判定を file の単位でできるように、書き込みの権限か secret を使う workflow と、PR や branch への push で動く workflow は、別の file に分ける(1 つの file に両方の trigger を書かない)。
 
@@ -54,7 +54,7 @@ branch は両方とも `dev`(開発の幹。default branch)と `main`(release)�
 
 1. **branch を切る。** 1 つの PR は 1 つの目的にする。pin の移動・依存の更新・CI や検査の変更は、ほかの変更と混ぜない。例外は 1 つだけで、pin の PR には、新しい版に追従するために要る最小の修正を入れてよい。framework の直しを product が pin する必要があるときは、version を上げる変更を同じ PR に入れる(tag のための PR を別に作らない。pin する必要が無い直しでは version を上げず、次に上げる PR にまとめて載せる)。
 2. **draft で作る。** PR は必ず draft で作る(product では draft でない PR は「proof を取って merge する番」を意味する)。push の前に手元で、その変更に要る段を回す。CI をコンパイラ代わりに使わない。
-3. **draft のまま review を頼む。** 2 人の reviewer に**同じ head** を並行で頼む(「review」の節)。
+3. **draft のまま review を頼む。** 2 人の reviewer に**同じ head** を頼む(「review」の節)。public では、Opus が push の前に手元で読み、公開してよいと答えてから push し、push のあとに Codex へ同じ head を頼む(「security」の節)。private では、push のあとに 2 人へ並行で頼む。
 4. **指摘を直す。** 2 人の指摘が出そろってから、全部を仕分けし(採用 / 不採用と根拠 / 別件として起票)、**1 回の push** にまとめる。指摘 1 件ごとに push しない。
 5. **直した差分を再 review に出す。** 2 人とも収束する(「review」の節の定義)まで 4 と 5 を繰り返す。
 6. **記録を書いて ready にする。** ready の直前に、手元で `dev` の先頭と merge した木に対して検査を回しておく。review の記録(2 人が見た head の sha)を PR の本文に書いてから、ready for review にする。**ready は「review が済んだので proof を取る」という合図である。** proof が赤で push が要るなら、draft に戻し、直した差分だけを 2 人に見てもらってから ready にし直す。
@@ -172,7 +172,7 @@ framework では種類で検査を減らさないので、この表は product �
   - job を 1 つにまとめる(分単位の切り上げが job ごとにかかるため)。依存の cache を使う。
   - merge の後に検査を取り直さない(入る木は proof を取った木と同じである。原則 2)。
   - PR をまとめる。細かい直しを 1 本ずつ PR にしない。
-- **使用分数を測る。** `dev` の merge 後の job が、その月の run の時間を API から集計して残りを出す(別の job を立てない)。課金と同じく、job ごとに分単位に切り上げてから足す。
+- **使用分数を測る。** `dev` の merge 後の job が、その月の run の時間を API から集計して残りを出す(別の job を立てない)。課金と同じく、job ごとに分単位に切り上げてから足す。この集計は**見積もり**である。無料の枠は account で共有され、ほかのリポジトリやほかの種類の利用でも減り、runner の種類で 1 分の重みが違う。下の 2 本の線に近づいたら(使える残りが 400 分を切ったら)、持ち主が account の請求の画面の残りを確かめ、線の判定はその数で行う。
 - **足りなくなりそうなとき。** 判定は割合ではなく、**残りの分数から、取り置きのうちまだ使っていない分を引いた数**(以下「使える残り」)で行う。計画どおりの月には、どちらの線にも当たらない。使える残りが 200 分を切ったら、週 2 回の `full` とその前倒しを止め、持ち主に知らせる(毎晩の evidence は続く。止めているあいだは proof の `full` が pin と release のときだけになるので、release の予定があるなら、その数日前に 1 回回して余裕を取る)。使える残りが 60 分を切ったら、新しい PR を ready にするのを止め、持ち主が次のどれかを選ぶ: 上限を決めて追加の分数を買う / 月が替わるまで merge を止める / 複数の PR を 1 本にまとめて proof を 1 回にする。**evidence だけで merge する道は置かない**(原則 1)。
 - **framework 側は絞らない。** ただし branch への push と PR の二重起動はやめる(速さのため)。
 
@@ -181,13 +181,20 @@ framework では種類で検査を減らさないので、この表は product �
 - **public への push は公開である。** CI の走査は事後の検出にすぎない。予防は手元にしか置けない。
   - 語の一覧は、リポジトリの外の、開発の環境だけが読める場所に置く。push の前に、その一覧を使って CI と同じ走査を回す。hook は環境の setup で入れる(`core.hooksPath`)。
   - hook は `--no-verify` や未設定で飛ばせるので、**「飛ばさない」は決まり**である。
-- **push の前の関門(public)。** push の前に、1 つの script が次を全部回す。1 つでも赤なら push しない。**検査に要るもの(語の一覧、走査の道具)が無いときも、通さずに止める。** hook(pre-push)がこの script を呼ぶ。CI も同じ script を回す(手元と CI で検査の中身を変えない)。
-  - 走査(一般の走査と語の一覧)。対象は先頭の木ではなく、**これから push する commit の全部**(途中の commit も公開される)と、その commit message。
-  - 走査の対象は「追跡している全部の file」が既定である。外すものは file を 1 つずつ名指しし、理由を書く。dir ごと・拡張子ごとには外さない。外す一覧の変更は、`.github/**` と同じ扱いの変更にする(混ぜない、review の観点に入れる)。test の data に使う mail address や host は、予約された例示用の domain だけにする(走査が、それ以外を file の種類によらず赤にする)。
+- **push の前の関門(public)。** push の前に、1 つの script が次を全部回す(数十秒で終わるものだけを入れる。`light` などの品質の検査は入れない。遅い関門は飛ばす誘因になり、飛ばすと走査も一緒に飛ぶ)。1 つでも赤なら push しない。hook(pre-push)がこの script を呼ぶ。CI も同じ script を回す。走査の規則の file は 1 つで、**語の一覧を使うかどうかだけが、明示の mode で変わる**。
+  - 語の一覧が必須の mode: 手元(hook)、pr-gate、`dev` への push の CI。**語の一覧や走査の道具が無ければ、通さずに止める。** hook は必ずこの mode で呼ぶ(mode を手で変えないのは決まり)。
+  - 一般の走査だけの mode: PR や branch への push で動く CI と、fork の PR。語の一覧を求めない(「何から守るか」の secret の扱いのとおり)。走査の道具が無ければ止めるのは同じである。
+  - 走査。対象は先頭の木ではなく、**これから push する commit の全部**(途中の commit も公開される)と、その commit message。範囲は、手元では「どの remote の ref からも辿れない commit」、PR では base から head、`dev` への push では push の前から後までである。
+  - 走査の対象は「追跡している全部の file」が既定である。外すものは file を 1 つずつ名指しし、理由を書く。dir ごと・拡張子ごとには外さない。外す一覧の変更は、`.github/**` と同じ扱いの変更にする(混ぜない、review の観点に入れる)。mail address の形をしたものは、予約された例示用の domain と、決めた noreply の形だけを通し、それ以外は file の種類によらず赤にする。host は、test と fixture の木の中に限って、予約された例示用の domain だけを通す。
   - workflow の書き方の検査(YAML として読めること、action の定義として正しいこと、「何から守るか」の権限と secret の形)。
-  - `light` の検査(verify など。時間のかかる段は入れない)。
-- **push の前の review(public)。** 機械の走査は、一覧に無い語や文脈までは見られない。public への push の前に、push する差分を、作り手と別の reviewer(Opus)が「公開してよいか」の観点だけで読む(product の事実、人の名前、内部の事情、実物に見える data)。review の直しは 1 回の push にまとめるので、これは 1 巡に 1 回である。reviewer が読んだ commit の sha を手元に記録し、hook は、その記録が push する先頭の commit と一致しなければ止める(commit を足したら読み直す)。この記録は作り手の側で書けるので、防げるのは「読み忘れたまま push する」までで、「読んだことにする」は防げない。**そこは決まり**である(known gaps に書く)。
-- **走らなかった検査は合格ではない。** 書き方の誤りで起動しない workflow は、赤にならずに消える。merge-check と branch-guard は、求めた検査を**名前で**数え、その run が無ければ不合格にする(「赤が無い」では合格にしない)。workflow を足すか直した PR は、その workflow が実際に 1 回走ったことを run で確かめてから merge する。
+- **push の前の review(public)。** 機械の走査は、一覧に無い語や文脈までは見られない。public への push の前に、push する差分を Opus が手元で読み、「公開してよいか」(product の事実、人の名前、内部の事情、実物に見える data)に答える。これは別の review ではなく、**その巡の Opus の review そのもの**である。Opus は 1 回の答えで、公開の可否と、内容への指摘の両方を返す。push を止めるのは公開の可否だけで、内容への指摘は push のあと、Codex の指摘とまとめて直す。Codex は push のあとに同じ sha を読む。Opus が読んだ commit の sha を手元に記録し(review の記録に書く sha と同じものである)、hook は、その記録が push する先頭の commit と一致しなければ止める(commit を足したら読み直す)。この記録は作り手の側で書けるので、防げるのは「読み忘れたまま push する」までで、「読んだことにする」は防げない。**そこは決まり**である(known gaps に書く)。
+- **関門が効く前提をそろえる。**
+  - hook と走査の道具と語の一覧の場所は、開発の環境の setup が入れる(手で入れる手順にしない)。入っていない環境では、関門が止める以前に hook が呼ばれないので、作業の最初に「hook が入っていること」を確かめる(決まり。known gaps に書く)。
+  - hook は、いま checkout している commit のほかを push しようとしたら止める(走査と review の対象と、push されるものを一致させる)remote の branch を消す push は、走査の対象が無いので通す。
+  - 作業を別の model(subagent)に任せるときは、public に出る文を書かせる指示に、同じ走査を通すことを必ず含める。走査の結果は場所(file と行)だけを出し、当たった語は出さない。
+  - 走査器が読めないもの(知らない符号化、圧縮した file、binary)は、通さずに赤にし、名指しで外す一覧に入れるかどうかを決める。走査器のすり抜けは、見つけた 1 件ではなく種類で閉じ、framework の test に足す(原則 6)。
+- **検査を入れ替えるとき。** 新しい検査が実際に走って合格を出したことを run で確かめてから、古い検査を外す。同じ PR で足して外さない。
+- **走らなかった検査は合格ではない。** 書き方の誤りで起動しない workflow は、赤にならずに消える。merge-check と branch-guard は、求めた検査を**名前で**数え、その run が無ければ不合格にする(「赤が無い」では合格にしない)。workflow を足すか直した PR では、PR や branch の定義で動く workflow は、merge の前に、実際に走ったことを run で確かめる。base 側か default branch の定義で動く workflow(pr-gate、`dev` への push の CI、tag、release、定期の起動)は、merge されるまで新しい定義で走らないので、別の手順にする: merge の前は、書き方の検査と、権限も secret も持たない場所(手元か、試しのための別のリポジトリ)での試走で候補の定義を確かめる。古い検査は残したまま入れる。merge の後の最初の起動(次の PR)で、新しい定義の run が合格を出したことを確かめてから、古い検査を外す。最初の起動で run が出なければ、branch-guard か毎晩の検出が赤にする。「走った」の照合は、表示の名前ではなく、workflow の file の path、event の種類、対象の sha の 3 つで行う。
   - PR の題・本文・comment は書いた瞬間に公開され、編集しても履歴に残る。投稿する前に同じ走査を通す。漏れたら、編集ではなく履歴ごと削除する。Codex にも書かせない。
 - **secret。** どちらのリポジトリにも実物の鍵を置かない。commit の前の hook、push の前の走査、CI の走査、GitHub の push protection(使える plan で)を重ねる。CI の log は走査した文字列を出さない。
 - **`pull_request_target`。** PR の内容を信用しない検査(pr-gate)は base 側の定義で動かし、**PR の commit は fetch して data として読むだけで、実行しない**(PR の code を base の checkout に混ぜない)。この trigger は fork の PR にも secret を渡すので、**語の一覧を読むのは同じリポジトリから出た PR のときだけ**にする(fork の PR には一般の走査だけを回す。そうしないと、外の人が本文を書き換えながら成否を見て、一覧の中身を 1 語ずつ確かめられる)。
@@ -248,7 +255,7 @@ merge-check は merge する側が回すので、回さずに merge すること
 | commit に secret が無い | commit の前の hook、push の前の走査、CI の走査、push protection | 予防 + 検出(hook を飛ばさないのは決まり) |
 | public に push する commit に、公開してはいけないものが無い | push の前の関門(script)と push の前の review。CI の走査は事後の検出 | 決まり + 検出 |
 | 走査の対象から外す file が増えない | 外す一覧は file の名指しだけ。変更は review の観点に入れる | 決まり |
-| workflow が書き方の誤りで止まっていない | push の前の関門と `light` の書き方の検査。merge-check と branch-guard が run の有無を名前で数える | 予防 + 検出 |
+| workflow が書き方の誤りで止まっていない | push の前の関門(手元と CI)の書き方の検査。merge-check と branch-guard が run の有無を名前で数える | 予防 + 検出 |
 | `dev` / `main` に直接 push しない | ruleset(使えるリポジトリ)、branch-guard(前回から今までの commit を全部見る) | 予防 / 検出 |
 | draft でない PR は 1 度に 1 本(product) | ready の前に確かめる(決まり)。pr-gate と CI の最初の step が同時の ready を見つけ、後のほうの merge と重い検査を止める | 決まり + 検出 |
 | 変更の種類が指す段を全部回した | CI の最後の照合の step、merge-check、branch-guard | 予防 + 検出 |
@@ -267,8 +274,8 @@ merge-check は merge する側が回すので、回さずに merge すること
 
 ### 導入の順序
 
-0. **設計(この文書)が merge されるまで、仕組みを足す PR を進めない。** 先に足した仕組みは、この文書と突き合わせて直す。
-1. push の前の関門(framework): 1 つの script(走査、外す一覧の形、workflow の書き方の検査、`light`)と、環境の setup で入る hook。同じ script を CI からも呼ぶ。public への予防はここにしか置けないので、最初に入れる。
+0. **設計(この文書)が merge されるまで、仕組みを足す PR を進めない。** 先に足した仕組みは、この文書と突き合わせて直す。この文書の PR と、仕組みがそろうまでの PR は、いま有効な条件(2 人の reviewer が同じ head で収束、いまの CI が緑)で merge する。
+1. push の前の関門(framework): 1 つの script(走査、外す一覧の形、workflow の書き方の検査)と、環境の setup で入る hook。同じ script を CI からも呼ぶ。public への予防はここにしか置けないので、最初に入れる。
 2. pr-gate と review の記録(framework、続いて product)。framework では required check にする。workflow が実際に走ったことを run で確かめる。
 3. framework の CI: `light` と `db` を分けて並列にし、`full` と夜間の起動を足す。tag の条件を「tag の無い version を持つ commit の `full` が緑」に変える。action を sha で pin する。両方のリポジトリで workflow の既定の権限を read にする。語の一覧による走査を、PR と branch への push で動く file から外し、pr-gate と `dev` への push の CI に移す(いまは 1 つの file が両方で読んでいる)。pr-gate に workflow の権限と secret の参照の検査を足す。
 4. merge-check と、変更の種類の表を読む script と test(framework に置く)。

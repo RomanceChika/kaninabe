@@ -9,9 +9,12 @@ name: pr-gate
 # A run's own head sha is the base branch's (pull_request_target runs on the base), so a run is tied to what it checked
 # by its log: the first step prints the pull request number, and the last step, reached only when everything passed,
 # prints `pr-gate: passed pr <n> head <sha> base <sha> text sha256 <hash>`. Merge only when the newest pr-gate run that
-# names the pull request concluded success and its passed line names the head you merge and the hash of the title and
-# body you merge with (a missing run or line is not a pass; see AGENTS.md). The hash is compared, not times: a re-run of
-# an old run reuses that run's event, so it can succeed on a body that is no longer the current one.
+# names the pull request concluded success and its passed line names the head you merge, the base branch's current
+# commit (a newer base may carry newer rules) and the hash of the title and body you merge with (a missing run or line
+# is not a pass; see AGENTS.md). The hash is compared, not times: a re-run of an old run reuses that run's event, so it
+# can succeed on a body that is no longer the current one.
+# `base` is the commit whose workflow and scripts this run used: github.sha, the base branch's tip when the run started
+# (the event's base.sha can be older), checked out explicitly.
 # The hash is sha256 of jq -r's output below: the title, an empty line and the body, each followed by a line feed.
 # The same bytes: `jq -r '.title, "", (.body // "")'` on the pull request from the REST API, piped straight into
 # sha256sum (capturing it in a shell variable drops the last line feed).
@@ -31,13 +34,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Name the pull request (first, so that a run that fails later can still be told apart)
+        run: echo "pr-gate: pr $(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")"
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Only pull requests from this repository
         run: |
-          echo "pr-gate: pr $(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")"
           from=$(jq -r '.pull_request.head.repo.full_name // ""' "$GITHUB_EVENT_PATH")
           [ "$from" = "$GITHUB_REPOSITORY" ] || { echo "pr-gate: a pull request from a fork is not gated here (push the branch to this repository)"; exit 1; }
       # Read from the event file, never from env (the log prints a step's env). The word list is the Actions secret
@@ -62,4 +66,4 @@ jobs:
         run: |
           printf 'pr-gate: passed pr %s head %s base %s text sha256 %s\n' \
             "$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")" "$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH")" \
-            "$(jq -r '.pull_request.base.sha' "$GITHUB_EVENT_PATH")" "$(sha256sum < "$RUNNER_TEMP/pr-text" | cut -d' ' -f1)"
+            "$GITHUB_SHA" "$(sha256sum < "$RUNNER_TEMP/pr-text" | cut -d' ' -f1)"

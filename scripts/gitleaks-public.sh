@@ -36,7 +36,10 @@ gl() {
 }
 could_not_run() { echo "gitleaks $mode: could not run (exit $1)"; exit 2; }
 
-t_start=$(date +%s)
+# the clock is read through one checked helper: a date that fails or prints text stops the run (its output is never shown)
+now_secs || { echo "gitleaks $mode: could not run (could not read the clock)"; exit 2; }
+t_start=$now_t
+elapsed() { now_secs || { echo "gitleaks $mode: could not run (could not read the clock)"; exit 2; }; el=$((now_t - t_start)); }
 rc=0
 if [ "$mode" = dir ]; then
   mkdir "$tmp/src"
@@ -74,23 +77,23 @@ else
     # one commit at a time, each checked (scan_history in neutral-git.sh); the findings are summed and the count is the result
     scan_history "$tmp/commits" "$tmp/rules.tpl" "$tmp" || { echo "gitleaks git: $hist_err"; exit 2; }
     if [ "$hist_n" -gt 0 ]; then
-      echo "gitleaks git: FAILED ($hist_n finding(s)) in $(( $(date +%s) - t_start )) s"
+      elapsed; echo "gitleaks git: FAILED ($hist_n finding(s)) in $el s"
       echo "  (details: run gitleaks yourself on your own copy, for example: gitleaks git .)"
       exit 1
     fi
   else
-    echo "gitleaks git: ok in $(( $(date +%s) - t_start )) s"; exit 0
+    elapsed; echo "gitleaks git: ok in $el s"; exit 0
   fi
 fi
 case $rc in
   0 | 99) if [ -f "$tmp/gl.log" ] && log_has_error "$tmp/gl.log"; then echo "gitleaks $mode: could not run (it logged an error)"; exit 2; fi ;;
 esac
 case $rc in
-  0) echo "gitleaks $mode: ok in $(( $(date +%s) - t_start )) s" ;;
+  0) elapsed; echo "gitleaks $mode: ok in $el s" ;;
   99)
     # findings: the report must be readable (every line the x of the template), else this is not "zero findings"
     if [ ! -s "$tmp/rules.out" ] || ! grep -q . "$tmp/rules.out" || grep . "$tmp/rules.out" | grep -qvx x; then echo "gitleaks $mode: could not read the result"; exit 2; fi
-    echo "gitleaks $mode: FAILED ($(grep -c . "$tmp/rules.out") finding(s)) in $(( $(date +%s) - t_start )) s"
+    elapsed; echo "gitleaks $mode: FAILED ($(grep -c . "$tmp/rules.out") finding(s)) in $el s"
     echo "  (details: run gitleaks yourself on your own copy, for example: gitleaks $mode .)"
     exit 1 ;;
   *) could_not_run "$rc" ;;

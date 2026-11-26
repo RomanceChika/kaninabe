@@ -117,9 +117,11 @@ fi
 # attributes of the tree). Both the tree scan and the workflow check read this export.
 neutral_export "$head_sha" "$tmp/head" || die "could not export HEAD"
 failed=
-t_gate=$(date +%s)
-# secs <start>: whole seconds since <start> (a number, nothing else): the time of a step is public, the cost of a scan is worth seeing
-secs() { echo $(( $(date +%s) - $1 )); }
+# The clock is read through one checked helper (now_secs): a date that fails or prints text stops the gate, and its output is
+# never shown. elapsed <start> sets $el to the whole seconds since <start>; the time of a step is public (a number, nothing else).
+tick() { now_secs || die "could not read the clock"; }
+elapsed() { tick; el=$(( now_t - $1 )); }
+tick; t_gate=$now_t
 
 # Step 1: gitleaks, three ways: the history, each commit message, and the tree of HEAD exported cleanly (not the working tree).
 # The history is read by `gitleaks git`, ONE COMMIT AT A TIME, each commit checked on its own (scan_history in neutral-git.sh:
@@ -148,23 +150,37 @@ gl_check() {
     *) die "step gitleaks could not run (exit $1)" ;;
   esac
 }
-t_step=$(date +%s)
+tick; t_step=$now_t
 if [ "$count" -gt 0 ]; then
   printf '%s\n' '{{ range . }}x{{ "\n" }}{{ end }}' > "$tmp/gitleaks.tpl"
   scan_history "$tmp/commits" "$tmp/gitleaks.tpl" "$tmp" || die "step gitleaks $hist_err"
   patch_n=$hist_n
   if [ "$patch_n" -gt 0 ]; then echo x > "$tmp/gl.found"; fi
-  : > "$tmp/gl.msgs"
-  for c in $(cat "$tmp/commits"); do
-    neutral_git log -1 --format=%B "$c" > "$tmp/msg" 2>/dev/null || die "step gitleaks could not run (could not read a commit message)"
-    # gitleaks cuts input into chunks of about 100 KB (measured: no key lost up to 98 000 bytes, some lost from 140 000), and a key
-    # that straddles a boundary can be lost; a message of at most 64 KiB is below the first boundary. (The format adds one newline.)
-    [ $(( $(wc -c < "$tmp/msg") - 1 )) -le 65536 ] || die "step gitleaks could not run (a commit message is over 64 KiB)"
-    rc=0
-    gl stdin < "$tmp/msg" > /dev/null 2> "$tmp/gl.log" || rc=$?
+  # The text of each commit (author and committer name and email, then the message, as git prints them) is scanned in batches:
+  # gitleaks cuts stdin into chunks of about 100 KB (measured: no key lost up to 98 000 bytes, some lost from 140 000), and a key
+  # that straddles a boundary can be lost. A batch is texts put together (each ends with a newline) while it stays at or under
+  # 64 KiB, so no boundary can occur in a batch; a single text over 64 KiB stops the gate. Findings are counted, not named.
+  msg_n=0; : > "$tmp/batch"; batch_bytes=0
+  flush_batch() {
+    [ "$batch_bytes" -gt 0 ] || return 0
+    rm -f "$tmp/msgs.out"; rc=0
+    gl stdin --report-format template --report-template "$tmp/gitleaks.tpl" --report-path "$tmp/msgs.out" < "$tmp/batch" > /dev/null 2> "$tmp/gl.log" || rc=$?
     gl_check "$rc"
-    if [ "$rc" = 99 ]; then echo "$c" | cut -c1-8 >> "$tmp/gl.msgs"; echo x > "$tmp/gl.found"; fi
+    if [ "$rc" = 99 ]; then
+      report_ok "$tmp/msgs.out" || die "step gitleaks could not read the result"
+      msg_n=$((msg_n + $(grep -c . "$tmp/msgs.out"))); echo x > "$tmp/gl.found"
+    fi
+    : > "$tmp/batch"; batch_bytes=0
+  }
+  for c in $(cat "$tmp/commits"); do
+    neutral_git log -1 --format='%an%n%ae%n%cn%n%ce%n%B' "$c" > "$tmp/text" 2>/dev/null || die "step gitleaks could not run (could not read the text of a commit)"
+    text_bytes=$(wc -c < "$tmp/text" | tr -d ' ')
+    [ "$text_bytes" -le 65536 ] || die "step gitleaks could not run (the text of a commit is over 64 KiB)"
+    if [ $((batch_bytes + text_bytes)) -gt 65536 ]; then flush_batch; fi
+    cat "$tmp/text" >> "$tmp/batch" || die "step gitleaks could not run (could not make a batch)"
+    batch_bytes=$((batch_bytes + text_bytes))
   done
+  flush_batch
   find "$tmp/head" -name .gitleaksignore -exec rm -f {} + || die "step gitleaks could not run (could not prepare the export of HEAD)"
   rm -f "$tmp/gitleaks.out"; rc=0; tree_n=0
   ( cd "$tmp/head" && gl dir --report-format template --report-template "$tmp/gitleaks.tpl" --report-path "$tmp/gitleaks.out" . ) > /dev/null 2> "$tmp/gl.log" || rc=$?
@@ -174,21 +190,19 @@ if [ "$count" -gt 0 ]; then
     echo x > "$tmp/gl.found"; tree_n=$(grep -c . "$tmp/gitleaks.out" || true)
   fi
   if [ -f "$tmp/gl.found" ]; then
-    nm=$(wc -l < "$tmp/gl.msgs" | tr -d ' ')
-    echo "push-gate: step gitleaks: FAILED ($patch_n finding(s) in patches, $nm in commit messages, $tree_n in the tree of HEAD) in $(secs "$t_step") s"
-    # The commits of messages are ids from our own list: named locally, never in CI (a public log).
-    if [ -z "${CI:-}" ]; then sed 's/^/  commit message of /' "$tmp/gl.msgs"; fi
+    nm=$msg_n
+    elapsed "$t_step"; echo "push-gate: step gitleaks: FAILED ($patch_n finding(s) in patches, $nm in commit messages, $tree_n in the tree of HEAD) in $el s"
     echo "  (details: run gitleaks yourself on your own copy, for example: gitleaks git . and gitleaks dir .)"
     failed="gitleaks"
   else
-    echo "push-gate: step gitleaks: ok ($count commit(s)) in $(secs "$t_step") s"
+    elapsed "$t_step"; echo "push-gate: step gitleaks: ok ($count commit(s)) in $el s"
   fi
 else
   echo "push-gate: step gitleaks: skipped (no commits in range)"
 fi
 
 # Step 2: the repository's own scan over the same commits (scan-public prints places, never matched text).
-t_step=$(date +%s)
+tick; t_step=$now_t
 if [ "$count" -gt 0 ]; then
   rc=0
   # shellcheck disable=SC2086
@@ -197,8 +211,8 @@ if [ "$count" -gt 0 ]; then
   clean GIT_DIR="$repo_gitdir" ${SCAN_WORDS_FILE:+"SCAN_WORDS_FILE=$SCAN_WORDS_FILE"} ${SCAN_OWNER:+"SCAN_OWNER=$SCAN_OWNER"} ${GITHUB_REPOSITORY_OWNER:+"GITHUB_REPOSITORY_OWNER=$GITHUB_REPOSITORY_OWNER"} ${SCAN_QUIET:+"SCAN_QUIET=$SCAN_QUIET"} sh "$here/scan-public.sh" --revs $revs > "$tmp/scan-public.out" 2>&1 || rc=$?
   cat "$tmp/scan-public.out"
   case $rc in
-    0) echo "push-gate: step scan-public: ok ($count commit(s)) in $(secs "$t_step") s" ;;
-    1) echo "push-gate: step scan-public: FAILED in $(secs "$t_step") s"; failed="${failed:+$failed, }scan-public" ;;
+    0) elapsed "$t_step"; echo "push-gate: step scan-public: ok ($count commit(s)) in $el s" ;;
+    1) elapsed "$t_step"; echo "push-gate: step scan-public: FAILED in $el s"; failed="${failed:+$failed, }scan-public" ;;
     *) die "step scan-public could not run (exit $rc)" ;;
   esac
 else
@@ -209,10 +223,10 @@ fi
 # actionlint's own config file is not extracted, so that a file in the tree cannot switch checks off; the shellcheck
 # and pyflakes integrations are off so that the result does not depend on what else is installed. The report template
 # holds only the file, the line and the kind of problem, never the message or the source line.
-t_step=$(date +%s)
+tick; t_step=$now_t
 files=$(neutral_git ls-tree -r --name-only "$head_sha" -- .github/workflows | grep -E '\.ya?ml$' || true)
 if [ -z "$files" ]; then
-  echo "push-gate: step workflows: ok (no workflow files) in $(secs "$t_step") s"
+  elapsed "$t_step"; echo "push-gate: step workflows: ok (no workflow files) in $el s"
 else
   nfiles=$(printf '%s\n' "$files" | wc -l | tr -d ' ')
   if printf '%s\n' "$files" | grep -qvE '^[A-Za-z0-9._/-]+$'; then
@@ -228,10 +242,10 @@ else
   # (actionlint cannot be given a line feed or a \n escape in the template; entries are cut at '|' here.)
   tr '|' '\n' < "$tmp/actionlint.raw" | grep . > "$tmp/actionlint.out" || true
   case $rc in
-    0) echo "push-gate: step workflows: ok ($nfiles file(s)) in $(secs "$t_step") s" ;;
+    0) elapsed "$t_step"; echo "push-gate: step workflows: ok ($nfiles file(s)) in $el s" ;;
     1)
       [ -s "$tmp/actionlint.out" ] && ! grep -qvE '^.+:[0-9]+: \[.*\]$' "$tmp/actionlint.out" || die "step workflows could not read the result"
-      echo "push-gate: step workflows: FAILED ($(wc -l < "$tmp/actionlint.out" | tr -d ' ') problem(s)) in $(secs "$t_step") s"
+      elapsed "$t_step"; echo "push-gate: step workflows: FAILED ($(wc -l < "$tmp/actionlint.out" | tr -d ' ') problem(s)) in $el s"
       # In CI (a public log) the count only; anywhere else, the places.
       if [ -z "${CI:-}" ]; then sed 's/^/  at /' "$tmp/actionlint.out" | head -50; fi
       failed="${failed:+$failed, }workflows" ;;
@@ -239,5 +253,5 @@ else
   esac
 fi
 
-if [ -n "$failed" ]; then echo "push-gate: FAILED ($failed) in $(secs "$t_gate") s"; exit 1; fi
-echo "push-gate: passed (mode $mode, $count commit(s)) in $(secs "$t_gate") s"
+if [ -n "$failed" ]; then elapsed "$t_gate"; echo "push-gate: FAILED ($failed) in $el s"; exit 1; fi
+elapsed "$t_gate"; echo "push-gate: passed (mode $mode, $count commit(s)) in $el s"

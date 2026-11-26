@@ -13,6 +13,8 @@
 #                           `git diff-tree --numstat`, merges against each parent, renames followed as git log does); returns 1
 #                           when it adds none (a binary file, a deletion, a mode change, an empty file, a pure rename) and 2
 #                           when the patch could not be read
+# now_secs                 sets $now_t to the clock in whole seconds; returns 1 when `date +%s` fails or prints anything but digits
+#                           (what it printed is never shown)
 # log_has_error <log>       succeeds when a gitleaks log holds an error line (ERR, FTL or PNC; colour codes ignored)
 # scan_history <list> <report-args...>  `gitleaks git` over the neutral repository, ONE COMMIT AT A TIME, for the commit ids in
 #                           <list>; the caller defines gl <subcommand> <args...> (gitleaks with the fixed flags). Sets $hist_n to the
@@ -64,6 +66,7 @@ neutral_adds_text() {
   neutral_git diff-tree --root -m -M --numstat -z --no-ext-diff --no-textconv --no-color "$1" > "$nat_raw" 2>/dev/null || return 2
   tr '\000' '\n' < "$nat_raw" | awk -F'\t' '$1 ~ /^[0-9]+$/ && $1 > 0 { f = 1 } END { exit f ? 0 : 1 }'
 }
+now_secs() { now_t=$(date +%s 2>/dev/null) || return 1; case $now_t in '' | *[!0-9]*) return 1 ;; esac; }
 log_has_error() { tr -d '\033' < "$1" | sed 's/\[[0-9;]*m//g' | grep -Eq '^[^ ]+ (ERR|FTL|PNC) '; }
 # gl_scanned <log>: the number in gitleaks' "N commits scanned." line (colour codes removed), or nothing. The log is private.
 gl_scanned() { tr -d '\033' < "$1" | sed 's/\[[0-9;]*m//g' | sed -n 's/.*[^0-9]\([0-9][0-9]*\) commits scanned.*/\1/p' | tail -1; }

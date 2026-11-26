@@ -1,0 +1,50 @@
+#!/bin/sh
+# Push-before gate (docs/rules/process/common/development-flow.md, "security"). Install: sh scripts/setup-dev-env.sh
+# Git passes <remote name> <url> as arguments and one line per ref on stdin: <local ref> <local sha> <remote ref> <remote sha>.
+#   - a deletion (local sha all zeros) has nothing to scan and passes;
+#   - anything but the checked-out commit is refused, so that what is scanned and read is what is pushed;
+#   - the content review record (git config kaninabe.contentReviewed) must name that commit: it is written after the
+#     push has been read for publication, and must be written again after any new commit;
+#   - then the gate runs, always in words mode (no way to ask for general mode here), over the commits the remote does
+#     not have. The word list is $SCAN_WORDS_FILE or git config kaninabe.scanWords; the owner is $SCAN_OWNER or
+#     kaninabe.scanOwner. Skipping this hook (--no-verify, no hooksPath) is forbidden by rule; it cannot be prevented.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+remote=${1:-}
+head=$(git rev-parse --verify -q 'HEAD^{commit}' || true)
+short() { printf '%s' "$1" | cut -c1-8; }
+refuse() { echo "pre-push: $*" >&2; exit 1; }
+
+pushing=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -n "${local_sha:-}" ] || continue
+  case $local_sha in *[!0]*) ;; *) continue ;; esac
+  commit=$(git rev-parse --verify -q "$local_sha^{commit}" || true)
+  if [ -z "$commit" ] || [ "$commit" != "$head" ]; then
+    refuse "refusing to push $(short "$local_sha"): it is not the checked-out commit; check it out first"
+  fi
+  reviewed=$(git config --get kaninabe.contentReviewed || true)
+  if [ "$reviewed" != "$head" ]; then
+    echo "pre-push: the content review record (kaninabe.contentReviewed) does not name $(short "$head")" >&2
+    refuse "have the push read for publication, then run: git config kaninabe.contentReviewed $head"
+  fi
+  pushing=1
+done
+[ "$pushing" = 1 ] || exit 0
+
+if [ -z "${SCAN_WORDS_FILE:-}" ]; then
+  w=$(git config --get kaninabe.scanWords || true)
+  [ -z "$w" ] || SCAN_WORDS_FILE=$w
+fi
+if [ -z "${SCAN_OWNER:-}" ]; then
+  o=$(git config --get kaninabe.scanOwner || true)
+  [ -z "$o" ] || SCAN_OWNER=$o
+fi
+[ -z "${SCAN_WORDS_FILE:-}" ] || export SCAN_WORDS_FILE
+[ -z "${SCAN_OWNER:-}" ] || export SCAN_OWNER
+
+# A push to a bare URL has no remote name to ask about: everything is scanned (the fail-safe).
+if [ -n "$remote" ] && git remote get-url "$remote" >/dev/null 2>&1; then
+  exec sh "$here/../scripts/push-gate.sh" --mode words --not-on-remote "$remote"
+fi
+exec sh "$here/../scripts/push-gate.sh" --mode words --all

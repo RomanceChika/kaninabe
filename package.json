@@ -22,7 +22,7 @@
     "docs:build": "npm --prefix docs run build",
     "generate": "npm --prefix legacy/spec-tools run generate --",
     "generate:check": "npm --prefix legacy/spec-tools run generate:check --",
-    "hooks:install": "git config core.hooksPath .githooks",
+    "hooks:install": "sh scripts/setup-dev-env.sh",
     "lint:framework": "npm run lint --workspace @kaninabe/lint-config --workspace @kaninabe/runtime --workspace @kaninabe/adapter-postgrest --workspace @kaninabe/adapter-supabase-session --workspace @kaninabe/adapter-log-axiom",
     "lint:spec-tools": "npm --prefix legacy/spec-tools run lint --",
     "prepare": "npm run build:framework",

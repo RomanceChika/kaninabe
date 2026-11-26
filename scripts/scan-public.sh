@@ -5,9 +5,11 @@
 # (used to keep the rules under docs/rules free of any product's vocabulary). Output is limited to a commit short id, a file path, a line number and counts: never a matched
 # line or snippet, because the logs of a public repository are public. Do not add `set -x` or echo any pattern.
 # Usage: scan-public.sh [<base>]   (scans <base>..HEAD, or every commit reachable from HEAD)
+#        scan-public.sh --revs <rev-list arguments...>   (scans exactly the commits `git rev-list <arguments>` names;
+#        used by push-gate.sh to hand over the same commit set as its other steps)
 set -eu
 . "$(dirname "$0")/scan-rules.sh"
-range=${1:+$1..}HEAD
+if [ "${1:-}" = "--revs" ]; then shift; range="$*"; else range=${1:+$1..}HEAD; fi
 pat=$(mktemp); trap 'rm -f "$pat" "$scoped"' EXIT
 if [ -n "${SCAN_WORDS_FILE:-}" ] && [ -s "$SCAN_WORDS_FILE" ]; then
   grep -v '^#' "$SCAN_WORDS_FILE" | grep -v '^$' | grep -v '^@' > "$pat" || true

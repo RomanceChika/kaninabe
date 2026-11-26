@@ -461,7 +461,12 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     const r = runGate(sb, ['--mode', 'words', '--all'], words());
     assert.equal(r.status, 0, r.out);
     const calls = sb.calls();
-    assert.ok(calls.some((l) => l.startsWith('gitleaks git') && l.includes('--log-opts=-m HEAD')), calls.join('\n'));
+    const gitCall = calls.find((l) => l.startsWith('gitleaks git'));
+    assert.ok(gitCall, calls.join('\n'));
+    // The history is read from the neutral repository (objects only: no config, no info/, no refs) and the range is shas.
+    assert.ok(/--log-opts=-m [0-9a-f]{40}\b/.test(gitCall) && !/--log-opts=[^ ]* HEAD/.test(gitCall) && !gitCall.includes('--log-opts=-m HEAD'), `the range is not given as shas: ${gitCall}`);
+    assert.ok(gitCall.trimEnd().endsWith('/neutral.git #env:unset:unset') || / \S+\/neutral\.git #env:/.test(gitCall), `the source is not the neutral repository: ${gitCall}`);
+    assert.ok(!gitCall.includes(path.join(sb.repo, '.git')), `the real git directory is the source: ${gitCall}`);
     assert.equal(calls.filter((l) => l.startsWith('gitleaks stdin')).length, 2, 'one per commit message');
     assert.ok(calls.some((l) => l.startsWith('gitleaks dir')), calls.join('\n'));
   });

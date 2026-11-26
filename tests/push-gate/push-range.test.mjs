@@ -235,3 +235,30 @@ describe('push-range.sh: the repository is the caller\'s, not whatever encloses 
   });
 });
 
+describe('push-range.sh: refs/replace and info/grafts of the repository do not change the range', () => {
+  it('a replace ref that hides commits lists them all, as the objects are', () => {
+    const a = commit(repo, 'a.txt');
+    const b = commit(repo, 'b.txt');
+    const c = commit(repo, 'c.txt');
+    const swap = git(repo, 'commit-tree', '-p', a, '-m', 'replacement', `${c}^{tree}`);
+    git(repo, 'replace', c, swap);
+    const r = run([bare]);
+    assert.equal(r.status, 0, r.all);
+    assert.deepEqual(lines(r).sort(), [a, b, c].sort());
+  });
+
+  it('a graft that cuts the history does not shorten the range, and a replace of the destination\'s commit cannot subtract more', () => {
+    const a = commit(repo, 'a.txt');
+    git(repo, 'push', '-q', 'origin', 'main');
+    const b = commit(repo, 'b.txt');
+    const c = commit(repo, 'c.txt');
+    mkdirSync(path.join(repo, '.git', 'info'), { recursive: true });
+    writeFileSync(path.join(repo, '.git', 'info', 'grafts'), `${c} ${a}\n`);
+    assert.deepEqual(lines(run([bare])).sort(), [b, c].sort());
+    // the destination's commit replaced by the tip: with replace refs honoured, everything would be subtracted
+    git(repo, 'replace', a, c);
+    assert.deepEqual(lines(run([bare])).sort(), [b, c].sort());
+    assert.deepEqual(lines(run(['--head', c, bare])).sort(), [b, c].sort());
+  });
+});
+

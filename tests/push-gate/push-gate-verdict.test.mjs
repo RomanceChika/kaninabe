@@ -385,6 +385,87 @@ describe('push-gate.sh with the real tools: the same commit gets the same verdic
   });
 });
 
+describe('push-gate.sh with the real tools: state INSIDE the repository cannot change the verdict', () => {
+  // .git/config, .git/info/attributes, refs/replace/* and info/grafts are read by every git that points at the real git
+  // directory, even in a clean environment; push sends the real objects. Each row prepares the same history in a fresh
+  // repository (a key and a word added in commit 2, removed in commit 3, an unrelated commit 4, so only the history has
+  // them), applies one local setting, and must give the verdict of the untouched baseline: FAILED, in patches and in the
+  // word scan.
+  const WORD = 'zzgatewordzz';
+  let n = 0;
+  const history = () => {
+    n += 1;
+    repo = path.join(dir, `inside-${n}`);
+    mkdirSync(repo);
+    git('init', '-q', '-b', 'main');
+    const key = fakeKey();
+    const c1 = commit({ 'a.txt': 'one\n' });
+    const c2 = commit({ 'conf.txt': `token = ${key}\n`, 'notes.txt': `${WORD}\n` });
+    git('rm', '-q', 'conf.txt', 'notes.txt');
+    git('commit', '-q', '-m', 'remove');
+    const c3 = git('rev-parse', 'HEAD');
+    const c4 = commit({ 'b.txt': 'two\n' });
+    return { key, c1, c2, c3, c4 };
+  };
+  const words = () => {
+    const f = path.join(dir, 'words.txt');
+    writeFileSync(f, `${WORD}\n`);
+    return { SCAN_WORDS_FILE: f };
+  };
+  const verdict = (r) => ({
+    status: r.status,
+    gitleaks: /push-gate: step gitleaks: FAILED \(\d+ finding\(s\) in patches, \d+ in commit messages, \d+ in the tree of HEAD\)/.exec(r.out)?.[0],
+    wordList: r.out.includes('word list: 1 file(s)'),
+    commits: /\((\d+) commit\(s\)\)|ok \((\d+) commit/.exec(r.out)?.[0],
+    tail: /push-gate: FAILED \([^)]*\)/.exec(r.out)?.[0],
+  });
+  const info = (name, text) => { mkdirSync(path.join(repo, '.git', 'info'), { recursive: true }); writeFileSync(path.join(repo, '.git', 'info', name), text); };
+  const replacement = (commitSha, parent) => git('commit-tree', '-p', parent, '-m', 'replacement', `${commitSha}^{tree}`);
+  const rows = {
+    'info/attributes: * -diff': () => info('attributes', '* -diff\n'),
+    'info/attributes: * binary': () => info('attributes', '* binary\n'),
+    'info/attributes: a diff driver whose textconv prints nothing': () => { info('attributes', '* diff=x\n'); git('config', 'diff.x.textconv', 'true'); },
+    'local core.attributesFile with * -diff': () => { const f = path.join(repo, '..', `attrs-${n}`); writeFileSync(f, '* -diff\n'); git('config', 'core.attributesFile', f); },
+    'local color.diff=always': () => git('config', 'color.diff', 'always'),
+    'local diff.external and diff.noprefix': () => { git('config', 'diff.noprefix', 'true'); git('config', 'diff.algorithm', 'minimal'); },
+    'a replace ref that swaps the key commit for a clean one': (h) => git('replace', h.c2, replacement(h.c1, h.c1)),
+    'a replace ref that hides a commit from the range (tip replaced by a commit whose parent skips it)': (h) => git('replace', h.c4, replacement(h.c4, h.c1)),
+    'info/grafts that skips the commit': (h) => info('grafts', `${h.c4} ${h.c1}\n`),
+  };
+
+  it('the baseline is FAILED in patches and in the word scan (the history is the only place the key and the word are)', () => {
+    const h = history();
+    const r = gateRun(['--mode', 'words', '--all'], words());
+    const v = verdict(r);
+    assert.equal(v.status, 1, r.out);
+    assert.ok(v.gitleaks && v.wordList && v.tail, r.out);
+    assert.ok(!r.out.includes(h.key.slice(4, 20)));
+  });
+
+  for (const [name, apply] of Object.entries(rows)) {
+    it(`${name}: the same verdict as the baseline, FAILED`, () => {
+      const base = history();
+      const baseline = gateRun(['--mode', 'words', '--all'], words());
+      assert.equal(baseline.status, 1, baseline.out);
+      const h = history();
+      apply(h);
+      const r = gateRun(['--mode', 'words', '--all'], words());
+      assert.equal(r.status, 1, `${name} silenced the gate: ${r.out}`);
+      assert.deepEqual(verdict(r), verdict(baseline), `${name} changed the verdict: ${r.out}`);
+      assert.ok(!r.out.includes(h.key.slice(4, 20)), 'the key leaked into the output');
+      assert.ok(base);
+    });
+  }
+
+  it('a replace ref that hides a commit from the range does not hide it from the word scan alone either', () => {
+    const h = history();
+    git('replace', h.c4, replacement(h.c4, h.c1));
+    const r = spawnSync('/bin/sh', [path.join(path.dirname(gate), 'scan-public.sh'), h.c1], { cwd: repo, encoding: 'utf8', env: env(words()) });
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.ok((r.stdout + r.stderr).includes('word list: 1 file(s)'), r.stdout + r.stderr);
+  });
+});
+
 describe('scripts/gitleaks-public.sh: what the old CI steps print, with the real gitleaks', () => {
   const run = (args, cwd = repo) => {
     const r = spawnSync('/bin/sh', [path.join(path.dirname(gate), 'gitleaks-public.sh'), ...args], { cwd, encoding: 'utf8', env: env() });

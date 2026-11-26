@@ -480,7 +480,7 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
   });
 
   it('runs every tool with an explicit environment: hostile GIT_*, GREP_* and GITLEAKS_* variables of the caller change nothing', () => {
-    const hostile = { GIT_DIR: '/nonexistent/git', GIT_WORK_TREE: '/nonexistent/tree', GIT_INDEX_FILE: '/nonexistent/index', GIT_ATTR_SOURCE: 'nonsense', GREP_OPTIONS: '-v', GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.attributesFile', GIT_CONFIG_VALUE_0: '/nonexistent/attrs', GITLEAKS_BASELINE_PATH: '/nonexistent/baseline.json' };
+    const hostile = { GIT_INDEX_FILE: '/nonexistent/index', GIT_ATTR_SOURCE: 'nonsense', GREP_OPTIONS: '-v', GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.attributesFile', GIT_CONFIG_VALUE_0: '/nonexistent/attrs', GITLEAKS_BASELINE_PATH: '/nonexistent/baseline.json' };
     const r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), ...hostile });
     assert.equal(r.status, 0, r.out);
     assert.ok(r.out.includes('push-gate: passed (mode words, 2 commit(s))'), r.out);
@@ -761,6 +761,217 @@ describe('pre-push hook', () => {
     const r = runHook(sb, { lines: [] });
     assert.equal(r.status, 0, r.out);
     assert.deepEqual(sb.calls(), []);
+  });
+});
+
+const scanPublic = path.join(scripts, 'scan-public.sh');
+/** Runs `git push` for real, with the hook of this repository installed through core.hooksPath. */
+const realPush = (extraEnv, ...args) => {
+  const r = spawnSync('git', ['-c', `core.hooksPath=${path.dirname(hook)}`, 'push', ...args], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ ...words(), ...extraEnv }) });
+  return { status: r.status, out: r.stdout + r.stderr };
+};
+const remoteRefs = (bare) => spawnSync('git', ['for-each-ref', '--format=%(refname)'], { cwd: bare, encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
+
+describe('pre-push hook: only branches, only the checked-out commit, and the caller\'s repository (review round 6)', () => {
+  it('refuses an annotated tag OBJECT pushed by id to a branch or to any other ref', () => {
+    git(sb, 'tag', '-a', 'v1', '-m', 'note');
+    const tagObject = git(sb, 'rev-parse', 'v1');
+    record(head);
+    for (const remoteRef of ['refs/notes/z', 'refs/heads/x']) {
+      const r = runHook(sb, { lines: [`${tagObject} ${tagObject} ${remoteRef} ${ZERO}`], env: words() });
+      assert.notEqual(r.status, 0, `${remoteRef}: ${r.out}`);
+      assert.ok(r.out.includes('pre-push: refusing to push'), r.out);
+    }
+    // the same by a name that is not a tag's: the object itself is what is compared with HEAD, not what it points to
+    const r = runHook(sb, { lines: [`refs/heads/x ${tagObject} refs/heads/x ${ZERO}`], env: words() });
+    assert.notEqual(r.status, 0, r.out);
+    assert.ok(r.out.includes('pre-push: refusing to push'), r.out);
+    assert.deepEqual(sb.calls(), []);
+  });
+
+  it('allows refs/heads/* only: the checked-out commit to any other ref is refused, a branch deletion passes', () => {
+    record(head);
+    for (const remoteRef of ['refs/notes/z', 'refs/remotes/origin/main', 'refs/for/main', 'refs/pull/1/head', 'refs/changes/01/1/1']) {
+      const r = runHook(sb, { lines: [`refs/heads/main ${head} ${remoteRef} ${ZERO}`], env: words() });
+      assert.notEqual(r.status, 0, `${remoteRef}: ${r.out}`);
+      assert.ok(r.out.includes(`pre-push: refusing to push to ${remoteRef}: only branches (refs/heads/*) are pushed`), r.out);
+    }
+    assert.deepEqual(sb.calls(), []);
+    const ok = runHook(sb, { lines: [`refs/heads/main ${head} refs/heads/feature/x ${ZERO}`], env: words() });
+    assert.equal(ok.status, 0, ok.out);
+    const del = runHook(sb, { lines: [`(delete) ${ZERO} refs/heads/old ${head}`] });
+    assert.equal(del.status, 0, del.out);
+    const delOther = runHook(sb, { lines: [`(delete) ${ZERO} refs/notes/old ${head}`] });
+    assert.notEqual(delOther.status, 0, delOther.out);
+  });
+
+  describe('git --git-dir=A --work-tree=B inside an enclosing repository', () => {
+    let work;
+    let tip;
+    let gitDir;
+    const inner = () => ({ GIT_DIR: gitDir, GIT_WORK_TREE: work });
+    beforeEach(() => {
+      const outer = path.join(sb.dir, 'outer');
+      work = path.join(outer, 'sub');
+      mkdirSync(work, { recursive: true });
+      git({ ...sb, cwd: outer }, 'init', '-q', '-b', 'main');
+      writeFileSync(path.join(outer, 'o.txt'), 'outer\n');
+      git({ ...sb, cwd: outer }, 'add', 'o.txt');
+      git({ ...sb, cwd: outer }, 'commit', '-q', '-m', 'outer only');
+      commit(sb, { 'b.txt': 'two\n' });
+      tip = commit(sb, { 'c.txt': 'three\n' });
+      gitDir = path.join(sb.repo, '.git');
+      record(tip);
+    });
+    const hookIn = (env, lines) => {
+      const r = spawnSync('/bin/sh', [hook, 'origin', path.join(sb.dir, 'origin.git')], { cwd: work, encoding: 'utf8', env: sb.env({ ...words(), ...env }), input: lines.map((l) => `${l}\n`).join('') });
+      return { status: r.status, out: r.stdout + r.stderr };
+    };
+
+    it('the hook scans the commits of A (3), never those of the enclosing repository (1)', () => {
+      const r = hookIn(inner(), [pushLine(tip)]);
+      assert.equal(r.status, 0, r.out);
+      assert.ok(r.out.includes('push-gate: passed (mode words, 3 commit(s))'), r.out);
+    });
+
+    it('a word in a commit of A is found even though the enclosing repository is clean', () => {
+      const bad = commit(sb, { 'w.txt': `${WORD}\n` });
+      record(bad);
+      const r = hookIn(inner(), [pushLine(bad)]);
+      assert.notEqual(r.status, 0, r.out);
+      assert.ok(r.out.includes('push-gate: step scan-public: FAILED'), r.out);
+    });
+
+    it('the gate itself, run with that environment, lists the commits of A', () => {
+      const r = spawnSync('/bin/sh', [gate, '--mode', 'words', '--all'], { cwd: work, encoding: 'utf8', env: sb.env({ ...words(), ...inner() }) });
+      assert.equal(r.status, 0, r.stdout + r.stderr);
+      assert.ok((r.stdout + r.stderr).includes('(mode words, 3 commit(s))'), r.stdout + r.stderr);
+    });
+
+    it('a GIT_DIR that names no repository stops the gate and the hook; the enclosing repository is not scanned instead', () => {
+      const bogus = { GIT_DIR: path.join(sb.dir, 'no-such-dir'), GIT_WORK_TREE: work };
+      const g = spawnSync('/bin/sh', [gate, '--mode', 'words', '--all'], { cwd: work, encoding: 'utf8', env: sb.env({ ...words(), ...bogus }) });
+      assert.equal(g.status, 2, g.stdout + g.stderr);
+      assert.ok((g.stdout + g.stderr).includes('push-gate: not inside a git repository'), g.stdout + g.stderr);
+      const h = hookIn(bogus, [pushLine(tip)]);
+      assert.notEqual(h.status, 0, h.out);
+      assert.deepEqual(sb.calls(), []);
+    });
+
+    it('--head: the gate stops when HEAD is not the commit it was told is being pushed', () => {
+      const ok = spawnSync('/bin/sh', [gate, '--mode', 'words', '--all', '--head', tip], { cwd: work, encoding: 'utf8', env: sb.env({ ...words(), ...inner() }) });
+      assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+      const bad = spawnSync('/bin/sh', [gate, '--mode', 'words', '--all', '--head', head], { cwd: work, encoding: 'utf8', env: sb.env({ ...words(), ...inner() }) });
+      assert.equal(bad.status, 2, bad.stdout + bad.stderr);
+      assert.ok((bad.stdout + bad.stderr).includes('push-gate: HEAD is not the commit being pushed'), bad.stdout + bad.stderr);
+      const junk = spawnSync('/bin/sh', [gate, '--mode', 'words', '--all', '--head', 'main'], { cwd: work, encoding: 'utf8', env: sb.env({ ...words(), ...inner() }) });
+      assert.equal(junk.status, 2, junk.stdout + junk.stderr);
+      assert.ok((junk.stdout + junk.stderr).includes('push-gate: --head needs a full commit id'), junk.stdout + junk.stderr);
+    });
+  });
+
+  it('the destination is asked where the push really goes: a url.<x>.insteadOf pair cannot make another repository\'s answer count', () => {
+    const origin = path.join(sb.dir, 'origin.git');
+    const mirror = path.join(sb.dir, 'mirror.git');
+    git({ ...sb, cwd: sb.dir }, 'init', '-q', '--bare', mirror);
+    const bad = commit(sb, { 'notes.txt': `${WORD}\n` });
+    git(sb, 'push', '-q', '--no-verify', mirror, 'main'); // only the mirror has the commit with the word
+    const tip = removeFile(sb, 'notes.txt');
+    record(tip);
+    git(sb, 'config', `url.${mirror}.insteadOf`, origin);
+    git(sb, 'config', `url.${origin}.pushInsteadOf`, origin);
+    const r = realPush({}, 'origin', 'main');
+    assert.notEqual(r.status, 0, r.out);
+    assert.ok(r.out.includes('push-gate: step scan-public: FAILED'), `the commit is scanned: ${r.out}`);
+    assert.deepEqual(remoteRefs(origin), [], 'nothing reached the destination');
+    assert.ok(bad);
+  });
+
+  it('SCAN_PUBLIC_CLEAN set from outside does not skip the clean environment of scan-public.sh', () => {
+    commit(sb, { 'm.txt': 'x\n' }, `message with ${WORD}`);
+    // a git setting that would make `git log` print in an encoding the word list cannot match, if it got in
+    const hostile = { SCAN_PUBLIC_CLEAN: '1', GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'i18n.logOutputEncoding', GIT_CONFIG_VALUE_0: 'UTF-16' };
+    const r = spawnSync('/bin/sh', [scanPublic, 'HEAD~1'], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ ...words(), ...hostile }) });
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.ok((r.stdout + r.stderr).includes('word list: commit message or author of'), r.stdout + r.stderr);
+  });
+});
+
+describe('pre-push hook: the ways a push can send something else than what the hook was shown (real git push)', () => {
+  // The hook is given one line for every ref that is really being pushed, after push.default, remote.<n>.push, --all,
+  // --mirror and --follow-tags have been applied, and it is run once for every push URL of the remote.
+  it('--follow-tags and push.followTags: the tag that goes along is a line of the hook, and it is refused', () => {
+    git(sb, 'tag', '-a', 'v1', '-m', 'note');
+    record(head);
+    const origin = path.join(sb.dir, 'origin.git');
+    let r = realPush({}, '--follow-tags', 'origin', 'main');
+    assert.notEqual(r.status, 0, r.out);
+    assert.ok(r.out.includes('pre-push: refusing to push a tag'), r.out);
+    git(sb, 'config', 'push.followTags', 'true');
+    r = realPush({}, 'origin', 'main');
+    assert.notEqual(r.status, 0, r.out);
+    assert.ok(r.out.includes('pre-push: refusing to push a tag'), r.out);
+    assert.deepEqual(remoteRefs(origin), []);
+  });
+
+  it('--all pushes every branch, each a line of the hook: a branch that is not the checked-out commit refuses the push', () => {
+    record(head);
+    const origin = path.join(sb.dir, 'origin.git');
+    git(sb, 'branch', 'same');
+    assert.equal(realPush({}, '--all', 'origin').status, 0);
+    assert.deepEqual(remoteRefs(origin).sort(), ['refs/heads/main', 'refs/heads/same']);
+    const side = commit(sb, { 's.txt': 's\n' });
+    git(sb, 'branch', 'side', side);
+    git(sb, 'reset', '-q', '--hard', head);
+    const r = realPush({}, '--all', 'origin');
+    assert.notEqual(r.status, 0, r.out);
+    assert.ok(r.out.includes('not the checked-out commit'), r.out);
+  });
+
+  it('--mirror: remote-tracking refs, tags and the like are lines of the hook, and are refused', () => {
+    record(head);
+    git(sb, 'update-ref', 'refs/remotes/origin/main', head);
+    const origin = path.join(sb.dir, 'origin.git');
+    const r = realPush({}, '--mirror', 'origin');
+    assert.notEqual(r.status, 0, r.out);
+    assert.ok(r.out.includes('pre-push: refusing to push to refs/remotes/origin/main'), r.out);
+    assert.deepEqual(remoteRefs(origin), []);
+  });
+
+  it('remote.<n>.push and push.default cannot send to a non-branch ref: the refspec\'s target is what the hook sees', () => {
+    record(head);
+    const origin = path.join(sb.dir, 'origin.git');
+    git(sb, 'config', 'remote.origin.push', 'refs/heads/main:refs/notes/z');
+    const r = realPush({}, 'origin');
+    assert.notEqual(r.status, 0, r.out);
+    assert.ok(r.out.includes('pre-push: refusing to push to refs/notes/z'), r.out);
+    git(sb, 'config', 'remote.origin.push', 'refs/heads/main:refs/tags/x');
+    const t = realPush({}, 'origin');
+    assert.notEqual(t.status, 0, t.out);
+    assert.ok(t.out.includes('pre-push: refusing to push a tag'), t.out);
+    assert.deepEqual(remoteRefs(origin), []);
+    git(sb, 'config', '--unset-all', 'remote.origin.push');
+    git(sb, 'config', 'push.default', 'current');
+    assert.equal(realPush({}, 'origin').status, 0);
+    assert.deepEqual(remoteRefs(origin), ['refs/heads/main']);
+  });
+
+  it('several push URLs on one remote: the hook runs once per URL and asks each destination about itself', () => {
+    const origin = path.join(sb.dir, 'origin.git');
+    const second = path.join(sb.dir, 'second.git');
+    git({ ...sb, cwd: sb.dir }, 'init', '-q', '--bare', second);
+    // the first destination has the commit that holds the word; the second has nothing
+    const bad = commit(sb, { 'notes.txt': `${WORD}\n` });
+    git(sb, 'push', '-q', '--no-verify', origin, 'main');
+    const tip = removeFile(sb, 'notes.txt');
+    record(tip);
+    git(sb, 'config', 'remote.origin.pushurl', origin);
+    git(sb, 'config', '--add', 'remote.origin.pushurl', second);
+    const r = realPush({}, 'origin', 'main');
+    assert.notEqual(r.status, 0, r.out);
+    assert.ok(r.out.includes('push-gate: step scan-public: FAILED'), `the second URL is scanned from scratch: ${r.out}`);
+    assert.deepEqual(remoteRefs(second), [], 'nothing reached the second destination');
+    assert.ok(bad);
   });
 });
 }

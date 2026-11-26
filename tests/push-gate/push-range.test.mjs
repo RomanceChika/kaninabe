@@ -30,8 +30,8 @@ const commit = (cwd, name, text = 'x\n') => {
   git(cwd, 'commit', '-q', '-m', `add ${name}`);
   return git(cwd, 'rev-parse', 'HEAD');
 };
-const run = (args, cwd = repo) => {
-  const r = spawnSync('/bin/sh', [range, ...args], { cwd, encoding: 'utf8', env: env() });
+const run = (args, cwd = repo, extra = {}) => {
+  const r = spawnSync('/bin/sh', [range, ...args], { cwd, encoding: 'utf8', env: { ...env(), ...extra } });
   return { status: r.status, out: r.stdout, err: r.stderr, all: r.stdout + r.stderr };
 };
 const lines = (r) => r.out.split('\n').filter(Boolean);
@@ -140,3 +140,98 @@ describe('push-range.sh', () => {
     assert.ok(run([]).all.includes('push-range: usage'), 'usage');
   });
 });
+
+describe('push-range.sh: the place it asks is the place the push sends to', () => {
+  // The hook is given the URL AFTER pushInsteadOf; git push sends there as it is. But `git ls-remote <url>` applies
+  // url.<x>.insteadOf once more, so it can end up asking another repository. Nothing is subtracted on such an answer.
+  const rewrite = (mirror) => {
+    git(repo, 'config', `url.${mirror}.insteadOf`, bare);
+    git(repo, 'config', `url.${bare}.pushInsteadOf`, bare);
+  };
+
+  it('does not subtract what a rewritten URL\'s repository has: the commit is listed (by URL and by name alike)', () => {
+    const mirror = path.join(dir, 'mirror.git');
+    git(dir, 'init', '-q', '--bare', mirror);
+    const a = commit(repo, 'a.txt');
+    git(repo, 'push', '-q', mirror, 'main'); // the mirror has it; the real destination does not
+    const b = commit(repo, 'b.txt');
+    rewrite(mirror);
+    assert.equal(git(repo, 'remote', 'get-url', '--push', 'origin'), bare, 'the push goes to the destination itself');
+    const byUrl = run([bare]);
+    const byName = run(['origin']);
+    assert.equal(byUrl.status, 0, byUrl.all);
+    assert.deepEqual(lines(byUrl).sort(), [a, b].sort(), 'what only the mirror has is not subtracted');
+    assert.deepEqual(lines(byName).sort(), lines(byUrl).sort(), 'by name and by URL give the same commits');
+    assert.equal(run(['--gate-args', bare]).out.trim(), '--all');
+    assert.equal(run(['--gate-args', 'origin']).out.trim(), '--all');
+  });
+
+  it('a rewrite that is only the same URL again changes nothing: the destination is asked and subtracted', () => {
+    const a = commit(repo, 'a.txt');
+    git(repo, 'push', '-q', 'origin', 'main');
+    const b = commit(repo, 'b.txt');
+    git(repo, 'config', `url.${bare}.pushInsteadOf`, bare);
+    assert.deepEqual(lines(run([bare])), [b]);
+    assert.deepEqual(lines(run(['origin'])), [b]);
+    assert.ok(a);
+  });
+});
+
+describe('push-range.sh: the repository is the caller\'s, not whatever encloses the work tree', () => {
+  // `git --git-dir=A --work-tree=B push` runs the hook with cwd B and GIT_DIR=A. B sits inside another repository.
+  let outer;
+  let inner;
+  let work;
+  const innerEnv = () => ({ GIT_DIR: inner, GIT_WORK_TREE: work });
+  const igit = (...args) => {
+    const r = spawnSync('git', ['-c', 'user.name=Tester', '-c', 'user.email=tester@users.noreply.github.com', '-c', 'commit.gpgsign=false', ...args], { cwd: work, encoding: 'utf8', env: { ...env(), ...innerEnv() } });
+    if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
+    return r.stdout.trim();
+  };
+  beforeEach(() => {
+    outer = path.join(dir, 'outer');
+    work = path.join(outer, 'sub');
+    inner = path.join(dir, 'inner.git');
+    mkdirSync(work, { recursive: true });
+    git(outer, 'init', '-q', '-b', 'main');
+    commit(outer, 'o.txt');
+    spawnSync('git', ['init', '-q', '-b', 'main', inner], { env: env() });
+    for (const n of ['1', '2', '3']) {
+      writeFileSync(path.join(work, `i${n}.txt`), n);
+      igit('add', `i${n}.txt`);
+      igit('commit', '-q', '-m', `inner ${n}`);
+    }
+  });
+
+  it('lists the commits of the repository git was told to use (3), never the enclosing one (1)', () => {
+    const r = run([bare], work, innerEnv());
+    assert.equal(r.status, 0, r.all);
+    assert.equal(lines(r).length, 3, r.all);
+    assert.deepEqual(lines(r).sort(), igit('rev-list', 'HEAD').split('\n').sort());
+  });
+
+  it('stops, and says so, when GIT_DIR names no repository: the enclosing repository is not used instead', () => {
+    const r = run([bare], work, { GIT_DIR: path.join(dir, 'no-such-dir'), GIT_WORK_TREE: work });
+    assert.equal(r.status, 2, r.all);
+    assert.ok(r.all.includes('push-range: not inside a git repository'), r.all);
+    assert.equal(r.out, '');
+  });
+
+  it('--head must be the commit HEAD is: a mismatch stops', () => {
+    const head = igit('rev-parse', 'HEAD');
+    const ok = run(['--head', head, bare], work, innerEnv());
+    assert.equal(ok.status, 0, ok.all);
+    const other = git(outer, 'rev-parse', 'HEAD');
+    const bad = run(['--head', other, bare], work, innerEnv());
+    assert.equal(bad.status, 2, bad.all);
+    assert.ok(bad.all.includes('push-range: HEAD is not the commit being pushed'), bad.all);
+    assert.equal(bad.out, '');
+  });
+
+  it('stops for an object directory set from outside (it cannot be handed on to the clean environment)', () => {
+    const r = run([bare], work, { ...innerEnv(), GIT_OBJECT_DIRECTORY: path.join(inner, 'objects') });
+    assert.equal(r.status, 2, r.all);
+    assert.ok(r.all.includes('push-range: GIT_OBJECT_DIRECTORY and GIT_ALTERNATE_OBJECT_DIRECTORIES are not supported'), r.all);
+  });
+});
+

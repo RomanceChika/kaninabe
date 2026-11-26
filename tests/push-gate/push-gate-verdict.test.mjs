@@ -333,7 +333,7 @@ describe('push-gate.sh with the real tools: the same commit gets the same verdic
       'GITLEAKS_CONFIG': { GITLEAKS_CONFIG: allow },
       'GITLEAKS_CONFIG_TOML': { GITLEAKS_CONFIG_TOML: ALLOW_ALL },
       'GITLEAKS_BASELINE_PATH': { GITLEAKS_BASELINE_PATH: nonexistent },
-      'GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE': { GIT_DIR: nonexistent, GIT_WORK_TREE: nonexistent, GIT_INDEX_FILE: nonexistent },
+      'GIT_INDEX_FILE': { GIT_INDEX_FILE: nonexistent },
       'GIT_ATTR_SOURCE': { GIT_ATTR_SOURCE: 'no-such-tree' },
       'GIT_CONFIG_COUNT injection': { GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'core.attributesFile', GIT_CONFIG_VALUE_0: nonexistent, GIT_CONFIG_KEY_1: 'diff.external', GIT_CONFIG_VALUE_1: 'false' },
       'GIT_CONFIG_GLOBAL with LFS filters and diff settings': { GIT_CONFIG_GLOBAL: lfs },

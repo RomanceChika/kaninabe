@@ -75,17 +75,35 @@ describe('check-review-record.sh', () => {
   it('fails on a carriage return that does not end a line, and on invisible characters', () => {
     failsWith(`text\r\`\`\`\n${record()}`, 'carriage return');
     failsWith(`intro\r## Review\r- opus: ${OLD}\r- codex: ${OLD}\r\n${record()}`, 'carriage return');
-    failsWith(`## Revi​ew\n- opus: ${HEAD}\n- codex: ${HEAD}\n${record()}`, 'invisible character');
-    failsWith(`﻿${record()}`, 'invisible character');
-    failsWith(`a‮b\n${record()}`, 'invisible character');
+    failsWith(`## Revi\u200bew\n- opus: ${HEAD}\n- codex: ${HEAD}\n${record()}`, 'invisible character');
+    failsWith(`\ufeff${record()}`, 'invisible character');
+    failsWith(`a\u202eb\n${record()}`, 'invisible character');
+    failsWith(`a\u2060b\n${record()}`, 'invisible character');
+    failsWith(`a\u2066b\n${record()}`, 'invisible character');
   });
 
   it('tracks fences by character and length, and fails when the section sits inside one', () => {
     for (const body of [`\`\`\`\n${record()}\`\`\`\n`, `\`\`\`\`\n\`\`\`\n${record()}`, `\`\`\`\n~~~\n${record()}`,
-      `~~~\n\`\`\`\n${record()}`, `~~~\n${record()}`, `   ~~~~\n~~~\n${record()}`]) {
+      `~~~\n\`\`\`\n${record()}`, `~~~\n${record()}`, `\`\`\`\n\`\`\` x\n${record()}`]) {
       failsWith(body, INFENCE);
     }
-    assert.equal(check(`    \`\`\`\n${record()}`).status, 0, 'four spaces is indented code, not a fence');
+    assert.equal(check(`\`\`\`a\`b\n${record()}`).status, 0, 'a backtick in the info string makes it not a fence');
+  });
+
+  it('fails on a fence that does not start the line (a list item ends it where a line reader cannot see)', () => {
+    for (const body of [`- a\n  \`\`\`\n  x\n\`\`\`\n${record()}`, `1. a\n   ~~~\n~~~\n${record()}`, `   ~~~~\n~~~\n${record()}`,
+      `    \`\`\`\n${record()}`, `> \`\`\`\n${record()}`, `use \`\`\` here\n${record()}`]) {
+      failsWith(body, 'does not start the line');
+    }
+  });
+
+  it('fails on a footnote, which GitHub shows after the record', () => {
+    failsWith(`a[^1]\n\n[^1]: note\n\n${record()}`, 'footnote');
+  });
+
+  it('holds the section to the exact heading and record lines', () => {
+    failsWith(`## Review foo\n- opus: ${HEAD}\n- codex: ${HEAD}\n`, BEFORE);
+    assert.equal(check(`## Review \t\n\t\n- opus: ${HEAD} \t\n \n- codex: ${HEAD}\t\n`).status, 0, 'blank lines and trailing blanks are allowed');
   });
 
   it('fails on a record-like line before the section, even in a fence or other markup', () => {

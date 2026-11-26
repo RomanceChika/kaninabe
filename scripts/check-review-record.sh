@@ -14,9 +14,14 @@
 # shape in which the two cannot differ, and anything else fails (a false failure is fixed by rewriting the body):
 #   - no HTML tag or comment anywhere (`<` followed by a letter, `!`, `?` or `/`: an HTML block or an unclosed element
 #     can hide or flatten what follows), no invisible character, and no carriage return except before a line feed;
-#   - exactly one `## Review` line, outside fenced code (fences are tracked by their character and length);
+#   - fences only at the start of a line, outside any other block (a fence indented into a list item ends where
+#     GitHub ends the item, which a line-based reader cannot follow), so they can be tracked by character and length;
+#     no footnote (GitHub moves it after the record); exactly one `## Review` line, outside fenced code;
 #   - nothing after it but blank lines and exactly one `- opus:` and one `- codex:` line, so it is the last section;
 #   - no line before it that looks like a record line (opus: or codex: once markup is stripped), even in fenced code.
+# What passes is therefore a visible `Review` heading as the last thing on the page, holding the two lines that name the
+# head. A look-alike of an old record before it (character references, letters from other scripts) is not caught:
+# it does not count, and the record that counts is the last section.
 # Output never quotes the body: it names the rule and, at most, the first 8 characters of a well-formed sha.
 # Usage: check-review-record.sh <body-file> <head-sha>
 set -eu
@@ -27,7 +32,6 @@ case $head in *[!0-9a-f]*) bad=1 ;; *) bad=0 ;; esac
 [ "$bad" -eq 0 ] && [ "${#head}" -eq 40 ] || { echo "review record: the head is not a full commit sha"; exit 2; }
 # One line per finding: "E <rule>" for a broken rule, "V <who> <value>" for a record value (never printed as is).
 out=$(LC_ALL=C awk '
-  function lead(s) { match(s, /^ */); return RLENGTH }
   function run(s, c,   n) { n = 0; while (substr(s, n + 1, 1) == c) n++; return n }
   BEGIN { fence = 0; seen = 0; o = 0; c = 0 }
   {
@@ -46,17 +50,14 @@ out=$(LC_ALL=C awk '
       seen = 1; next }
     t = low; gsub(/[^a-z:]/, "", t)
     if (t ~ /^(opus|codex):/) { print "E a record line appears before ## Review"; stop = 1; exit }
-    n = lead(line)
-    if (n <= 3) {
-      s = substr(line, n + 1); ch = substr(s, 1, 1)
-      if (ch == "`" || ch == "~") {
-        k = run(s, ch)
-        if (k >= 3) {
-          rest = substr(s, k + 1)
-          if (!fence) { if (!(ch == "`" && index(rest, "`"))) { fence = 1; fch = ch; flen = k } }
-          else if (ch == fch && k >= flen && rest ~ /^[ \t]*$/) fence = 0
-        }
-      }
+    if (line ~ /^[ \t]*\[\^/) { print "E the body has a footnote (it is shown after the record)"; stop = 1; exit }
+    if ((index(line, "```") || index(line, "~~~")) && line !~ /^(```|~~~)/) {
+      print "E a fence or a run of three backticks or tildes that does not start the line"; stop = 1; exit }
+    ch = substr(line, 1, 1)
+    if ((ch == "`" || ch == "~") && run(line, ch) >= 3) {
+      k = run(line, ch); rest = substr(line, k + 1)
+      if (!fence) { if (!(ch == "`" && index(rest, "`"))) { fence = 1; fch = ch; flen = k } }
+      else if (ch == fch && k >= flen && rest ~ /^[ \t]*$/) fence = 0
     }
   }
   END {

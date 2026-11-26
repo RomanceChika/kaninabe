@@ -73,9 +73,12 @@ for c in $(cat "$commits"); do
   short=$(echo "$c" | cut -c1-8)
   # The text of a commit is the raw object with NUL as a line break (neutral_commit_text); a commit that cannot be read stops the scan.
   neutral_commit_text "$c" "$text" || { echo "scan: could not read a commit"; echo "scan-public: ERROR"; exit 2; }
-  # The mail rule reads the same text without the first author and the first committer line (their addresses have their own
-  # rule below, and a web-flow committer address is allowed there); a second such line, or one after the headers, is read.
-  awk 'BEGIN { h = 1 } h && /^$/ { h = 0 } h && /^author / && !a { a = 1; next } h && /^committer / && !m { m = 1; next } { print }' "$text" > "$text_mail" || { echo "scan: could not read a commit"; echo "scan-public: ERROR"; exit 2; }
+  # The mail rule reads the same text, except that from the first `author` and the first `committer` line only the one <...> that the
+  # identity rule checks is taken out (the first '<' to the first '>' after it: the address git itself reads as %ae / %ce, and
+  # GitHub's web-flow committer address is allowed there). The name and anything after the address stay in the text, and so does
+  # a second such line or one after the headers.
+  LC_ALL=C awk 'function strip(l,  i, j) { i = index(l, "<"); if (!i) return l; j = index(substr(l, i + 1), ">"); if (!j) return l; return substr(l, 1, i - 1) substr(l, i + j + 1) }
+    BEGIN { h = 1 } h && /^$/ { h = 0 } h && /^author / && !a { a = 1; print strip($0); next } h && /^committer / && !m { m = 1; print strip($0); next } { print }' "$text" > "$text_mail" || { echo "scan: could not read a commit"; echo "scan-public: ERROR"; exit 2; }
   if [ -s "$pat" ]; then
     gg -IlE -f "$pat" "$c"; n=$(lines)
     if [ "$n" != "0" ]; then echo "word list: $n file(s) in $short"; gg -InE -f "$pat" "$c"; show_at; fail=1; fi
@@ -93,7 +96,9 @@ for c in $(cat "$commits"); do
   # (These stay on the identity fields: the AI words are about who the author is, not about anything written in a message.)
   neutral_git log -1 --format='%an%n%cn' "$c" > "$ng_work/names" 2>/dev/null && neutral_git log -1 --format='%ae%n%ce' "$c" > "$ng_work/addrs" 2>/dev/null \
     || { echo "scan: could not read a commit"; echo "scan-public: ERROR"; exit 2; }
-  if scan_grep -qiE "$scan_ai" "$ng_work/names" || { scan_grep -viE "$scan_ident_ok" "$ng_work/addrs" || true; } | scan_grep -q .; then
+  # An address that is empty (no <...>, or one that is not closed) is not a noreply address: every line must match, so it is red.
+  bad_addrs=$({ scan_grep -cvE "$scan_ident_ok" "$ng_work/addrs" || true; })
+  if scan_grep -qiE "$scan_ai" "$ng_work/names" || [ "${bad_addrs:-0}" != 0 ] || [ "$(wc -l < "$ng_work/addrs" | tr -d ' ')" != 2 ]; then
     echo "author or committer not allowed in $short"; fail=1
   fi
   if scan_bad_email < "$text_mail"; then echo "email-like string in the message of $short"; fail=1; fi

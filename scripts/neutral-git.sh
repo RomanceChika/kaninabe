@@ -6,6 +6,11 @@
 # without the user's and the system's git configuration. A git too old for --attr-source is not worked around: the
 # scans stop, because scanning less is worse than not scanning.
 #
+# THE RULE FOR EVERY SCRIPT THAT SOURCES THIS FILE: a step that fails must never read as "nothing found" or as a smaller list.
+# `set -e` does not cover a non-final stage of a pipe, `|| true`, `2>/dev/null`, a `$(...)` in a `for`, or a command in a
+# condition. So: stage results go through files in the private temp dir with every status checked (no pipe feeds a verdict); a
+# grep in a condition is grep_q (found / not found / failed); `|| true` is only for a result that is shown and never decides.
+#
 # (the real repository is $ng_repo, set by the caller)
 # neutral_git_setup <dir>   prepares <dir>/neutral.git; on failure prints the reason in $ng_error and returns 1
 # neutral_git <args...>     runs git (read-only use: grep, ls-tree) against the commits of the real repository
@@ -68,7 +73,9 @@ neutral_export() {
 neutral_adds_text() {
   nat_raw=$ng_dir/numstat.raw
   neutral_git diff-tree --root -m -M --numstat -z --no-ext-diff --no-textconv --no-color "$1" > "$nat_raw" 2>/dev/null || return 2
-  tr '\000' '\n' < "$nat_raw" | awk -F'\t' '$1 ~ /^[0-9]+$/ && $1 > 0 { f = 1 } END { exit f ? 0 : 1 }'
+  tr '\000' '\n' < "$nat_raw" > "$nat_raw.t" 2>/dev/null || return 2
+  nat_rc=0; awk -F'\t' '$1 ~ /^[0-9]+$/ && $1 > 0 { f = 1 } END { exit f ? 0 : 1 }' "$nat_raw.t" || nat_rc=$?
+  case $nat_rc in 0 | 1) return "$nat_rc" ;; *) return 2 ;; esac
 }
 neutral_commit_text() {
   neutral_git cat-file commit "$1" > "$2.raw" 2>/dev/null || return 1
@@ -80,6 +87,33 @@ now_secs() { now_t=$(date +%s 2>/dev/null) || return 1; case $now_t in '' | *[!0
 # input, an I/O error) calls grep_failed, which the caller defines and which does not return: a search that failed is never
 # "nothing found". (Output of grep is the caller's: the -q or -c is among the arguments.)
 grep_q() { gq_rc=0; grep "$@" || gq_rc=$?; case $gq_rc in 0 | 1) return "$gq_rc" ;; *) grep_failed "$gq_rc" ;; esac; }
+# x_count <file>: prints the number of lines of a gitleaks report (an "x" per finding; blank lines are ignored). Fails (status 1)
+# for an empty report, a line that is not "x", or an awk that does not run: a result that cannot be read is never a count.
+x_count() { LC_ALL=C awk -v who=x_count '$0 == "" { next } $0 != "x" { bad = 1 } { n++ } END { if (bad || !n) exit 1; print n }' "$1"; }
+# word_list_read <list> <pattern-out> <scoped-out>: the one reader of the word list. Lines that are not comments or blank and do
+# not begin with '@' go to <pattern-out>, the '@' lines to <scoped-out>. Every status is checked (no pipe), and a list with a NUL
+# byte or a line that is not valid UTF-8 is refused (a grep in a UTF-8 locale silently drops such a line, so it would leave the
+# list). On failure returns 1 with a fixed reason in $wl_err; a line of the list is never shown.
+word_list_read() {
+  wl_err="could not be read"; wl_t=$2.chk
+  [ -f "$1" ] && [ -r "$1" ] || return 1
+  tr -d '\000' < "$1" > "$wl_t" 2>/dev/null || return 1
+  wl_a=$(wc -c < "$1") && wl_b=$(wc -c < "$wl_t") || return 1
+  if [ "$wl_a" != "$wl_b" ]; then wl_err="contains a NUL byte"; return 1; fi
+  # in C.UTF-8 a line that is not valid UTF-8 is not matched by '^.*$': with -v -a it is the one that is selected. A self-test
+  # first, so that a system without that locale (where every byte is a character) does not pass everything.
+  printf 'caf\351\n' > "$wl_t" || return 1
+  wl_rc=0; (LC_ALL=C.UTF-8; export LC_ALL; grep -qav '^.*$' "$wl_t") || wl_rc=$?
+  if [ "$wl_rc" != 0 ]; then wl_err="cannot be checked for UTF-8 here"; return 1; fi
+  wl_rc=0; (LC_ALL=C.UTF-8; export LC_ALL; grep -qav '^.*$' "$1") || wl_rc=$?
+  case $wl_rc in 0) wl_err="is not valid UTF-8"; return 1 ;; 1) ;; *) return 1 ;; esac
+  LC_ALL=C awk -v who=WORDLIST-READ '!/^#/ && !/^$/ && !/^@/' "$1" > "$2" 2>/dev/null || return 1
+  LC_ALL=C awk -v who=WORDLIST-READ '/^@/' "$1" > "$3" 2>/dev/null || return 1
+  rm -f "$wl_t"
+}
+# guard_exit <status>: for an EXIT trap. A command that failed under `set -e` can exit 1, which these scripts use for "found
+# something"; unless the script said so (verdict_exit set just before its own exit 1), any status but 0 or 2 becomes 2.
+guard_exit() { [ "$1" = 0 ] || [ "$1" = 2 ] || [ -n "${verdict_exit:-}" ] || exit 2; }
 log_has_error() {
   { tr -d '\033' < "$1" > "$1.n1" && sed 's/\[[0-9;]*m//g' "$1.n1" > "$1.n2"; } 2>/dev/null || grep_failed 1
   grep_q -Eq '^[^ ]+ (ERR|FTL|PNC) ' "$1.n2"
@@ -105,8 +139,8 @@ scan_history() {
     case $sh_rc in 0 | 99) ;; *) hist_err="could not run (exit $sh_rc)"; return 2 ;; esac
     if log_has_error "$3/hist.log"; then hist_err="could not run (it logged an error)"; return 2; fi
     if [ "$sh_rc" = 99 ]; then
-      if [ -s "$3/hist.out" ] && grep -q . "$3/hist.out" && ! grep . "$3/hist.out" | grep -qvx x; then hist_n=$((hist_n + $(grep -c . "$3/hist.out")))
-      else hist_err="could not read the result"; return 2; fi
+      sh_x=$(x_count "$3/hist.out") || { hist_err="could not read the result"; return 2; }
+      hist_n=$((hist_n + sh_x))
     fi
     sh_n=$(gl_scanned "$3/hist.log")
     case $sh_n in '' | *[!0-9]*) hist_err="could not confirm what it scanned"; return 2 ;; esac

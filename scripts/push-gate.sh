@@ -64,7 +64,7 @@ cd "$repo_top"
 ng_repo=$repo_gitdir
 
 tmp=$(mktemp -d 2>/dev/null || TMPDIR=/tmp mktemp -d) || die "could not make a temporary directory"
-trap 'rm -rf "$tmp"' EXIT
+trap 'rc=$?; rm -rf "$tmp"; guard_exit "$rc"' EXIT
 mkdir "$tmp/home"
 # clean <command...>: every tool and every git command of the gate runs with an environment of explicit inputs only,
 # not with the caller's (no GIT_*, GREP_*, GITLEAKS_* or anything else), without the user's or the system's git
@@ -76,15 +76,15 @@ clean() {
 # cgit <args...>: git against the REAL repository, in the clean environment. Used only to resolve names (HEAD, --base) to
 # commit ids, with replace refs ignored; everything that reads history goes through the neutral repository (neutral_git).
 cgit() { clean GIT_DIR="$repo_gitdir" git "$@"; }
-# report_ok <file>: a gitleaks report that can be read: not empty, and every line is the "x" that the template writes for one
-# finding. A result that cannot be read is "could not read the result", never "no findings".
-report_ok() { [ -s "$1" ] && grep -q . "$1" && ! grep . "$1" | grep -qvx x; }
+# (A gitleaks report is read with x_count in neutral-git.sh: every line is the "x" that the template writes for one finding;
+# a result that cannot be read is "could not read the result", never "no findings".)
 
 if [ "$mode" = words ]; then
   if [ -n "${SCAN_WORDS_FILE:-}" ] && [ -f "$SCAN_WORDS_FILE" ] && [ -r "$SCAN_WORDS_FILE" ] && [ -s "$SCAN_WORDS_FILE" ]; then :
   else die "words mode needs the word list (SCAN_WORDS_FILE is unset, empty or unreadable)"; fi
   # scan-public.sh takes every line that is not a comment or blank as a pattern; with none, nothing would be scanned.
-  grep -v '^#' "$SCAN_WORDS_FILE" | grep -v '^$' | grep -q . || die "the word list has no pattern (only comments and blank lines): nothing would be scanned"
+  word_list_read "$SCAN_WORDS_FILE" "$tmp/wl.pat" "$tmp/wl.scoped" || die "the word list $wl_err"
+  [ -s "$tmp/wl.pat" ] || [ -s "$tmp/wl.scoped" ] || die "the word list has no pattern (only comments and blank lines): nothing would be scanned"
 else
   unset SCAN_WORDS_FILE
 fi
@@ -169,12 +169,13 @@ if [ "$count" -gt 0 ]; then
     gl stdin --report-format template --report-template "$tmp/gitleaks.tpl" --report-path "$tmp/msgs.out" < "$tmp/batch" > /dev/null 2> "$tmp/gl.log" || rc=$?
     gl_check "$rc"
     if [ "$rc" = 99 ]; then
-      report_ok "$tmp/msgs.out" || die "step gitleaks could not read the result"
-      msg_n=$((msg_n + $(grep -c . "$tmp/msgs.out"))); echo x > "$tmp/gl.found"
+      msg_x=$(x_count "$tmp/msgs.out") || die "step gitleaks could not read the result"
+      msg_n=$((msg_n + msg_x)); echo x > "$tmp/gl.found"
     fi
     : > "$tmp/batch"; batch_bytes=0
   }
-  for c in $(cat "$tmp/commits"); do
+  commit_ids=$(cat "$tmp/commits") || die "step gitleaks could not run (could not read the list of commits)"
+  for c in $commit_ids; do
     neutral_commit_text "$c" "$tmp/text" || die "step gitleaks could not run (could not read the text of a commit)"
     # every text is followed by one separator line break, whatever the text ends with, and that byte counts toward the bound
     text_bytes=$(( $(wc -c < "$tmp/text" | tr -d ' ') + 1 ))
@@ -189,8 +190,8 @@ if [ "$count" -gt 0 ]; then
   ( cd "$tmp/head" && gl dir --report-format template --report-template "$tmp/gitleaks.tpl" --report-path "$tmp/gitleaks.out" . ) > /dev/null 2> "$tmp/gl.log" || rc=$?
   gl_check "$rc"
   if [ "$rc" = 99 ]; then
-    report_ok "$tmp/gitleaks.out" || die "step gitleaks could not read the result"
-    echo x > "$tmp/gl.found"; tree_n=$(grep -c . "$tmp/gitleaks.out" || true)
+    tree_n=$(x_count "$tmp/gitleaks.out") || die "step gitleaks could not read the result"
+    echo x > "$tmp/gl.found"
   fi
   if [ -f "$tmp/gl.found" ]; then
     nm=$msg_n
@@ -227,7 +228,9 @@ fi
 # and pyflakes integrations are off so that the result does not depend on what else is installed. The report template
 # holds only the file, the line and the kind of problem, never the message or the source line.
 tick; t_step=$now_t
-files=$(neutral_git ls-tree -r --name-only "$head_sha" -- .github/workflows | grep -E '\.ya?ml$' || true)
+neutral_git ls-tree -r --name-only "$head_sha" -- .github/workflows > "$tmp/lstree" 2>/dev/null || die "step workflows could not run (could not list the files of HEAD)"
+grep_q -E '\.ya?ml$' "$tmp/lstree" > "$tmp/lsfiles" || [ $? = 1 ]
+files=$(cat "$tmp/lsfiles") || die "step workflows could not run (could not list the files of HEAD)"
 if [ -z "$files" ]; then
   elapsed "$t_step"; echo "push-gate: step workflows: ok (no workflow files) in $el s"
 else
@@ -258,5 +261,5 @@ else
   esac
 fi
 
-if [ -n "$failed" ]; then elapsed "$t_gate"; echo "push-gate: FAILED ($failed) in $el s"; exit 1; fi
+if [ -n "$failed" ]; then elapsed "$t_gate"; echo "push-gate: FAILED ($failed) in $el s"; verdict_exit=1; exit 1; fi
 elapsed "$t_gate"; echo "push-gate: passed (mode $mode, $count commit(s)) in $el s"

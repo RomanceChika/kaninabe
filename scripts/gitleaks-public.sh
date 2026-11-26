@@ -23,7 +23,7 @@ case $bin in /*) ;; */*) bin="$(pwd)/$bin" ;; esac   # a relative path must surv
 . "$here/repo-context.sh"
 . "$here/neutral-git.sh"
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+trap 'rc=$?; rm -rf "$tmp"; guard_exit "$rc"' EXIT
 cfg="$here/gitleaks-gate.toml"
 [ -f "$cfg" ] && [ -r "$cfg" ] || { echo "gitleaks $mode: could not run (the fixed config is missing)"; exit 2; }
 printf '%s\n' '{{ range . }}x{{ "\n" }}{{ end }}' > "$tmp/rules.tpl"
@@ -58,7 +58,9 @@ else
   # every commit that a ref (or HEAD) of the real repository reaches, as ids; a tip that is missing, or a list that cannot
   # be read, stops here (exit 2): only a repository that truly has no commit is "ok" without a scan
   ng_real git for-each-ref --format='%(objectname)' > "$tmp/tips" 2>/dev/null || could_not_run 2
-  ng_real git rev-parse -q --verify 'HEAD^{commit}' >> "$tmp/tips" 2>/dev/null || true
+  # HEAD may legitimately be no commit (an unborn branch: status 1); any other failure is not "nothing to scan"
+  head_rc=0; ng_real git rev-parse -q --verify 'HEAD^{commit}' >> "$tmp/tips" 2>/dev/null || head_rc=$?
+  case $head_rc in 0 | 1) ;; *) could_not_run 2 ;; esac
   sort -u "$tmp/tips" > "$tmp/tips.u"
   : > "$tmp/commit-tips"
   while IFS= read -r t; do
@@ -67,7 +69,8 @@ else
     case $type in
       commit) printf '%s\n' "$t" >> "$tmp/commit-tips" ;;
       tag) peeled=$(neutral_git rev-parse --verify -q "$t^{}" 2>/dev/null) || could_not_run 2
-           [ "$(neutral_git cat-file -t "$peeled" 2>/dev/null)" != commit ] || printf '%s\n' "$peeled" >> "$tmp/commit-tips" ;;
+           ptype=$(neutral_git cat-file -t "$peeled" 2>/dev/null) || could_not_run 2
+           [ "$ptype" != commit ] || printf '%s\n' "$peeled" >> "$tmp/commit-tips" ;;
     esac
   done < "$tmp/tips.u"
   if [ -s "$tmp/commit-tips" ]; then
@@ -80,7 +83,7 @@ else
     if [ "$hist_n" -gt 0 ]; then
       elapsed; echo "gitleaks git: FAILED ($hist_n finding(s)) in $el s"
       echo "  (details: run gitleaks yourself on your own copy, for example: gitleaks git .)"
-      exit 1
+      verdict_exit=1; exit 1
     fi
   else
     elapsed; echo "gitleaks git: ok in $el s"; exit 0
@@ -93,9 +96,9 @@ case $rc in
   0) elapsed; echo "gitleaks $mode: ok in $el s" ;;
   99)
     # findings: the report must be readable (every line the x of the template), else this is not "zero findings"
-    if [ ! -s "$tmp/rules.out" ] || ! grep -q . "$tmp/rules.out" || grep . "$tmp/rules.out" | grep -qvx x; then echo "gitleaks $mode: could not read the result"; exit 2; fi
-    elapsed; echo "gitleaks $mode: FAILED ($(grep -c . "$tmp/rules.out") finding(s)) in $el s"
+    n=$(x_count "$tmp/rules.out") || { echo "gitleaks $mode: could not read the result"; exit 2; }
+    elapsed; echo "gitleaks $mode: FAILED ($n finding(s)) in $el s"
     echo "  (details: run gitleaks yourself on your own copy, for example: gitleaks $mode .)"
-    exit 1 ;;
+    verdict_exit=1; exit 1 ;;
   *) could_not_run "$rc" ;;
 esac

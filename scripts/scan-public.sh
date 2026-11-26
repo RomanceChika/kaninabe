@@ -32,12 +32,13 @@ fi
 # The range is given to git as commit ids. With --revs the caller (the gate) already did that; names (a base, HEAD) are
 # resolved here, once, in the real repository with replace refs ignored; the history is then read from the neutral repository.
 if [ "${1:-}" = "--revs" ]; then shift; range="$*"; resolve_names=0; else base_name=${1:-}; resolve_names=1; fi
-pat=$(mktemp); trap 'rm -f "$pat" "$scoped" "$scan_err"' EXIT
-if [ -n "${SCAN_WORDS_FILE:-}" ] && [ -s "$SCAN_WORDS_FILE" ]; then
-  grep -v '^#' "$SCAN_WORDS_FILE" | grep -v '^$' | grep -v '^@' > "$pat" || true
-  scoped=$(mktemp); grep '^@' "$SCAN_WORDS_FILE" > "$scoped" || true
-else
-  scoped=$(mktemp)
+scan_name=scan-public
+pat=$(mktemp); scoped=$(mktemp); trap 'rc=$?; rm -f "$pat" "$pat".* "$scoped" "$scan_err"; guard_exit "$rc"' EXIT
+# A list that is named (SCAN_WORDS_FILE set and not empty) must be a readable, non-empty file that word_list_read accepts: a list
+# that cannot be read is exit 2, never a scan without it. No name = a scan without a list (the generic checks only).
+if [ -n "${SCAN_WORDS_FILE:-}" ]; then
+  [ -s "$SCAN_WORDS_FILE" ] || { echo "scan: the word list is missing or empty"; echo "scan-public: ERROR"; exit 2; }
+  word_list_read "$SCAN_WORDS_FILE" "$pat" "$scoped" || { echo "scan: the word list $wl_err"; echo "scan-public: ERROR"; exit 2; }
 fi
 scan_check_patterns "$pat"
 while IFS= read -r line; do printf '%s\n' "${line#* }" > "$pat.one"; scan_check_patterns "$pat.one"; done < "$scoped"; rm -f "$pat.one"
@@ -69,7 +70,8 @@ lines() { wc -l < "$gg_out" | tr -d ' '; }
 # show_at: the places (path:line) of the last gg -n; not printed when SCAN_QUIET is set (a public log: counts only).
 show_at() { [ -n "${SCAN_QUIET:-}" ] || { cut -d: -f2,3 "$gg_out" | head -50 | sed "s|^|  at |"; }; }
 text=$ng_work/text; text_mail=$ng_work/text-mail
-for c in $(cat "$commits"); do
+commit_ids=$(cat "$commits") || { echo "scan: could not read the list of commits"; echo "scan-public: ERROR"; exit 2; }
+for c in $commit_ids; do
   short=$(echo "$c" | cut -c1-8)
   # The text of a commit is the raw object with NUL as a line break (neutral_commit_text); a commit that cannot be read stops the scan.
   neutral_commit_text "$c" "$text" || { echo "scan: could not read a commit"; echo "scan-public: ERROR"; exit 2; }
@@ -105,11 +107,15 @@ for c in $(cat "$commits"); do
   gg -IlE "$generic" "$c" -- . ':!package-lock.json' ':!**/package-lock.json'; n=$(lines)
   if [ "$n" != "0" ]; then
     gg -IhoE '/Users/[A-Za-z0-9_.-]+|/home/[a-z0-9_.-]+/|C:\\Users|BEGIN [A-Z ]*PRIVATE KEY' "$c" -- . ':!package-lock.json' ':!**/package-lock.json'
-    m=$(sed 's/^[^:]*://' "$gg_out" | { scan_grep -vE '^/home/(u|a|user|x|me|app|runner|node)/$' || true; } | wc -l | tr -d ' ')
+    sed 's/^[^:]*://' "$gg_out" > "$ng_work/hits" || { echo "scan: could not read the hits"; echo "scan-public: ERROR"; exit 2; }
+    scan_filter "$ng_work/hits" "$ng_work/hits.f" -vE '^/home/(u|a|user|x|me|app|runner|node)/$'
+    m=$(wc -l < "$ng_work/hits.f" | tr -d ' ')
     if [ "$m" != "0" ]; then echo "local path or key shape: $m hit(s) in $short"; fail=1; fi
   fi
   gg -IhoE "$email" "$c" -- . ':!package-lock.json' ':!**/package-lock.json'
-  m=$(sed 's/^[^:]*://' "$gg_out" | { scan_grep -vE "$email_ok" || true; } | wc -l | tr -d ' ')
+  sed 's/^[^:]*://' "$gg_out" > "$ng_work/hits" || { echo "scan: could not read the hits"; echo "scan-public: ERROR"; exit 2; }
+  scan_filter "$ng_work/hits" "$ng_work/hits.f" -vE "$email_ok"
+  m=$(wc -l < "$ng_work/hits.f" | tr -d ' ')
   if [ "$m" != "0" ]; then echo "email-like string: $m hit(s) in $short"; fail=1; fi
 done
 scan_finish scan-public "$fail"

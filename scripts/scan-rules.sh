@@ -20,14 +20,17 @@ scan_ident_ok='^(([0-9]+\+)?[A-Za-z0-9_-]+@users\.noreply\.github\.com|noreply@g
 # scan at scan_finish. A pipeline runs it in a subshell, where `exit` alone would only end that subshell.
 scan_err=$(mktemp)
 . "$(dirname "$0")/neutral-git.sh"
-grep_failed() { echo "scan: grep failed (exit $1): an invalid pattern or an unreadable input"; echo x >> "$scan_err"; exit 2; }
+grep_failed() { echo "scan: grep failed (exit $1): an invalid pattern or an unreadable input"; echo x >> "$scan_err"; echo "${scan_name:-scan}: ERROR"; exit 2; }
 scan_grep() { grep_q "$@"; }
+# scan_filter <in> <out> <grep arguments...>: the lines of <in> that grep selects, into <out>; "no line" (status 1) is a result, a failed
+# grep stops the scan (see scan_grep). Used instead of a pipe, so that no stage can fail unseen.
+scan_filter() { sf_in=$1; sf_out=$2; shift 2; scan_grep "$@" "$sf_in" > "$sf_out" || [ $? = 1 ]; }
 
 # scan_finish NAME FAIL: the one exit of a scan. A recorded grep error wins over a clean result.
 scan_finish() {
   if [ -s "$scan_err" ]; then rm -f "$scan_err"; echo "$1: ERROR"; exit 2; fi
   rm -f "$scan_err"
-  [ "$2" -eq 0 ] && echo "$1: clean" || { echo "$1: FAILED"; exit 1; }
+  [ "$2" -eq 0 ] && echo "$1: clean" || { echo "$1: FAILED"; verdict_exit=1; exit 1; }
 }
 
 # scan_check_patterns FILE: every line must be a valid extended regex.

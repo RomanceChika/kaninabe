@@ -34,6 +34,10 @@ neutral_git_setup() {
   ng_dir=$1/neutral.git
   ng_env git init -q --bare "$ng_dir" >/dev/null 2>&1 || { ng_error="could not prepare a neutral git directory"; return 1; }
   printf '%s\n' "$ng_objects" > "$ng_dir/objects/info/alternates" || { ng_error="could not prepare a neutral git directory"; return 1; }
+  # A commit-graph (and a multi-pack-index) of the borrowed object directory is not content-addressed: git would read parent
+  # links from it. Both are switched off in the neutral repository's own config (which gitleaks' git runs read as well).
+  ng_env GIT_DIR="$ng_dir" git config core.commitGraph false && ng_env GIT_DIR="$ng_dir" git config core.multiPackIndex false \
+    || { ng_error="could not prepare a neutral git directory"; return 1; }
 }
 neutral_git() {
   ng_env GIT_DIR="$ng_dir" git --attr-source="$ng_empty" "$@"

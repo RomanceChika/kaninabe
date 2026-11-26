@@ -6,7 +6,8 @@
 #     itself is compared with HEAD, not what it points to: an annotated tag object is not a commit);
 #   - only refs/heads/* may be pushed to (a branch deletion passes): the message of a tag, a note and any other non-branch
 #     object is not scanned, and the object reaches the destination even if the ref update is refused afterwards;
-#   - the content review record (git config kaninabe.contentReviewed) must name that commit: it is written after the
+#   - the content review record (git config kaninabe.contentReviewed = "<head> <range id>", see scripts/range-id.sh) must name that
+#     commit and the range id the push has now (destination URL, head, exact commit list): it is written after the
 #     push has been read for publication, and must be written again after any new commit;
 #   - every push of a tag is refused, a deletion included (tags are made and deleted by the tag workflow only);
 #   - then the gate runs, always in words mode (no way to ask for general mode here), over the commits that the destination does
@@ -35,10 +36,14 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     refuse "refusing to push $(short "$local_sha"): it is not the checked-out commit; check it out first"
   fi
   reviewed=$(git config --get kaninabe.contentReviewed || true)
-  if [ "$reviewed" != "$head" ]; then
+  if [ "${reviewed%% *}" != "$head" ]; then
     echo "pre-push: the content review record (kaninabe.contentReviewed) does not name $(short "$head")" >&2
-    refuse "have the push read for publication, then run: git config kaninabe.contentReviewed $head"
+    refuse "have the push read for publication: run sh scripts/push-range.sh <remote or URL>, read those commits, and record the value it prints"
   fi
+  case $reviewed in
+    *" "*) ;;
+    *) refuse "the review record has the old form (a commit id only): run sh scripts/push-range.sh <remote or URL>, read those commits, and record the value it prints (git config kaninabe.contentReviewed \"<head> <range id>\")" ;;
+  esac
   case $remote_sha in *[!0]*) remote_shas="$remote_shas $remote_sha" ;; esac
   pushing=1
 done
@@ -60,7 +65,14 @@ fi
 # cannot be asked, or the history cannot be read to the end, push-range.sh stops with a reason and so does the push.
 url=${2:-}
 [ -n "$url" ] || refuse "git did not pass the URL of the destination"
-# shellcheck disable=SC2086
-range_args=$(sh "$here/../scripts/push-range.sh" --gate-args --head "$head" "$url" $remote_shas) || exit 1
+range_out=$(sh "$here/../scripts/push-range.sh" --gate-args --head "$head" "$url" $remote_shas) || exit 1
+range_args=$(printf '%s\n' "$range_out" | sed -n 1p)
+range_id=$(printf '%s\n' "$range_out" | sed -n 2p | sed 's/^range-id=//')
+range_n=$(printf '%s\n' "$range_out" | sed -n 3p | sed 's/^commits=//')
+# The review was of one destination, one head and one list of commits: the record is "<head> <range id>". If any of them
+# changed since (the destination's branch was deleted or moved, another URL, a new commit), the review must be redone.
+if [ "${reviewed#* }" != "$range_id" ]; then
+  refuse "the push range changed since the review (${range_n:-?} commit(s) now): the review must be redone on the new range: run sh scripts/push-range.sh $url, read those commits, and record the value it prints"
+fi
 # shellcheck disable=SC2086
 exec sh "$here/../scripts/push-gate.sh" --mode words --head "$head" $range_args

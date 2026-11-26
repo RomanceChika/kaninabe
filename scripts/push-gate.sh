@@ -1,7 +1,7 @@
 #!/bin/sh
 # The push-before gate: the one script that runs every check that must be green before commits are pushed to a public
 # repository (docs/rules/process/common/development-flow.md, "security"). The hook (.githooks/pre-push) and CI call it.
-# Usage: push-gate.sh --mode words|general [--head <sha>] (--base <sha> | --not-on <sha>,<sha>... | --all)
+# Usage: push-gate.sh --mode words|general [--head <sha>] [--list-id <id>] (--base <sha> | --not-on <sha>,<sha>... | --all)
 #   --mode words    the word list (the file named by $SCAN_WORDS_FILE) is required; without it the gate stops.
 #                   Used by the hook, pr-gate and the CI of the main branch.
 #   --mode general  the rules without the word list (the list is never read, even if set). For pull requests and
@@ -10,6 +10,8 @@
 #   --base <sha>            the commits in <sha>..HEAD
 #   --not-on <sha>,...      the commits reachable from HEAD and from none of the given commits (scripts/push-range.sh
 #                           decides which: the ones the destination itself says it has)
+#   --list-id <id>          the id of the commit list that the range id was computed from (push-range.sh prints it); the gate
+#                           stops if the commits it would scan are another list
 #   --head <sha>            the commit that is being pushed (the hook passes it); the gate stops if HEAD is another commit
 #   --all                   every commit reachable from HEAD
 # Steps: (1) gitleaks over those commits; (2) scripts/scan-public.sh over the same commits; (3) every workflow file of
@@ -24,9 +26,10 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/repo-context.sh"
 . "$here/neutral-git.sh"
+. "$here/range-id.sh"
 die() { echo "push-gate: $*" >&2; exit 2; }
 
-mode_set=0; mode=; want_head=
+mode_set=0; mode=; want_head=; want_list=
 n_ranges=0; range_kind=; range_val=
 while [ $# -gt 0 ]; do
   case $1 in
@@ -34,6 +37,7 @@ while [ $# -gt 0 ]; do
     --base) [ $# -ge 2 ] || die "--base needs a value"; range_kind=base; range_val=$2; n_ranges=$((n_ranges + 1)); shift 2 ;;
     --not-on) [ $# -ge 2 ] || die "--not-on needs a value"; range_kind=noton; range_val=$2; n_ranges=$((n_ranges + 1)); shift 2 ;;
     --head) [ $# -ge 2 ] || die "--head needs a value"; want_head=$2; shift 2 ;;
+    --list-id) [ $# -ge 2 ] || die "--list-id needs a value"; want_list=$2; shift 2 ;;
     --all) range_kind=all; n_ranges=$((n_ranges + 1)); shift ;;
     *) die "unknown argument (usage: push-gate.sh --mode words|general --base <sha> | --not-on <sha>,<sha>... | --all)" ;;
   esac
@@ -41,6 +45,7 @@ done
 [ "$mode_set" = 1 ] || die "--mode is required (words or general)"
 case $mode in words | general) ;; *) die "unknown mode \"$mode\" (words or general)" ;; esac
 [ "$n_ranges" = 1 ] || die "exactly one of --base, --not-on, --all is required"
+if [ -n "$want_list" ]; then range_is_id "$want_list" || die "--list-id needs a sha256 id"; fi
 if [ -n "$want_head" ]; then
   printf '%s\n' "$want_head" | grep -Eq '^([0-9a-f]{40}|[0-9a-f]{64})$' || die "--head needs a full commit id"
 fi
@@ -64,6 +69,11 @@ clean() {
 # cgit <args...>: git against the REAL repository, in the clean environment. Used only to resolve names (HEAD, --base) to
 # commit ids, with replace refs ignored; everything that reads history goes through the neutral repository (neutral_git).
 cgit() { clean GIT_DIR="$repo_gitdir" git "$@"; }
+# report_ok <file>: a gitleaks report that can be read: not empty, and every line is "<rule> <file>:<line> <short id>".
+# A result that cannot be read is "could not read the result", never "no findings".
+report_ok() { [ -s "$1" ] && grep -q . "$1" && ! grep . "$1" | grep -qvE '^[^ ]+ .+:[0-9]+ [0-9a-f]{0,8}$'; }
+# label: a name from a tool goes into a public log only in a fixed shape; anything else is counted as "other".
+label() { awk '{ if ($0 ~ /^[a-z0-9][a-z0-9-]{0,63}$/) print $0; else print "other" }'; }
 
 if [ "$mode" = words ]; then
   if [ -n "${SCAN_WORDS_FILE:-}" ] && [ -f "$SCAN_WORDS_FILE" ] && [ -r "$SCAN_WORDS_FILE" ] && [ -s "$SCAN_WORDS_FILE" ]; then :
@@ -101,6 +111,10 @@ esac
 # The list is written to a file and the status checked: a failing rev-list is not an empty range.
 neutral_git rev-list $revs > "$tmp/commits" 2>/dev/null || die "could not list the commits"
 count=$(wc -l < "$tmp/commits" | tr -d ' ')
+# The list that the range id was computed from (push-range.sh) is the list scanned here, or nothing is scanned.
+if [ -n "$want_list" ] && [ "$(range_list_id "$head_sha" "$tmp/commits")" != "$want_list" ]; then
+  die "the commits to scan are not the list the range id was computed from"
+fi
 # The files of HEAD, exactly as committed (see neutral-git.sh: git archive would honour export-ignore and export-subst
 # attributes of the tree). Both the tree scan and the workflow check read this export.
 neutral_export "$head_sha" "$tmp/head" || die "could not export HEAD"
@@ -131,7 +145,12 @@ if [ "$count" -gt 0 ]; then
   gl_msgs=0
   rc=0
   gl git --report-format template --report-template "$tmp/gitleaks.tpl" --report-path "$tmp/gitleaks.out" --log-opts="-m $revs" "$gitdir" > /dev/null 2>&1 || rc=$?
-  case $rc in 0) ;; 99) [ ! -f "$tmp/gitleaks.out" ] || grep . "$tmp/gitleaks.out" >> "$gl_lines" || true; echo x > "$tmp/gl.found" ;; *) die "step gitleaks could not run (exit $rc)" ;; esac
+  case $rc in
+    0) ;;
+    99) report_ok "$tmp/gitleaks.out" || die "step gitleaks could not read the result"
+        grep . "$tmp/gitleaks.out" >> "$gl_lines"; echo x > "$tmp/gl.found" ;;
+    *) die "step gitleaks could not run (exit $rc)" ;;
+  esac
   : > "$tmp/gl.msgs"
   for c in $(cat "$tmp/commits"); do
     neutral_git log -1 --format=%B "$c" > "$tmp/msg" 2>/dev/null || die "step gitleaks could not run (could not read a commit message)"
@@ -144,9 +163,9 @@ if [ "$count" -gt 0 ]; then
   ( cd "$tmp/head" && gl dir --report-format template --report-template "$tmp/gitleaks.tpl" --report-path "$tmp/gitleaks.out" . ) > /dev/null 2>&1 || rc=$?
   case $rc in
     0) ;;
-    99) echo x > "$tmp/gl.found"
-        [ ! -f "$tmp/gitleaks.out" ] || grep . "$tmp/gitleaks.out" > "$tmp/gl.tree" || true
-        [ ! -f "$tmp/gl.tree" ] || tree_n=$(wc -l < "$tmp/gl.tree" | tr -d ' ') ;;
+    99) report_ok "$tmp/gitleaks.out" || die "step gitleaks could not read the result"
+        echo x > "$tmp/gl.found"
+        grep . "$tmp/gitleaks.out" > "$tmp/gl.tree"; tree_n=$(wc -l < "$tmp/gl.tree" | tr -d ' ') ;;
     *) die "step gitleaks could not run (exit $rc)" ;;
   esac
   if [ -f "$tmp/gl.found" ]; then
@@ -155,7 +174,7 @@ if [ "$count" -gt 0 ]; then
     echo "push-gate: step gitleaks: FAILED ($n finding(s) in patches, $nm in commit messages, $tree_n in the tree of HEAD)"
     # In CI (a public log) only rule names and counts; anywhere else, the places.
     if [ -n "${CI:-}" ]; then
-      { cat "$gl_lines"; [ ! -f "$tmp/gl.tree" ] || cat "$tmp/gl.tree"; } | cut -d' ' -f1 | sort | uniq -c | sed 's/^ *\([0-9]*\) \(.*\)$/  rule \2: \1/'
+      { cat "$gl_lines"; [ ! -f "$tmp/gl.tree" ] || cat "$tmp/gl.tree"; } | cut -d' ' -f1 | label | sort | uniq -c | sed 's/^ *\([0-9]*\) \(.*\)$/  rule \2: \1/'
     else
       sed 's/^/  at /' "$gl_lines" | head -50
       sed 's/^/  commit message of /' "$tmp/gl.msgs"
@@ -211,8 +230,9 @@ else
   case $rc in
     0) echo "push-gate: step workflows: ok ($nfiles file(s))" ;;
     1)
+      [ -s "$tmp/actionlint.out" ] && ! grep -qvE '^.+:[0-9]+: \[.*\]$' "$tmp/actionlint.out" || die "step workflows could not read the result"
       echo "push-gate: step workflows: FAILED"
-      if [ -n "${CI:-}" ]; then sed 's/^.*\[\(.*\)\]$/\1/' "$tmp/actionlint.out" | sort | uniq -c | sed 's/^ *\([0-9]*\) \(.*\)$/  rule \2: \1/'
+      if [ -n "${CI:-}" ]; then sed 's/^.*\[\(.*\)\]$/\1/' "$tmp/actionlint.out" | label | sort | uniq -c | sed 's/^ *\([0-9]*\) \(.*\)$/  rule \2: \1/'
       else sed 's/^/  at /' "$tmp/actionlint.out" | head -50; fi
       failed="${failed:+$failed, }workflows" ;;
     *) die "step workflows could not run (exit $rc)" ;;

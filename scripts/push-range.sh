@@ -5,7 +5,9 @@
 #   --head <sha> the commit that is being pushed (the hook passes it); the script stops if HEAD is another commit
 #   default      prints the commits (full ids, one per line): every commit reachable from HEAD except those that the
 #                DESTINATION itself has just said it has
-#   --gate-args  prints the arguments that give push-gate.sh the same set: `--all`, or `--not-on <sha>,<sha>...`
+#   --gate-args  prints 3 lines: the arguments that give push-gate.sh the same set (`--all` or `--not-on <sha>,<sha>...`, then
+#                `--list-id <id>`), `range-id=<id>`, and `commits=<n>`
+#   Either way the range id (see range-id.sh) is the value to record: `git config kaninabe.contentReviewed "<head> <range id>"`
 #   <remote sha> a commit the destination had for the ref being pushed (git gives it to the hook on stdin); it counts only
 #                if the destination advertises it now too, so it can never add to what is subtracted
 # The destination is asked now: `git ls-remote --heads <url>`. A commit is subtracted only if the destination advertises
@@ -41,6 +43,7 @@ fi
 # The repository is decided here, in the caller's environment, and handed on explicitly.
 . "$(dirname "$0")/repo-context.sh"
 . "$(dirname "$0")/neutral-git.sh"
+. "$(dirname "$0")/range-id.sh"
 repo_resolve_top || die "$repo_error"
 cd "$repo_top"
 
@@ -102,10 +105,18 @@ neutral_git rev-list --objects --missing=print $revs > "$tmp/objects" 2>/dev/nul
 if grep -q '^?' "$tmp/objects"; then die "objects are missing here, so the history cannot be read to the end"; fi
 
 n=$(wc -l < "$tmp/commits" | tr -d ' ')
+# The identity of this range: the URL contacted, the head and the exact ordered list (range-id.sh). Computed here, from the
+# same resolved inputs the list came from; the gate is handed the list id and checks it against the list it scans.
+list_id=$(range_list_id "$head_sha" "$tmp/commits")
+rid=$(range_id "$dest" "$list_id")
+range_is_id "$list_id" && range_is_id "$rid" || die "could not compute the range id (sha256sum is needed)"
 echo "push-range: $n commit(s) not on the destination ($(grep -c . "$tmp/confirmed" || true) of its commit(s) known here)" >&2
 if [ "$gate_args" = 1 ]; then
-  if [ -z "$confirmed" ]; then echo "--all"
-  else printf -- '--not-on %s\n' "$(tr '\n' ',' < "$tmp/confirmed" | sed 's/,$//')"; fi
+  # line 1: the gate arguments; line 2: the range id; line 3: the number of commits
+  if [ -z "$confirmed" ]; then printf -- '--all --list-id %s\n' "$list_id"
+  else printf -- '--not-on %s --list-id %s\n' "$(tr '\n' ',' < "$tmp/confirmed" | sed 's/,$//')" "$list_id"; fi
+  printf 'range-id=%s\ncommits=%s\n' "$rid" "$n"
 else
   cat "$tmp/commits"
+  echo "push-range: after reading these commits, record: git config kaninabe.contentReviewed \"$head_sha $rid\"" >&2
 fi

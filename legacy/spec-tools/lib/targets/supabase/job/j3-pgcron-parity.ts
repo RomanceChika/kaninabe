@@ -23,7 +23,7 @@
  */
 
 import path from 'node:path';
-import { isDirectory, toRelative, walkFiles } from '../../../io/paths.js';
+import { appGrounded, isDirectory, toRelative, walkFiles } from '../../../io/paths.js';
 import { tryReadText } from '../../../io/read-text.js';
 import type { Finding } from '../../../kernel/finding.js';
 import type { JobDecl, JobSpecModel } from '../../../model/job/types.js';
@@ -95,7 +95,7 @@ export interface PgCronParityInput {
  */
 function pgCronUnchecked(input: Pick<PgCronParityInput, 'repoRoot' | 'roots'>): boolean {
   if (isDirectory(path.join(input.repoRoot, input.roots.migrations))) return false;
-  return input.roots.app === null || !isDirectory(path.join(input.repoRoot, input.roots.app));
+  return !appGrounded(input.repoRoot, input.roots.app);
 }
 
 /**

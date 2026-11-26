@@ -37,8 +37,7 @@ export function cronConfigFile(roots: ProductRoots): string | null {
 /** Cron の登録ファイルの名前(Vercel の規約。実装の木の直下に置く)。 */
 export const CRON_CONFIG_FILE_NAME = 'vercel.json';
 
-/** J2 の指摘を組み立てる。 */
-/** Cron の登録(ホストの設定ファイル = 実装の木)との突合の指摘。生成を止めない(`grounding: 'implementation'`)。 */
+/** J2 の指摘を組み立てる。Cron の登録(ホストの設定ファイル = 実装の木)との突合の指摘。生成を止めない(`grounding: 'implementation'`)。 */
 function j2Finding(args: Omit<Finding, 'verifier' | 'severity' | 'grounding'>): Finding {
   return { verifier: VERIFIER_ID, severity: 'error', ...args, grounding: 'implementation' };
 }

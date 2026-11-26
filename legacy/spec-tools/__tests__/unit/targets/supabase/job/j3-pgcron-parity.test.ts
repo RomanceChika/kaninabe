@@ -103,6 +103,16 @@ describe('J3: pg_cron ジョブの接地', () => {
     expect(pgCronSkipped({ roots, jobs, repoRoot: REPO_ROOT })).toBeNull();
   });
 
+  it('migration の置き場が在れば実装の木が無くても突合する(Supabase だけの製品の J3 を黙って落とさない)', () => {
+    const roots = { ...TEST_ROOTS, app: null };
+    const jobs = jobModel([scheduledJob('ghost_job', { cron: '*/10 * * * *', scheduler: 'database' })]);
+
+    expect(verifyPgCronParity({ roots, jobs, repoRoot: REPO_ROOT }).map((finding) => finding.message)).toContain(
+      `ジョブ ghost_job(scheduler: database)が ${roots.migrations} の cron.schedule に登録されていません`,
+    );
+    expect(pgCronSkipped({ roots, jobs, repoRoot: REPO_ROOT })).toBeNull();
+  });
+
   it('置き場が在れば一言は出ない(突合する)', () => {
     expect(pgCronSkipped({ roots: TEST_ROOTS, jobs: jobModel([goodJob()]), repoRoot: REPO_ROOT })).toBeNull();
   });

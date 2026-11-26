@@ -6,8 +6,10 @@ name: pr-gate
 # `pull_request_target` runs this workflow and its scripts from the base branch, so a pull request cannot switch the
 # gate off by editing it. The pull request's code is never checked out or run here: only the event's title, body and
 # head sha are read, as data. A change to this file or to the scripts takes effect once it is on the base branch.
-# Merge only when the newest run for the head sha you merge has concluded success, and the title and body you merge
-# with were last edited before that run started (a missing run is not a pass; see AGENTS.md).
+# Merge only when the newest run for the head sha you merge has concluded success and the text hash it printed equals
+# the hash of the title and body you merge with (a missing run is not a pass; see AGENTS.md). The hash is compared, not
+# times: a re-run of an old run reuses that run's event, so it can succeed on a body that is no longer the current one.
+# The hash is sha256 of the title, an empty line and the body, each followed by a line feed (jq -r's output below).
 # A pull request from a fork fails here without using the word list: the secret reaches fork pull requests under
 # `pull_request_target`, and a pass/fail answer on edited text would let anyone probe which words are on it.
 on:
@@ -44,6 +46,7 @@ jobs:
           if [ -n "$SCAN_WORDS" ]; then printf '%s\n' "$SCAN_WORDS" > "$words"; export SCAN_WORDS_FILE="$words"
           else echo "SCAN_WORDS is not set"; exit 1; fi
           jq -r '.pull_request.title, "", (.pull_request.body // "")' "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/pr-text"
+          echo "pr-gate: text sha256 $(sha256sum < "$RUNNER_TEMP/pr-text" | cut -d' ' -f1)"
           sh scripts/scan-pr-text.sh "$RUNNER_TEMP/pr-text"
           rm -f "$words"
       - name: The review record names the head commit

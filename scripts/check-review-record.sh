@@ -12,10 +12,11 @@
 #
 # What is counted must be what a reader sees. Rather than imitate how GitHub renders Markdown, the body is held to a
 # shape in which the two cannot differ, and anything else fails (a false failure is fixed by rewriting the body):
-#   - no HTML comment and no tag whose content GitHub hides or does not render as Markdown, anywhere in the body;
+#   - no HTML tag or comment anywhere (`<` followed by a letter, `!`, `?` or `/`: an HTML block or an unclosed element
+#     can hide or flatten what follows), no invisible character, and no carriage return except before a line feed;
 #   - exactly one `## Review` line, outside fenced code (fences are tracked by their character and length);
 #   - nothing after it but blank lines and exactly one `- opus:` and one `- codex:` line, so it is the last section;
-#   - no line before it that looks like a record line, even inside fenced code.
+#   - no line before it that looks like a record line (opus: or codex: once markup is stripped), even in fenced code.
 # Output never quotes the body: it names the rule and, at most, the first 8 characters of a well-formed sha.
 # Usage: check-review-record.sh <body-file> <head-sha>
 set -eu
@@ -25,14 +26,15 @@ head=${2:?usage: check-review-record.sh <body-file> <head-sha>}
 case $head in *[!0-9a-f]*) bad=1 ;; *) bad=0 ;; esac
 [ "$bad" -eq 0 ] && [ "${#head}" -eq 40 ] || { echo "review record: the head is not a full commit sha"; exit 2; }
 # One line per finding: "E <rule>" for a broken rule, "V <who> <value>" for a record value (never printed as is).
-out=$(tr -d '\r' < "$f" | awk '
+out=$(LC_ALL=C awk '
   function lead(s) { match(s, /^ */); return RLENGTH }
   function run(s, c,   n) { n = 0; while (substr(s, n + 1, 1) == c) n++; return n }
   BEGIN { fence = 0; seen = 0; o = 0; c = 0 }
   {
-    line = $0; low = tolower(line)
-    if (index(low, "<!--") || low ~ /<(script|style|textarea|pre|xmp|plaintext|template|noscript|noembed|noframes|iframe|title)([ \t>\/]|$)/) {
-      print "E the body has an HTML comment or a raw-text tag (write it without one)" }
+    line = $0; sub(/\r$/, "", line); low = tolower(line)
+    if (index(line, "\r")) { print "E the body has a carriage return that does not end a line"; stop = 1; exit }
+    if (low ~ /<[a-z!?\/]/) print "E the body has an HTML tag or comment (write it without one)"
+    if (line ~ /\342\200[\213-\217\252-\256]|\342\201[\240-\244\246-\251]|\357\273\277/) print "E the body has an invisible character"
     if (seen) {
       if (line ~ /^[ \t]*$/) next
       if (line ~ /^- opus:/) { o++; v = line; sub(/^- opus:[ \t]*/, "", v); sub(/[ \t]*$/, "", v); print "V opus " v; next }
@@ -42,7 +44,8 @@ out=$(tr -d '\r' < "$f" | awk '
     if (line ~ /^## Review[ \t]*$/) {
       if (fence) { print "E a ## Review line is inside fenced code"; stop = 1; exit }
       seen = 1; next }
-    if (tolower(line) ~ /^[ \t>]*([-*+][ \t]+)?(opus|codex)[ \t]*:/) { print "E a record line appears before ## Review"; stop = 1; exit }
+    t = low; gsub(/[^a-z:]/, "", t)
+    if (t ~ /^(opus|codex):/) { print "E a record line appears before ## Review"; stop = 1; exit }
     n = lead(line)
     if (n <= 3) {
       s = substr(line, n + 1); ch = substr(s, 1, 1)
@@ -60,7 +63,7 @@ out=$(tr -d '\r' < "$f" | awk '
     if (stop) exit
     if (!seen) print "E need one ## Review section (found none outside fenced code)"
     else { if (o != 1) print "E need exactly one - opus: line under ## Review"; if (c != 1) print "E need exactly one - codex: line under ## Review" }
-  }')
+  }' < "$f")
 fail=0
 errs=$(printf '%s\n' "$out" | sed -n 's/^E //p' | sort -u)
 if [ -n "$errs" ]; then printf '%s\n' "$errs" | sed 's/^/review record: /'; fail=1

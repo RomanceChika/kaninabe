@@ -494,6 +494,19 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     assert.ok(!(r.stdout + r.stderr).includes('scan-public: clean'));
   });
 
+  it('a git that cannot ignore the tree\'s attributes (before --attr-source) stops the gate and scan-public instead of scanning less', () => {
+    const realGit = which('git');
+    rmSync(path.join(sb.bin, 'git'));
+    writeFileSync(path.join(sb.bin, 'git'), `#!/bin/sh\nfor a in "$@"; do case $a in --attr-source*) echo "unknown option: $a" >&2; exit 129 ;; esac; done\nexec ${realGit} "$@"\n`);
+    chmodSync(path.join(sb.bin, 'git'), 0o755);
+    const reason = 'this git does not support --attr-source (git 2.40 or newer is needed): not scanning with a weaker scan';
+    stops(runGate(sb, ['--mode', 'words', '--all'], words()), 2, `push-gate: ${reason}`);
+    const r = spawnSync('/bin/sh', [scanPublic, 'HEAD~1'], { cwd: sb.repo, encoding: 'utf8', env: sb.env(words()) });
+    assert.equal(r.status, 2, r.stdout + r.stderr);
+    assert.ok((r.stdout + r.stderr).includes(`scan: ${reason}`), r.stdout + r.stderr);
+    assert.ok(!(r.stdout + r.stderr).includes('scan-public: clean'));
+  });
+
   it('in CI the public output is rule names and counts only; locally it names places', () => {
     commit(sb, { 'notes.txt': `${WORD}\n`, '.github/workflows/ci.yml': 'name: x\n' });
     const env = { ...words(), SHIM_ACTIONLINT_EXIT: '1', SHIM_OUT_actionlint: '.github/workflows/ci.yml:3: [syntax-check]|' };

@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -194,5 +194,80 @@ describe('push-gate.sh with the real tools: a file in the tree cannot silence gi
     commit({ 'conf.txt': `token = ${key} # gitleaks:allow\n` });
     assert.equal(plain(), 0, 'sanity: the comment does silence a plain scan');
     stoppedOnKey(general(), key);
+  });
+});
+
+describe('push-gate.sh with the real tools: what is scanned does not depend on the tree or on local git settings', () => {
+  const WORD = 'zzgatewordzz';
+  const words = () => {
+    const f = path.join(dir, 'words.txt');
+    writeFileSync(f, `${WORD}\n`);
+    return { SCAN_WORDS_FILE: f };
+  };
+  // Assembled here so that this file holds no mail address and no local path of its own.
+  const mail = () => ['someone', '@', 'corp-mail.invalid'].join('');
+  const homePath = () => ['/ho', 'me/', 'alice/notes'].join('');
+  const stops = (r, rule) => {
+    assert.equal(r.status, 1, r.out);
+    assert.ok(r.out.includes(rule), `expected "${rule}": ${r.out}`);
+  };
+
+  it('a .gitattributes that marks text as binary or -diff does not hide a word, a mail address or a local path', () => {
+    commit({ '.gitattributes': '*.txt binary\n* -diff\n', 'notes.txt': `${WORD}\n`, 'mail.txt': `${mail()}\n`, 'path.txt': `${homePath()}\n` });
+    const r = gateRun(['--mode', 'words', '--all'], words());
+    stops(r, 'push-gate: step scan-public: FAILED');
+    assert.ok(r.out.includes('word list: 1 file(s)'), r.out);
+    assert.ok(r.out.includes('email-like string: 1 hit(s)'), r.out);
+    assert.ok(r.out.includes('local path or key shape: 1 hit(s)'), r.out);
+    const general_ = general();
+    stops(general_, 'push-gate: step scan-public: FAILED');
+    assert.ok(general_.out.includes('email-like string: 1 hit(s)'), general_.out);
+  });
+
+  it('a .git/info/attributes of the clone and a core.attributesFile do not hide them either', () => {
+    commit({ 'notes.txt': `${WORD}\n` });
+    writeFileSync(path.join(repo, '.git/info/attributes'), '* -diff\n');
+    writeFileSync(path.join(dir, 'global-attributes'), '* binary\n');
+    git('config', 'core.attributesFile', path.join(dir, 'global-attributes'));
+    git('config', 'grep.patternType', 'fixed');
+    stops(gateRun(['--mode', 'words', '--all'], words()), 'word list: 1 file(s)');
+  });
+
+  it('an export-ignore attribute does not hide a key from the scan of the tree of HEAD', () => {
+    const key = fakeKey();
+    commit({ '.gitattributes': 'conf.dat export-ignore\n', 'conf.dat': `token = ${key}\n` });
+    const pushed = git('rev-parse', 'HEAD');
+    git('update-ref', 'refs/remotes/origin/main', pushed);
+    commit({ 'b.txt': 'two\n' });
+    // The history scan leaves the commit out (the remote has it); only the tree of HEAD can see the key.
+    stoppedOnKey(general('--not-on-remote', 'origin'), key);
+  });
+
+  it('an export-ignore attribute does not hide a workflow from actionlint', () => {
+    commit({
+      '.gitattributes': '.github export-ignore\n.github/** export-ignore\n',
+      '.github/workflows/bad.yml': 'name: bad\non: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - name: x\n        run: echo "bad: x $(date)"\n',
+    });
+    const r = general();
+    assert.equal(r.status, 1, r.out);
+    assert.ok(r.out.includes('push-gate: step workflows: FAILED'), r.out);
+  });
+
+  it('works when the clone and the scripts are in directories whose names contain a space', () => {
+    const key = fakeKey();
+    repo = path.join(dir, 'my repo');
+    mkdirSync(repo);
+    git('init', '-q', '-b', 'main');
+    const scripts = path.join(dir, 'my scripts');
+    cpSync(path.dirname(gate), scripts, { recursive: true });
+    const run = () => {
+      const r = spawnSync('/bin/sh', [path.join(scripts, 'push-gate.sh'), '--mode', 'general', '--all'], { cwd: repo, encoding: 'utf8', env: env() });
+      return { status: r.status, out: r.stdout + r.stderr };
+    };
+    commit({ 'a.txt': 'one\n' });
+    const clean = run();
+    assert.equal(clean.status, 0, clean.out);
+    commit({ 'conf.txt': `token = ${key}\n` });
+    stoppedOnKey(run(), key);
   });
 });

@@ -951,6 +951,138 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
       assert.ok(r.out.includes('word list: commit message or author of'), r.out);
     });
   });
+
+  describe('a step that fails is never "nothing found" or "a smaller list" (review round 18, the sweep)', () => {
+    const scanPublic = path.join(scripts, 'scan-public.sh');
+    const scanPr = path.join(scripts, 'scan-pr-text.sh');
+    const wrapper = path.join(scripts, 'gitleaks-public.sh');
+    /** Replaces a tool in the sandbox by one that fails (exit `code`, no output) when its arguments contain `needle`, and is the real tool otherwise. */
+    const shimFail = (name, needle, code = 2) => {
+      rmSync(path.join(sb.bin, name), { force: true });
+      writeFileSync(path.join(sb.bin, name), `#!/bin/sh\ncase "$*" in *'${needle}'*) exit ${code} ;; esac\nexec ${which(name)} "$@"\n`);
+      chmodSync(path.join(sb.bin, name), 0o755);
+    };
+    const okGitleaks = () => {
+      const f = path.join(sb.dir, 'ok-gitleaks-sweep');
+      writeFileSync(f, '#!/bin/sh\n[ "$1" != git ] || echo "6:02PM INF 1 commits scanned." >&2\nexit 0\n');
+      chmodSync(f, 0o755);
+      return f;
+    };
+    const wrap = (mode, extra = {}) => {
+      const r = spawnSync('/bin/sh', [wrapper, mode, sb.repo], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ GL_BIN: okGitleaks(), ...extra }) });
+      return { status: r.status, out: r.stdout + r.stderr };
+    };
+    beforeEach(() => { commit(sb, { 'a.txt': 'one\n' }); commit(sb, { 'b.txt': 'two\n' }); });
+
+    describe('the word list is read in one place, with every status checked (W1)', () => {
+      const lists = {
+        'a line that is not valid UTF-8': Buffer.concat([Buffer.from('plainword\ncaf'), Buffer.from([0xe9]), Buffer.from('word\n')]),
+        'a NUL byte': Buffer.from('plainword\nab\0cd\n'),
+      };
+      for (const [label, content] of Object.entries(lists)) {
+        it(`a list with ${label} stops the gate, scan-public and scan-pr-text (exit 2) with a fixed reason and no line of the list`, () => {
+          writeFileSync(sb.words, content);
+          const g = runGate(sb, ['--mode', 'words', '--all'], { SCAN_WORDS_FILE: sb.words });
+          assert.equal(g.status, 2, g.out);
+          assert.ok(g.out.includes('push-gate: the word list'), g.out);
+          const p = spawnSync('/bin/sh', [scanPublic], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ SCAN_WORDS_FILE: sb.words }) });
+          assert.equal(p.status, 2, p.stdout + p.stderr);
+          assert.ok((p.stdout + p.stderr).includes('scan-public: ERROR'), p.stdout + p.stderr);
+          const text = path.join(sb.dir, 'pr.txt');
+          writeFileSync(text, 'title\n');
+          const t = spawnSync('/bin/sh', [scanPr, text], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ SCAN_WORDS_FILE: sb.words }) });
+          assert.equal(t.status, 2, t.stdout + t.stderr);
+          for (const o of [g.out, p.stdout + p.stderr, t.stdout + t.stderr]) assert.ok(!o.includes('plainword') && !o.includes('word'.repeat(2)), o);
+        });
+      }
+      it('a stage of the reading that fails (awk) is exit 2 in scan-public, scan-pr-text and the gate, not an empty list', () => {
+        writeWords(sb);
+        shimFail('awk', 'WORDLIST-READ');
+        const env = { SCAN_WORDS_FILE: sb.words };
+        const p = spawnSync('/bin/sh', [scanPublic], { cwd: sb.repo, encoding: 'utf8', env: sb.env(env) });
+        assert.equal(p.status, 2, p.stdout + p.stderr);
+        const text = path.join(sb.dir, 'pr.txt');
+        writeFileSync(text, 'title\n');
+        const t = spawnSync('/bin/sh', [scanPr, text], { cwd: sb.repo, encoding: 'utf8', env: sb.env(env) });
+        assert.equal(t.status, 2, t.stdout + t.stderr);
+        assert.equal(runGate(sb, ['--mode', 'words', '--all'], env).status, 2);
+      });
+      it('a list file that is named but missing or empty is exit 2 in scan-public (not a scan without a list)', () => {
+        for (const file of [path.join(sb.dir, 'no-such-list'), sb.words]) {
+          writeFileSync(sb.words, '');
+          const p = spawnSync('/bin/sh', [scanPublic], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ SCAN_WORDS_FILE: file }) });
+          assert.equal(p.status, 2, `${file}: ${p.stdout + p.stderr}`);
+        }
+      });
+    });
+
+    it('W2: an ls-tree that fails is not "no workflow files" (the gate exits 2)', () => {
+      commit(sb, { '.github/workflows/ci.yml': 'name: x\n' });
+      shimFail('git', 'ls-tree');
+      stops(runGate(sb, ['--mode', 'general', '--all']), 2, 'push-gate: ');
+    });
+    it('W2: the tr of the text-added decision that fails stops the wrapper (the gate reads the same decision), it is not "nothing added"', () => {
+      shimFail('tr', '\\000');
+      const r = wrap('git');
+      assert.equal(r.status, 2, r.out);
+      assert.ok(!r.out.includes('gitleaks git: ok'), r.out);
+    });
+    it('a cat that fails while the list of commits is read stops the gate and scan-public, never "no commits to scan"', () => {
+      rmSync(path.join(sb.bin, 'cat'), { force: true });
+      writeFileSync(path.join(sb.bin, 'cat'), `#!/bin/sh\nif [ $# -eq 1 ] && [ -f "$1" ] && head -n 1 "$1" | grep -Eqx '[0-9a-f]{40}'; then exit 1; fi\nexec ${which('cat')} "$@"\n`);
+      chmodSync(path.join(sb.bin, 'cat'), 0o755);
+      stops(runGate(sb, ['--mode', 'general', '--all']), 2, 'push-gate: ');
+      writeWords(sb);
+      const p = spawnSync('/bin/sh', [scanPublic], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ SCAN_WORDS_FILE: sb.words }) });
+      assert.equal(p.status, 2, p.stdout + p.stderr);
+      assert.ok(!(p.stdout + p.stderr).includes('scan-public: clean'), p.stdout + p.stderr);
+    });
+    it('the wrapper: a rev-parse of HEAD that fails is exit 2, and so is a cat-file that fails on the commit a tag points to', () => {
+      shimFail('git', '-q --verify HEAD^{commit}', 128);
+      let r = wrap('git');
+      assert.equal(r.status, 2, r.out);
+      assert.ok(!r.out.includes('gitleaks git: ok'), r.out);
+      rmSync(path.join(sb.bin, 'git'), { force: true });
+      symlinkSync(which('git'), path.join(sb.bin, 'git'));
+      git(sb, 'checkout', '-q', '-b', 'side');
+      const only = commit(sb, { 'c.txt': 'three\n' });
+      git(sb, 'tag', '-a', '-m', 't', 'tagged');
+      git(sb, 'checkout', '-q', 'main');
+      git(sb, 'branch', '-D', 'side');
+      shimFail('git', `cat-file -t ${only}`, 128);
+      r = wrap('git');
+      assert.equal(r.status, 2, r.out);
+      assert.ok(!r.out.includes('gitleaks git: ok'), r.out);
+    });
+    it('scan-public: a sed that fails while the hits of a file are filtered is exit 2, not "no hits"', () => {
+      commit(sb, { 'paths.txt': `${['/Us', 'ers/real'].join('')}/project\n` });
+      writeWords(sb);
+      shimFail('sed', 's/^[^:]*://');
+      const p = spawnSync('/bin/sh', [scanPublic], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ SCAN_WORDS_FILE: sb.words }) });
+      assert.equal(p.status, 2, p.stdout + p.stderr);
+    });
+    it('a command that fails with exit 1 under set -e is exit 2 in the gate and the wrapper (1 is "found something")', () => {
+      shimFail('mkdir', '/home', 1);
+      stops(runGate(sb, ['--mode', 'general', '--all']), 2, '');
+      rmSync(path.join(sb.bin, 'mkdir'), { force: true });
+      symlinkSync(which('mkdir'), path.join(sb.bin, 'mkdir'));
+      shimFail('sort', '-u', 1);
+      const r = wrap('git');
+      assert.equal(r.status, 2, r.out);
+    });
+    it('a report whose lines cannot be checked (awk fails) is "could not read the result", not findings', () => {
+      shimFail('awk', 'who=x_count');
+      const r = runGate(sb, ['--mode', 'general', '--all'], { SHIM_GITLEAKS_EXIT: '99', SHIM_REPORT_gitleaks: HIT });
+      stops(r, 2, 'push-gate: step gitleaks could not read the result');
+    });
+    it('scan-public prints its final ERROR line on the grep-failed path too', () => {
+      writeWords(sb);
+      shimFail('grep', '-qiE -f');
+      const p = spawnSync('/bin/sh', [scanPublic], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ SCAN_WORDS_FILE: sb.words }) });
+      assert.equal(p.status, 2, p.stdout + p.stderr);
+      assert.ok((p.stdout + p.stderr).includes('scan-public: ERROR'), p.stdout + p.stderr);
+    });
+  });
 }
 
 // ---- the hook ----

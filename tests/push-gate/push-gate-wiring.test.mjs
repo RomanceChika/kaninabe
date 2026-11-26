@@ -658,7 +658,7 @@ describe('pre-push hook', () => {
     const r = runHook(sb, { lines: [pushLine(head)], env: words() });
     assert.notEqual(r.status, 0, r.out);
     assert.ok(r.out.includes('pre-push: the content review record (kaninabe.contentReviewed) does not name'), r.out);
-    assert.ok(r.out.includes(`git config kaninabe.contentReviewed ${head}`), r.out);
+    assert.ok(r.out.includes('sh scripts/push-range.sh <remote or URL>, read those commits, and record the value it prints'), r.out);
     assert.deepEqual(sb.calls(), []);
   });
 
@@ -712,8 +712,8 @@ describe('pre-push hook', () => {
     sb = sandbox({ gitleaks: false });
     head = commit(sb, { 'a.txt': 'one\n' });
     writeWords(sb);
-    record(head);
     addRemote(sb);
+    record(head);
     const r = runHook(sb, { lines: [pushLine(head)], env: words() });
     assert.notEqual(r.status, 0, r.out);
     assert.ok(r.out.includes('push-gate: gitleaks is not on PATH'), r.out);
@@ -1095,6 +1095,7 @@ describe('push-gate.sh: public labels are trusted fixed labels, and a result tha
   });
 
   it('an actionlint exit for problems with no readable output is "could not read the result" (2)', () => {
+    commit(sb, { '.github/workflows/ci.yml': 'name: x\n' });
     const r = runGate(sb, ['--mode', 'words', '--all'], env({ SHIM_ACTIONLINT_EXIT: '1' }));
     assert.equal(r.status, 2, r.out);
     assert.ok(r.out.includes('push-gate: step workflows could not read the result'), r.out);
@@ -1109,7 +1110,7 @@ describe('push-gate.sh: public labels are trusted fixed labels, and a result tha
       SHIM_OUT_actionlint: '.github/workflows/ci.yml:3: [Evil Kind!]|.github/workflows/ci.yml:4: [syntax-check]|',
     }));
     assert.equal(r.status, 1, r.out);
-    assert.ok(r.out.includes('rule github-pat: 1'), r.out);
+    assert.ok(r.out.includes('rule github-pat: 2'), r.out); // once in the patches, once in the tree
     assert.ok(r.out.includes('rule syntax-check: 1'), r.out);
     assert.ok(r.out.includes('rule other: '), r.out);
     for (const leak of ['Evil_Rule', 'Evil Kind', 'x;rm-rf', 'a.txt', 'ci.yml']) assert.ok(!r.out.includes(leak), `"${leak}" reached the public output: ${r.out}`);

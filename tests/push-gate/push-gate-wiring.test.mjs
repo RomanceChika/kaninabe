@@ -39,11 +39,16 @@ const CORE = [
   'printf', 'echo', 'test', 'expr', 'sha256sum', 'curl', 'uname', 'install', 'chmod', 'od', 'tee', 'less', 'gzip',
 ];
 
+// The gate runs its tools with an explicit environment (env -i), so a shim cannot be steered by environment variables:
+// it reads what the test wants (where to log, which exit code, what to print) from shim.env, next to it in the bin dir.
+// What it logs after `#env:` shows the config variables that reached it (none, when the gate does its job).
 const SHIM_BODY = (name, exitVar) => `#!/bin/sh
+. "$(dirname "$0")/shim.env"
 printf '%s\\n' "${name} $* #env:\${GITLEAKS_CONFIG-unset}:\${GITLEAKS_CONFIG_TOML-unset}" >> "$SHIM_LOG"
 [ -z "\${SHIM_OUT_${name}:-}" ] || printf '%s' "\${SHIM_OUT_${name}}"
 exit "\${${exitVar}:-0}"
 `;
+const shq = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
 
 function which(name) {
   // Look in the system directories only: a wrapper earlier on the developer's PATH is not the tool.
@@ -78,15 +83,21 @@ function sandbox({ gitleaks = true, actionlint = true } = {}) {
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
     /** What the shims were called with, one line per call. */
     calls: () => (existsSync(sb.log) ? readFileSync(sb.log, 'utf8').split('\n').filter(Boolean) : []),
-    env: (extra = {}) => ({
-      PATH: bin,
-      HOME: path.join(dir, 'home'),
-      GIT_CONFIG_GLOBAL: '/dev/null',
-      GIT_CONFIG_NOSYSTEM: '1',
-      LC_ALL: 'C',
-      SHIM_LOG: sb.log,
-      ...extra,
-    }),
+    env: (extra = {}) => {
+      // SHIM_* settings go to shim.env (see SHIM_BODY); everything else is the environment of the process under test.
+      const shim = { SHIM_LOG: sb.log };
+      const rest = {};
+      for (const [k, v] of Object.entries(extra)) (k.startsWith('SHIM_') ? shim : rest)[k] = v;
+      writeFileSync(path.join(bin, 'shim.env'), Object.entries(shim).map(([k, v]) => `${k}=${shq(v)}\n`).join(''));
+      return {
+        PATH: bin,
+        HOME: path.join(dir, 'home'),
+        GIT_CONFIG_GLOBAL: '/dev/null',
+        GIT_CONFIG_NOSYSTEM: '1',
+        LC_ALL: 'C',
+        ...rest,
+      };
+    },
   };
   git(sb, 'init', '-q', '-b', 'main');
   return sb;
@@ -698,18 +709,26 @@ describe('pre-push hook', () => {
   it('subtracts only what the destination itself says it has, never what a tracking ref says', () => {
     const bad = commit(sb, { 'notes.txt': `${WORD}\n` });
     git(sb, 'update-ref', 'refs/remotes/origin/main', bad); // local state: the destination (an empty bare repository) does not have it
-    const next = commit(sb, { 'b.txt': 'two\n' });
+    const next = removeFile(sb, 'notes.txt');
     record(next);
     let r = runHook(sb, { lines: [pushLine(next)], env: words() });
     assert.notEqual(r.status, 0, r.out);
     assert.ok(r.out.includes('push-gate: step scan-public: FAILED'), `the commit is scanned: ${r.out}`);
     git(sb, 'push', '-q', 'origin', 'main');
-    commit(sb, { 'c.txt': 'three\n' });
-    const tip = git(sb, 'rev-parse', 'HEAD');
+    const tip = commit(sb, { 'c.txt': 'three\n' });
     record(tip);
     r = runHook(sb, { lines: [pushLine(tip, next)], env: words() });
     assert.equal(r.status, 0, `what the destination has is left out: ${r.out}`);
     assert.ok(r.out.includes('(mode words, 1 commit(s))'), r.out);
+  });
+
+  it('a remote sha that only git claims, and the destination does not advertise, is not subtracted', () => {
+    const first = commit(sb, { 'notes.txt': `${WORD}\n` });
+    const next = removeFile(sb, 'notes.txt');
+    record(next);
+    const r = runHook(sb, { lines: [pushLine(next, first)], env: words() });
+    assert.notEqual(r.status, 0, r.out);
+    assert.ok(r.out.includes('push-gate: step scan-public: FAILED'), r.out);
   });
 
   it('stops when the destination cannot be asked, instead of scanning less', () => {

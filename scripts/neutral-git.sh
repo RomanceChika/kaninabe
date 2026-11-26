@@ -30,6 +30,10 @@ neutral_git_setup() {
     ng_error="this git does not support --attr-source (git 2.40 or newer is needed): not scanning with a weaker scan"
     return 1
   fi
+  # What cannot be read to the end is not scanned in part: a shallow clone, and a repository whose object names are not SHA-1
+  # (the neutral repository is SHA-1). One check, used by every script that reads history.
+  [ "$(ng_real git rev-parse --is-shallow-repository 2>/dev/null)" = false ] || { ng_error="this is a shallow clone, so the history cannot be read to the end"; return 1; }
+  [ "$(ng_real git rev-parse --show-object-format 2>/dev/null)" = sha1 ] || { ng_error="this repository does not use SHA-1 object names: not supported, so the history cannot be read"; return 1; }
   ng_objects=$(ng_real git rev-parse --path-format=absolute --git-path objects 2>/dev/null) || { ng_error="could not find the objects of the repository"; return 1; }
   ng_dir=$1/neutral.git
   ng_env git init -q --bare "$ng_dir" >/dev/null 2>&1 || { ng_error="could not prepare a neutral git directory"; return 1; }

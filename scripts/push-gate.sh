@@ -73,6 +73,9 @@ cgit() { clean GIT_DIR="$repo_gitdir" git "$@"; }
 # A result that cannot be read is "could not read the result", never "no findings".
 report_ok() { [ -s "$1" ] && grep -q . "$1" && ! grep . "$1" | grep -qvE '^[^ ]+ .+:[0-9]+ [0-9a-f]{0,8}$'; }
 # label: a name from a tool goes into a public log only in a fixed shape; anything else is counted as "other".
+# gl_scanned <log>: the number in gitleaks' "N commits scanned." line (colour codes removed), or nothing. The log is a private
+# temporary file and is never printed.
+gl_scanned() { tr -d '\033' < "$1" | sed 's/\[[0-9;]*m//g' | sed -n 's/.*[^0-9]\([0-9][0-9]*\) commits scanned.*/\1/p' | tail -1; }
 label() { awk '{ if ($0 ~ /^[a-z0-9][a-z0-9-]{0,63}$/) print $0; else print "other" }'; }
 
 if [ "$mode" = words ]; then
@@ -136,7 +139,7 @@ gl_config="$here/gitleaks-gate.toml"
 # gl <subcommand> <arguments...>: gitleaks with the fixed flags; every path is one quoted argument (spaces are fine).
 gl() {
   gl_sub=$1; shift
-  clean GIT_ATTR_SOURCE="$ng_empty" gitleaks "$gl_sub" --no-banner --redact --exit-code 99 --log-level error --config "$gl_config" \
+  clean GIT_ATTR_SOURCE="$ng_empty" gitleaks "$gl_sub" --no-banner --redact --exit-code 99 --log-level "${gl_level:-error}" --config "$gl_config" \
     --gitleaks-ignore-path "$tmp/no-gitleaksignore" --ignore-gitleaks-allow "$@"
 }
 if [ "$count" -gt 0 ]; then
@@ -144,13 +147,27 @@ if [ "$count" -gt 0 ]; then
   gl_lines="$tmp/gitleaks.lines"; : > "$gl_lines"
   gl_msgs=0
   rc=0
-  gl git --report-format template --report-template "$tmp/gitleaks.tpl" --report-path "$tmp/gitleaks.out" --log-opts="-m $revs" "$gitdir" > /dev/null 2>&1 || rc=$?
+  gl_level=info
+  gl git --report-format template --report-template "$tmp/gitleaks.tpl" --report-path "$tmp/gitleaks.out" --log-opts="-m $revs" "$gitdir" > /dev/null 2> "$tmp/gl.log" || rc=$?
+  gl_level=error
   case $rc in
     0) ;;
     99) report_ok "$tmp/gitleaks.out" || die "step gitleaks could not read the result"
         grep . "$tmp/gitleaks.out" >> "$gl_lines"; echo x > "$tmp/gl.found" ;;
     *) die "step gitleaks could not run (exit $rc)" ;;
   esac
+  # What gitleaks says it scanned is checked against our list: gitleaks exits 0 with "0 commits scanned" when it cannot read
+  # its options. It counts only commits whose patch has something to scan (not a deletion-only or an empty commit), so the
+  # check is: a number it printed, not more than our list, and not 0 when our list adds a text line.
+  scanned=$(gl_scanned "$tmp/gl.log")
+  [ -n "$scanned" ] && [ "$scanned" -le "$count" ] || die "step gitleaks could not confirm what it scanned (it reports ${scanned:-no number}, the list has $count)"
+  if [ "$scanned" -eq 0 ]; then
+    # shellcheck disable=SC2086
+    if neutral_git log -m --format= -p -U0 $revs 2>/dev/null | grep -qE '^\+([^+]|\+[^+ ])'; then
+      die "step gitleaks could not confirm what it scanned (it reports 0, the list adds lines)"
+    fi
+  fi
+  rm -f "$tmp/gl.log"
   : > "$tmp/gl.msgs"
   for c in $(cat "$tmp/commits"); do
     neutral_git log -1 --format=%B "$c" > "$tmp/msg" 2>/dev/null || die "step gitleaks could not run (could not read a commit message)"

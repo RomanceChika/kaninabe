@@ -30,41 +30,80 @@ printf '%s\n' '{{ range . }}{{ .RuleID }}{{ "\n" }}{{ end }}' > "$tmp/rules.tpl"
 # gl <subcommand> <arguments...>: the tool with the fixed flags, in an environment of explicit inputs only.
 gl() {
   gl_sub=$1; shift
-  ng_env ${ng_empty:+"GIT_ATTR_SOURCE=$ng_empty"} "$bin" "$gl_sub" --no-banner --redact --exit-code 99 --log-level error --config "$cfg" \
+  ng_env ${ng_empty:+"GIT_ATTR_SOURCE=$ng_empty"} "$bin" "$gl_sub" --no-banner --redact --exit-code 99 --log-level "${gl_level:-error}" --config "$cfg" \
     --gitleaks-ignore-path "$tmp/no-gitleaksignore" --ignore-gitleaks-allow \
     --report-format template --report-template "$tmp/rules.tpl" --report-path "$tmp/rules.out" "$@"
 }
 could_not_run() { echo "gitleaks $mode: could not run (exit $1)"; exit 2; }
 
+# gl_scanned <log>: the number in gitleaks' "N commits scanned." line, or nothing (the log is private and never printed)
+gl_scanned() { tr -d '\033' < "$1" | sed 's/\[[0-9;]*m//g' | sed -n 's/.*[^0-9]\([0-9][0-9]*\) commits scanned.*/\1/p' | tail -1; }
+
+# confirm_scanned: for the git scan, what gitleaks says it scanned must be our list (gitleaks exits 0 with "0 commits scanned"
+# when it cannot read its options). The log is never printed.
+confirm_scanned() {
+  [ "$mode" = git ] || return 0
+  scanned=$(gl_scanned "$tmp/gl.log")
+  # gitleaks counts only commits whose patch has something to scan: a number it printed, not more than our list, and not 0
+  # when our list adds a text line
+  [ -n "$scanned" ] && [ "$scanned" -le "$ours" ] || { echo "gitleaks git: could not confirm what it scanned"; exit 2; }
+  if [ "$scanned" -eq 0 ]; then
+    # shellcheck disable=SC2046
+    if neutral_git log -m --format= -p -U0 $(cat "$tmp/commit-tips.u") 2>/dev/null | grep -qE '^\+([^+]|\+[^+ ])'; then
+      echo "gitleaks git: could not confirm what it scanned"; exit 2
+    fi
+  fi
+}
+
 rc=0
 if [ "$mode" = dir ]; then
   mkdir "$tmp/src"
-  { tar -C "$target" --exclude=.git -cf - . | tar -C "$tmp/src" -xf -; } > /dev/null 2>&1 || could_not_run 2
+  # two steps, each checked (a pipe would lose the first tar's status)
+  tar -C "$target" --exclude=.git -cf "$tmp/src.tar" . > /dev/null 2>&1 || could_not_run 2
+  tar -C "$tmp/src" -xf "$tmp/src.tar" > /dev/null 2>&1 || could_not_run 2
   find "$tmp/src" -name .gitleaksignore -exec rm -f {} + || could_not_run 2
   ( cd "$tmp/src" && gl dir . ) > /dev/null 2>&1 || rc=$?
 else
   cd "$target" 2>/dev/null || could_not_run 2
   repo_resolve || could_not_run 2
   ng_repo=$repo_gitdir
+  # one shared check: stops for a shallow clone and for a repository that is not SHA-1
   neutral_git_setup "$tmp" || could_not_run 2
-  # every commit that a ref (or HEAD) of the real repository reaches, as ids
-  { ng_real git for-each-ref --format='%(objectname)'; ng_real git rev-parse -q --verify 'HEAD^{commit}' || true; } 2>/dev/null | sort -u > "$tmp/tips"
-  : > "$tmp/commits"
+  # every commit that a ref (or HEAD) of the real repository reaches, as ids; a tip that is missing, or a list that cannot
+  # be read, stops here (exit 2): only a repository that truly has no commit is "ok" without a scan
+  ng_real git for-each-ref --format='%(objectname)' > "$tmp/tips" 2>/dev/null || could_not_run 2
+  ng_real git rev-parse -q --verify 'HEAD^{commit}' >> "$tmp/tips" 2>/dev/null || true
+  sort -u "$tmp/tips" > "$tmp/tips.u"
+  : > "$tmp/commit-tips"
   while IFS= read -r t; do
     [ -n "$t" ] || continue
-    neutral_git rev-parse --verify -q "$t^{commit}" >> "$tmp/commits" 2>/dev/null || true
-  done < "$tmp/tips"
-  sort -u "$tmp/commits" > "$tmp/commits.u"
-  if [ -s "$tmp/commits.u" ]; then
-    gl git --log-opts="-m $(tr '\n' ' ' < "$tmp/commits.u" | sed 's/ $//')" "$ng_dir" > /dev/null 2>&1 || rc=$?
+    type=$(neutral_git cat-file -t "$t" 2>/dev/null) || could_not_run 2
+    case $type in
+      commit) printf '%s\n' "$t" >> "$tmp/commit-tips" ;;
+      tag) peeled=$(neutral_git rev-parse --verify -q "$t^{}" 2>/dev/null) || could_not_run 2
+           [ "$(neutral_git cat-file -t "$peeled" 2>/dev/null)" != commit ] || printf '%s\n' "$peeled" >> "$tmp/commit-tips" ;;
+    esac
+  done < "$tmp/tips.u"
+  if [ -s "$tmp/commit-tips" ]; then
+    sort -u "$tmp/commit-tips" > "$tmp/commit-tips.u"
+    # shellcheck disable=SC2046
+    neutral_git rev-list $(cat "$tmp/commit-tips.u") > "$tmp/commits" 2>/dev/null || could_not_run 2
+    ours=$(wc -l < "$tmp/commits" | tr -d ' ')
+    [ "$ours" -gt 0 ] || could_not_run 2
+    gl_level=info
+    gl git --log-opts="-m $(tr '\n' ' ' < "$tmp/commit-tips.u" | sed 's/ $//')" "$ng_dir" > /dev/null 2> "$tmp/gl.log" || rc=$?
+    gl_level=error
+  else
+    echo "gitleaks git: ok"; exit 0
   fi
 fi
 case $rc in
-  0) echo "gitleaks $mode: ok" ;;
+  0) confirm_scanned; echo "gitleaks $mode: ok" ;;
   99)
     # findings: the report must be readable (not missing, not empty), else this is not "zero findings"
     if [ ! -s "$tmp/rules.out" ] || ! grep -q . "$tmp/rules.out"; then echo "gitleaks $mode: could not read the result"; exit 2; fi
     grep . "$tmp/rules.out" > "$tmp/lines"
+    confirm_scanned
     echo "gitleaks $mode: FAILED ($(wc -l < "$tmp/lines" | tr -d ' ') finding(s))"
     awk '{ if ($0 ~ /^[a-z0-9][a-z0-9-]{0,63}$/) print $0; else print "other" }' "$tmp/lines" | sort | uniq -c | sed 's/^ *\([0-9]*\) \(.*\)$/  rule \2: \1/'
     exit 1 ;;

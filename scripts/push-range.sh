@@ -62,7 +62,6 @@ head_sha=$(cg rev-parse --verify -q 'HEAD^{commit}') || die "HEAD is not a commi
 if [ -n "$want_head" ] && [ "$head_sha" != "$want_head" ]; then die "HEAD is not the commit being pushed"; fi
 ng_repo=$repo_gitdir
 neutral_git_setup "$tmp" || die "$ng_error"
-[ "$(cg rev-parse --is-shallow-repository)" = false ] || die "this is a shallow clone, so the history cannot be read to the end"
 
 # A remote name is read as the URL that a push to it uses (caller's configuration, as push does it).
 if url=$(git remote get-url --push "$dest" 2>/dev/null); then dest=$url; fi

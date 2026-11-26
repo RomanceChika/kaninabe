@@ -15,6 +15,7 @@
 #     kaninabe.scanOwner. Skipping this hook (--no-verify, no hooksPath) is forbidden by rule; it cannot be prevented.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
+. "$here/../scripts/range-id.sh"   # range_is_id: the one shape check for an id (64 lowercase hex)
 head=$(GIT_NO_REPLACE_OBJECTS=1 git rev-parse --verify -q 'HEAD^{commit}' || true)   # replace refs are ignored, as push ignores them
 short() { printf '%s' "$1" | cut -c1-8; }
 refuse() { echo "pre-push: $*" >&2; exit 1; }
@@ -71,6 +72,8 @@ range_id=$(printf '%s\n' "$range_out" | sed -n 2p | sed 's/^range-id=//')
 range_n=$(printf '%s\n' "$range_out" | sed -n 3p | sed 's/^commits=//')
 # The review was of one destination, one head and one list of commits: the record is "<head> <range id>". If any of them
 # changed since (the destination's branch was deleted or moved, another URL, a new commit), the review must be redone.
+range_is_id "$range_id" || { echo "pre-push: push-range did not print a valid range id (64 lowercase hex digits): the push cannot be checked against the review" >&2; exit 2; }
+range_is_id "${reviewed#* }" || refuse "the review record is malformed (the range id after the commit id must be 64 lowercase hex digits): run sh scripts/push-range.sh $url, read those commits, and record the value it prints"
 if [ "${reviewed#* }" != "$range_id" ]; then
   refuse "the push range changed since the review (${range_n:-?} commit(s) now): the review must be redone on the new range: run sh scripts/push-range.sh $url, read those commits, and record the value it prints"
 fi

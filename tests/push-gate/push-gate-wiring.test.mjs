@@ -758,11 +758,11 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     const scanPublic = path.join(scripts, 'scan-public.sh');
     const words = () => ({ SCAN_WORDS_FILE: sb.words });
     /** A commit on top of HEAD built by hand: same tree, `extra` header lines, and a message (a Buffer may hold NUL). */
-    const rawCommit = ({ extra = '', message = 'plain\n', encoding = 'utf8' } = {}) => {
+    const NOREPLY = 'Tester <tester@users.noreply.github.com> 1700000000 +0000';
+    const rawCommit = ({ extra = '', message = 'plain\n', encoding = 'utf8', author = NOREPLY, committer = NOREPLY } = {}) => {
       const tree = git(sb, 'rev-parse', 'HEAD^{tree}');
       const parent = git(sb, 'rev-parse', 'HEAD');
-      const who = 'Tester <tester@users.noreply.github.com> 1700000000 +0000';
-      const body = Buffer.concat([Buffer.from(`tree ${tree}\nparent ${parent}\nauthor ${who}\ncommitter ${who}\n${extra}\n`, 'latin1'), Buffer.isBuffer(message) ? message : Buffer.from(message, encoding)]);
+      const body = Buffer.concat([Buffer.from(`tree ${tree}\nparent ${parent}\nauthor ${author}\ncommitter ${committer}\n${extra}\n`, 'latin1'), Buffer.isBuffer(message) ? message : Buffer.from(message, encoding)]);
       const r = spawnSync('git', ['hash-object', '-t', 'commit', '-w', '--literally', '--stdin'], { cwd: sb.repo, input: body, env: sb.env() });
       assert.equal(r.status, 0, String(r.stderr));
       git(sb, 'update-ref', 'refs/heads/main', String(r.stdout).trim());
@@ -808,6 +808,49 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
       git(sb, 'update-ref', 'refs/heads/main', String(r.stdout).trim());
       const out = scan();
       assert.equal(out.status, 0, out.out);
+    });
+    describe('the two identity lines: the address in <...> belongs to the identity rule, everything else on the line to the mail rule (review round 15, S1)', () => {
+      const addr = ['jane.roe', 'corp-mail.test'].join('@');
+      const NR = '<tester@users.noreply.github.com>';
+      const expectMail = (opts) => {
+        rawCommit(opts);
+        const r = scan();
+        assert.equal(r.status, 1, r.out);
+        assert.ok(r.out.includes('email-like string in the message of'), r.out);
+      };
+      it('an address in the author name is found', () => expectMail({ author: `Jane Roe ${addr} ${NR} 1700000000 +0000` }));
+      it('an address in the committer name is found', () => expectMail({ committer: `Jane Roe ${addr} ${NR} 1700000000 +0000` }));
+      it('an address after the timezone of a literally built object is found', () => expectMail({ author: `Tester ${NR} 1700000000 +0000 ${addr}` }));
+      it('the address that the identity rule checks is the first <...>: one in the name is the identity, and not allowed', () => {
+        rawCommit({ author: `Jane <${addr}> Roe ${NR} 1700000000 +0000` });
+        const r = scan();
+        assert.equal(r.status, 1, r.out);
+        assert.ok(r.out.includes('author or committer not allowed in'), r.out);
+      });
+      for (const [label, line] of [['no <...> at all', 'Tester 1700000000 +0000'], ['an empty address', 'Tester <> 1700000000 +0000'], ['an address that is never closed', 'Tester <tester@users.noreply.github.com 1700000000 +0000']]) {
+        it(`an author line with ${label} is red in the identity rule`, () => {
+          rawCommit({ author: line });
+          const r = scan();
+          assert.equal(r.status, 1, r.out);
+          assert.ok(r.out.includes('author or committer not allowed in'), r.out);
+        });
+        it(`a committer line with ${label} is red in the identity rule`, () => {
+          rawCommit({ committer: line });
+          const r = scan();
+          assert.equal(r.status, 1, r.out);
+          assert.ok(r.out.includes('author or committer not allowed in'), r.out);
+        });
+      }
+      it('the web-flow committer and a normal noreply identity (with a numeric prefix) still pass', () => {
+        rawCommit({ author: 'Tester <12345+tester@users.noreply.github.com> 1700000000 +0000', committer: `GitHub <${['noreply', 'github.com'].join('@')}> 1700000000 +0000` });
+        const r = scan();
+        assert.equal(r.status, 0, r.out);
+      });
+      it('the gate stops on an address in the author name', () => {
+        rawCommit({ author: `Jane Roe ${addr} ${NR} 1700000000 +0000` });
+        const r = runGate(sb, ['--mode', 'words', '--base', 'HEAD~1'], words());
+        stops(r, 1, 'push-gate: step scan-public: FAILED');
+      });
     });
     it('a commit with an encoding header carries non-UTF-8 bytes: a word in them is still found (raw bytes, both locales)', () => {
       rawCommit({ extra: 'encoding ISO-8859-1\n', message: Buffer.concat([Buffer.from('caf'), Buffer.from([0xe9]), Buffer.from(` ${WORD}\n`)]) });

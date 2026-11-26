@@ -41,7 +41,8 @@ exit "\${${exitVar}:-0}"
 `;
 
 function which(name) {
-  const r = spawnSync('/bin/sh', ['-c', `command -v ${name}`], { encoding: 'utf8' });
+  // Look in the system directories only: a wrapper earlier on the developer's PATH is not the tool.
+  const r = spawnSync('/bin/sh', ['-c', `command -v ${name}`], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin:/usr/local/bin' } });
   const p = r.stdout.trim();
   return r.status === 0 && p.startsWith('/') ? p : null;
 }

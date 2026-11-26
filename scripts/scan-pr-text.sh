@@ -1,8 +1,8 @@
 #!/bin/sh
 # Scans the text a squash merge will turn into the commit message on the base branch: the pull request's title and
 # body, given as a file. A squash commit is made by GitHub at merge time, so scan-public.sh can only see it after the
-# merge; this runs the same rules on the same words before it. For that to hold, the repository's squash setting is
-# "Pull request title and description", and a merge passes this title and body as the commit message explicitly.
+# merge; this runs the same rules on the same words before it. For that to hold, a merge passes this title and body as
+# the commit title and message explicitly (the repository's default squash message is not relied on).
 # The trailer GitHub appends for co-authors is not in this text: scan-public.sh checks authors and committers instead.
 # Output names only the rule that failed, never a matched line (the logs of a public repository are public).
 # Usage: scan-pr-text.sh <file>   (word list: $SCAN_WORDS_FILE, as in scan-public.sh)

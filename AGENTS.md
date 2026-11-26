@@ -32,7 +32,7 @@ git config --get core.hooksPath                  # .githooks と出ること
 - 関門は `scripts/push-gate.sh` の 1 本です(gitleaks=履歴・各 commit の message・HEAD の木、語の一覧の走査、workflow の検査)。hook は必ず `--mode words` で呼びます。手で `--mode` を変えたり、`--no-verify` で飛ばしたりしません(決まり)。
 - hook は、いま checkout している commit のほかの push を断ります(比べるのは、push する object そのもの(包みを剥がさない)と HEAD の commit です。注釈付き tag の object は commit ではないので、id を指定して branch や notes に push しても断ります)。**push してよい先は `refs/heads/*` だけです**(branch の削除は通ります)。**tag の push は、削除も含めて断ります**(tag は tag の workflow だけが作り、消します)。`refs/tags/*` のほか `refs/notes/*`・`refs/remotes/*`・pull request の ref などに送る push も断ります。理由は、tag の message、notes、その他の ref が運ぶ object は走査していないので、branch 以外の ref は、走査していない object を push 先の object 置き場に入れる口になるからです(ref の更新が断られても object は先に着きます)。`--follow-tags` や `push.followTags` で一緒に送られる tag、`--mirror`、`remote.<名前>.push` の refspec も、hook に渡る ref の行として同じ規則に当たります。hook は、hook が動いているリポジトリ(`GIT_DIR` / `--git-dir` と `--work-tree` が指す方)を、呼び出した側の環境で 1 回だけ決めて関門に渡します。囲んでいる別のリポジトリは走査しません。
 - 語の一覧に、コメントと空行しか無い(効く行が 0 本の)ときは、走査が走らないので止まります。
-- 関門の出力は、step の名前・件数・commit の短い id・path と行だけです(CI では件数だけで、ツールが返した名前や path は一切出しません。詳細が要るときは手元で gitleaks を直接実行して見ます)。当たった語は出ません。履歴の走査は、関門自身が各 commit の追加行を git で取り出して 1 本の流れにし、gitleaks に渡します(gitleaks に履歴を読ませません)。作業を別の model に任せるときは、公開される文を書かせる指示に、同じ走査を通すことを含めます。
+- 関門の出力は、step の名前・件数・commit の短い id・path と行だけです(CI では件数だけで、ツールが返した名前や path は一切出しません。詳細が要るときは手元で gitleaks を直接実行して見ます)。当たった語は出ません。履歴の走査は `gitleaks git` を commit ごとに 1 回ずつ回し、各 commit について「追加された文字の行があるか(git の numstat)」と「gitleaks が走査した commit の数」が合うことを確かめます(合わなければ止まります)。作業を別の model に任せるときは、公開される文を書かせる指示に、同じ走査を通すことを含めます。
 
 ## 最小の確認
 

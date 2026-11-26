@@ -48,8 +48,9 @@ printf '%s\\n' "${name} $* #env:\${GITLEAKS_CONFIG-unset}:\${GITLEAKS_CONFIG_TOM
 [ -z "\${SHIM_OUT_${name}:-}" ] || printf '%s' "\${SHIM_OUT_${name}}"
 if [ "${name}" = gitleaks ]; then
   [ -z "\${SHIM_STDERR_gitleaks:-}" ] || printf '%b\\n' "\${SHIM_STDERR_gitleaks}" >&2
-  # what the gate hands to the patch scan (the run that has a report path) is kept for the test to read
-  if [ "$1" = stdin ] && [ -n "\${SHIM_STDIN_DUMP:-}" ]; then case "$*" in *--report-path*) cat > "$SHIM_STDIN_DUMP" ;; esac; fi
+  # a history run (gitleaks git) says how many commits it scanned, as the real tool does at info level; SHIM_SCANNED sets the
+  # number ("none" prints no such line)
+  if [ "$1" = git ] && [ "\${SHIM_SCANNED:-1}" != none ]; then printf '%s\\n' "6:02PM INF \${SHIM_SCANNED:-1} commits scanned." >&2; fi
 fi
 if [ -n "\${SHIM_REPORT_${name}:-}" ]; then prev=; for a in "$@"; do [ "$prev" != --report-path ] || printf '%s' "\${SHIM_REPORT_${name}}" > "$a"; prev=$a; done; fi
 exit "\${${exitVar}:-0}"
@@ -301,10 +302,9 @@ describe('push-gate.sh: the tools fail closed', () => {
   it('runs gitleaks over the commits in range, redacted, without a banner', () => {
     const r = runGate(sb, ['--mode', 'words', '--all'], words());
     assert.equal(r.status, 0, r.out);
-    const call = sb.calls().find((l) => l.startsWith('gitleaks stdin') && l.includes('--report-path'));
+    const call = sb.calls().find((l) => l.startsWith('gitleaks git'));
     assert.ok(call, sb.calls().join('\n'));
     assert.ok(call.includes('--no-banner') && call.includes('--redact'), call);
-    assert.ok(!sb.calls().some((l) => l.startsWith('gitleaks git')), 'gitleaks is not asked to read the history');
   });
 
   it('actionlint reporting a problem fails the gate; actionlint erroring stops it', () => {
@@ -466,42 +466,79 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     assert.deepEqual(sb.calls(), []);
   });
 
-  it('hands gitleaks the added lines of every commit as one stream, each commit message, and the tree of HEAD; it never reads the history itself', () => {
+  it('runs gitleaks git once per listed commit, each with that commit only (ids, never names), plus each message and the tree of HEAD', () => {
     const r = runGate(sb, ['--mode', 'words', '--all'], words());
     assert.equal(r.status, 0, r.out);
     const calls = sb.calls();
-    assert.ok(!calls.some((l) => l.startsWith('gitleaks git')), `gitleaks reads the history: ${calls.join('\n')}`);
-    assert.equal(calls.filter((l) => l.startsWith('gitleaks stdin')).length, 3, 'one per commit message and one for the added lines');
-    assert.equal(calls.filter((l) => l.startsWith('gitleaks stdin') && l.includes('--report-path')).length, 1, 'one stream of added lines');
+    const ids = git(sb, 'rev-list', 'HEAD').split('\n');
+    const histories = calls.filter((l) => l.startsWith('gitleaks git'));
+    assert.equal(histories.length, ids.length, calls.join('\n'));
+    for (const id of ids) {
+      assert.equal(histories.filter((l) => l.includes(`--log-opts=-1 -m ${id} `)).length, 1, `no run for ${id}: ${histories.join('\n')}`);
+    }
+    assert.equal(calls.filter((l) => l.startsWith('gitleaks stdin')).length, ids.length, 'one per commit message');
+    assert.ok(!calls.some((l) => l.startsWith('gitleaks stdin') && l.includes('--report-path')), 'no stream of added lines any more');
     assert.ok(calls.some((l) => l.startsWith('gitleaks dir')), calls.join('\n'));
   });
 
-  it('the stream holds the added lines of the listed commits only: not removed lines, not commits outside the range', () => {
-    const dump = path.join(sb.dir, 'stream.txt');
-    commit(sb, { 'k.txt': 'keepline\nremovedline\n' });
+  it('only the commits of the range are read: not a commit before --base', () => {
     const before = git(sb, 'rev-parse', 'HEAD');
-    commit(sb, { 'k.txt': 'keepline\nnewline\n' });
-    const r = runGate(sb, ['--mode', 'words', '--base', before], { ...words(), SHIM_STDIN_DUMP: dump });
-    assert.equal(r.status, 0, r.out);
-    const stream = readFileSync(dump, 'utf8');
-    assert.ok(stream.includes('newline'), stream);
-    assert.ok(!stream.includes('removedline') && !stream.includes('keepline'), `a removed or context line is in the stream: ${stream}`);
-    assert.ok(!stream.includes('one'), 'a commit before the range is in the stream');
-  });
-
-  it('a commit that adds nothing (an empty commit) needs no run of gitleaks on a stream; every listed commit is still read (a failing read stops the gate)', () => {
-    const before = git(sb, 'rev-parse', 'HEAD');
-    git(sb, 'commit', '-q', '--allow-empty', '-m', 'empty');
+    commit(sb, { 'k.txt': 'newline\n' });
     const r = runGate(sb, ['--mode', 'words', '--base', before], words());
     assert.equal(r.status, 0, r.out);
-    assert.ok(!sb.calls().some((l) => l.startsWith('gitleaks stdin') && l.includes('--report-path')), sb.calls().join('\n'));
+    const histories = sb.calls().filter((l) => l.startsWith('gitleaks git'));
+    assert.equal(histories.length, 1, histories.join('\n'));
+    assert.ok(histories[0].includes(git(sb, 'rev-parse', 'HEAD')) && !histories[0].includes(before), histories[0]);
+  });
+
+  describe('what gitleaks says it scanned is checked, commit by commit (review round 11, P1)', () => {
+    it('a commit that adds text must be reported as 1 scanned: 0, 2, and no number all stop the gate (2)', () => {
+      for (const scanned of ['0', '2', 'none']) {
+        const r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_SCANNED: scanned });
+        stops(r, 2, 'push-gate: step gitleaks could not confirm what it scanned');
+        assert.ok(!r.out.includes('push-gate: passed'), r.out);
+      }
+    });
+
+    it('a commit that adds no text may be 0 or 1, and nothing else', () => {
+      const before = git(sb, 'rev-parse', 'HEAD');
+      git(sb, 'commit', '-q', '--allow-empty', '-m', 'empty');
+      for (const scanned of ['0', '1']) {
+        const r = runGate(sb, ['--mode', 'words', '--base', before], { ...words(), SHIM_SCANNED: scanned });
+        assert.equal(r.status, 0, `${scanned}: ${r.out}`);
+      }
+      for (const scanned of ['2', 'none']) {
+        stops(runGate(sb, ['--mode', 'words', '--base', before], { ...words(), SHIM_SCANNED: scanned }), 2, 'push-gate: step gitleaks could not confirm what it scanned');
+      }
+    });
+
+    it('a deletion-only commit and a commit that adds an empty file add no text; a blank line and a symlink do', () => {
+      const before = git(sb, 'rev-parse', 'HEAD');
+      git(sb, 'rm', '-q', 'a.txt');
+      git(sb, 'commit', '-q', '-m', 'delete');
+      assert.equal(runGate(sb, ['--mode', 'words', '--base', before], { ...words(), SHIM_SCANNED: '0' }).status, 0);
+      commit(sb, { 'empty.txt': '' });
+      assert.equal(runGate(sb, ['--mode', 'words', '--base', before], { ...words(), SHIM_SCANNED: '0' }).status, 2, 'the later commits add text');
+      const only = git(sb, 'rev-parse', 'HEAD');
+      commit(sb, { 'blank.txt': '\n' });
+      assert.equal(runGate(sb, ['--mode', 'words', '--base', only], { ...words(), SHIM_SCANNED: '0' }).status, 2, 'a blank line is added text');
+    });
+
+    it('a failing read of a commit patch stops the gate (2)', () => {
+      const first = git(sb, 'rev-list', '--max-parents=0', 'HEAD');
+      const blob = git(sb, 'rev-parse', `${first}:a.txt`);
+      rmSync(path.join(sb.repo, '.git/objects', blob.slice(0, 2), blob.slice(2)), { force: true });
+      const r = runGate(sb, ['--mode', 'words', '--all'], words());
+      assert.equal(r.status, 2, r.out);
+      assert.ok(!r.out.includes('push-gate: passed'), r.out);
+    });
   });
 
   it('closes every way a file in the tree could change what gitleaks reads: fixed config, no ignore file, no inline allow', () => {
     const r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), GITLEAKS_CONFIG: '/nonexistent/allow.toml', GITLEAKS_CONFIG_TOML: 'x' });
     assert.equal(r.status, 0, r.out);
     const calls = sb.calls().filter((l) => l.startsWith('gitleaks '));
-    assert.equal(calls.length, 4, 'stdin x2 for messages, stdin for the added lines, dir');
+    assert.equal(calls.length, 5, 'git x2, stdin x2 for messages, dir');
     for (const call of calls) {
       assert.ok(call.includes('--config') && call.includes('gitleaks-gate.toml'), `no fixed config: ${call}`);
       assert.ok(call.includes('--gitleaks-ignore-path'), `no ignore path: ${call}`);
@@ -1178,7 +1215,7 @@ describe('gitleaks-public.sh (the old CI steps): counts only, and an unreadable 
     writeFileSync(path.join(sb.repo, '.gitleaksignore'), 'x:y:z:1\n');
     const logfile = path.join(sb.dir, 'args.log');
     const f = path.join(sb.dir, 'logging-gitleaks');
-    writeFileSync(f, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${shq(logfile)}\nfor a in "$@"; do case $a in .*|/*) [ ! -e "$a/.gitleaksignore" ] || echo "IGNOREFILE $a" >> ${shq(logfile)} ;; esac; done\nexit 0\n`);
+    writeFileSync(f, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${shq(logfile)}\n[ "$1" != git ] || echo "6:02PM INF 1 commits scanned." >&2\nfor a in "$@"; do case $a in .*|/*) [ ! -e "$a/.gitleaksignore" ] || echo "IGNOREFILE $a" >> ${shq(logfile)} ;; esac; done\nexit 0\n`);
     chmodSync(f, 0o755);
     for (const mode of ['dir', 'git']) assert.equal(wrap(mode, f).status, 0);
     const log = readFileSync(logfile, 'utf8');
@@ -1186,8 +1223,9 @@ describe('gitleaks-public.sh (the old CI steps): counts only, and an unreadable 
     for (const line of log.split('\n').filter(Boolean)) {
       assert.ok(line.includes('gitleaks-gate.toml') && line.includes('--ignore-gitleaks-allow') && line.includes('--gitleaks-ignore-path'), line);
     }
-    assert.ok(log.split('\n').some((l) => l.startsWith('stdin ')), `the git scan is not a stream of added lines: ${log}`);
-    assert.ok(!log.split('\n').some((l) => l.startsWith('git ')), `gitleaks is asked to read the history: ${log}`);
+    const gits = log.split('\n').filter((l) => l.startsWith('git '));
+    assert.equal(gits.length, git(sb, 'rev-list', 'HEAD').split('\n').length, `one history run per commit: ${log}`);
+    for (const l of gits) assert.ok(/--log-opts=-1 -m [0-9a-f]{40} /.test(l), `a run is not for one commit id: ${l}`);
   });
 });
 
@@ -1195,7 +1233,7 @@ describe('gitleaks-public.sh git: a history that cannot be read is exit 2, never
   const wrapper = path.join(scripts, 'gitleaks-public.sh');
   const okTool = () => {
     const f = path.join(sb.dir, 'ok-gitleaks');
-    writeFileSync(f, '#!/bin/sh\nexit 0\n');
+    writeFileSync(f, '#!/bin/sh\n[ "$1" != git ] || echo "6:02PM INF 1 commits scanned." >&2\nexit 0\n');
     chmodSync(f, 0o755);
     return f;
   };
@@ -1204,6 +1242,18 @@ describe('gitleaks-public.sh git: a history that cannot be read is exit 2, never
     return { status: r.status, out: r.stdout + r.stderr };
   };
   const gitIn = (cwd, ...args) => spawnSync('git', ['-c', 'user.name=Tester', '-c', 'user.email=tester@users.noreply.github.com', ...args], { cwd, encoding: 'utf8', env: sb.env() });
+
+  it('what the tool says it scanned must fit each commit: a commit with text that is not 1 scanned (0, 2, no number) is exit 2', () => {
+    for (const line of ['6:02PM INF 0 commits scanned.', '6:02PM INF 2 commits scanned.', '6:02PM INF done']) {
+      const f = path.join(sb.dir, 'count-gitleaks');
+      writeFileSync(f, `#!/bin/sh\n[ "$1" != git ] || echo ${shq(line)} >&2\nexit 0\n`);
+      chmodSync(f, 0o755);
+      const r = spawnSync('/bin/sh', [wrapper, 'git', sb.repo], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ GL_BIN: f }) });
+      assert.equal(r.status, 2, `${line}: ${r.stdout + r.stderr}`);
+      assert.ok((r.stdout + r.stderr).includes('gitleaks git: could not confirm what it scanned'), r.stdout + r.stderr);
+      assert.ok(!(r.stdout + r.stderr).includes('gitleaks git: ok'), r.stdout + r.stderr);
+    }
+  });
 
   it('a SHA-256 repository stops (exit 2)', () => {
     const d = path.join(sb.dir, 'sha256-for-wrapper');

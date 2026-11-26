@@ -11,6 +11,7 @@
 #        used by push-gate.sh to hand over the same commit set as its other steps)
 set -eu
 . "$(dirname "$0")/scan-rules.sh"
+. "$(dirname "$0")/neutral-git.sh"
 if [ "${1:-}" = "--revs" ]; then shift; range="$*"; else range=${1:+$1..}HEAD; fi
 pat=$(mktemp); trap 'rm -f "$pat" "$scoped"' EXIT
 if [ -n "${SCAN_WORDS_FILE:-}" ] && [ -s "$SCAN_WORDS_FILE" ]; then
@@ -25,14 +26,16 @@ fail=0
 generic='/Users/[A-Za-z]|/home/[a-z]+/|C:\\Users|BEGIN [A-Z ]*PRIVATE KEY'
 email=$scan_email
 email_ok=$scan_email_ok
-commits=$(mktemp); gg_out=$(mktemp)
-trap 'rm -f "$pat" "$scoped" "$commits" "$gg_out"' EXIT
+commits=$(mktemp); gg_out=$(mktemp); ng_work=$(mktemp -d)
+trap 'rm -rf "$pat" "$scoped" "$commits" "$gg_out" "$ng_work"' EXIT
+# git grep runs in a neutral repository (no attributes from the tree or the clone, no user config): see neutral-git.sh.
+neutral_git_setup "$ng_work" || { echo "scan: $ng_error"; echo "scan-public: ERROR"; exit 2; }
 # A rev-list that fails is not an empty range: it stops the scan (exit 2), it does not read as "clean".
 rc=0; git rev-list $range > "$commits" 2>/dev/null || rc=$?
 if [ "$rc" -ne 0 ]; then echo "scan: git rev-list failed (exit $rc)"; echo "scan-public: ERROR"; exit 2; fi
 # gg ARGS...: git grep into $gg_out. Exit 1 (no match) is an empty result; anything above is an error that stops the scan.
 gg() {
-  rc=0; git grep "$@" > "$gg_out" 2>/dev/null || rc=$?
+  rc=0; neutral_git grep "$@" > "$gg_out" 2>/dev/null || rc=$?
   if [ "$rc" -gt 1 ]; then echo "scan: git grep failed (exit $rc)"; echo "scan-public: ERROR"; exit 2; fi
 }
 lines() { wc -l < "$gg_out" | tr -d ' '; }

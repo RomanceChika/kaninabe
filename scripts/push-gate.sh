@@ -21,6 +21,7 @@
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
+. "$here/neutral-git.sh"
 die() { echo "push-gate: $*" >&2; exit 2; }
 
 mode_set=0; mode=
@@ -72,6 +73,11 @@ trap 'rm -rf "$tmp"' EXIT
 # The list is written to a file and the status checked: a failing rev-list is not an empty range.
 git rev-list $revs > "$tmp/commits" 2>/dev/null || die "could not list the commits"
 count=$(wc -l < "$tmp/commits" | tr -d ' ')
+# The files of HEAD, exactly as committed (see neutral-git.sh: git archive would honour export-ignore and export-subst
+# attributes of the tree). Both the tree scan and the workflow check read this export.
+neutral_git_setup "$tmp" || die "$ng_error"
+head_sha=$(git rev-parse --verify -q 'HEAD^{commit}') || die "HEAD is not a commit"
+neutral_export "$head_sha" "$tmp/head" || die "could not export HEAD"
 failed=
 
 # Step 1: gitleaks, three ways: the patches of the commits (merges diffed against each parent: -m), each commit message,
@@ -88,30 +94,29 @@ for v in $(env | sed -n 's/^\(GITLEAKS_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v";
 gitdir=$(git rev-parse --absolute-git-dir) || die "could not find the git directory"
 gl_config="$here/gitleaks-gate.toml"
 [ -f "$gl_config" ] && [ -r "$gl_config" ] || die "gitleaks-gate.toml is missing next to the gate"
-gl_flags="--no-banner --redact --exit-code 99 --log-level error --config $gl_config --gitleaks-ignore-path $tmp/no-gitleaksignore --ignore-gitleaks-allow"
+# gl <subcommand> <arguments...>: gitleaks with the fixed flags; every path is one quoted argument (spaces are fine).
+gl() {
+  gl_sub=$1; shift
+  gitleaks "$gl_sub" --no-banner --redact --exit-code 99 --log-level error --config "$gl_config" \
+    --gitleaks-ignore-path "$tmp/no-gitleaksignore" --ignore-gitleaks-allow "$@"
+}
 if [ "$count" -gt 0 ]; then
   printf '%s\n' '{{ range . }}{{ .RuleID }} {{ .File }}:{{ .StartLine }} {{ printf "%.8s" .Commit }}{{ "\n" }}{{ end }}' > "$tmp/gitleaks.tpl"
-  gl_report="--report-format template --report-template $tmp/gitleaks.tpl"
   gl_lines="$tmp/gitleaks.lines"; : > "$gl_lines"
   gl_msgs=0
   rc=0
-  # shellcheck disable=SC2086
-  gitleaks git $gl_flags $gl_report --report-path "$tmp/gitleaks.out" --log-opts="-m $revs" "$gitdir" > /dev/null 2>&1 || rc=$?
+  gl git --report-format template --report-template "$tmp/gitleaks.tpl" --report-path "$tmp/gitleaks.out" --log-opts="-m $revs" "$gitdir" > /dev/null 2>&1 || rc=$?
   case $rc in 0) ;; 99) [ ! -f "$tmp/gitleaks.out" ] || grep . "$tmp/gitleaks.out" >> "$gl_lines" || true; echo x > "$tmp/gl.found" ;; *) die "step gitleaks could not run (exit $rc)" ;; esac
   : > "$tmp/gl.msgs"
   for c in $(cat "$tmp/commits"); do
     git log -1 --format=%B "$c" > "$tmp/msg" 2>/dev/null || die "step gitleaks could not run (could not read a commit message)"
     rc=0
-    # shellcheck disable=SC2086
-    gitleaks stdin $gl_flags < "$tmp/msg" > /dev/null 2>&1 || rc=$?
+    gl stdin < "$tmp/msg" > /dev/null 2>&1 || rc=$?
     case $rc in 0) ;; 99) echo "$c" | cut -c1-8 >> "$tmp/gl.msgs"; echo x > "$tmp/gl.found" ;; *) die "step gitleaks could not run (exit $rc)" ;; esac
   done
-  mkdir "$tmp/head"
-  git archive HEAD | tar -x -C "$tmp/head" || die "step gitleaks could not run (could not export HEAD)"
   find "$tmp/head" -name .gitleaksignore -exec rm -f {} + || die "step gitleaks could not run (could not prepare the export of HEAD)"
   rm -f "$tmp/gitleaks.out"; rc=0; tree_n=0
-  # shellcheck disable=SC2086
-  ( cd "$tmp/head" && gitleaks dir $gl_flags $gl_report --report-path "$tmp/gitleaks.out" . ) > /dev/null 2>&1 || rc=$?
+  ( cd "$tmp/head" && gl dir --report-format template --report-template "$tmp/gitleaks.tpl" --report-path "$tmp/gitleaks.out" . ) > /dev/null 2>&1 || rc=$?
   case $rc in
     0) ;;
     99) echo x > "$tmp/gl.found"
@@ -170,7 +175,7 @@ else
     die "step workflows could not run (a workflow file name has an unsupported character)"
   fi
   mkdir "$tmp/tree"
-  git archive HEAD .github | tar -x -C "$tmp/tree" || die "step workflows could not run (could not read the committed files)"
+  cp -R "$tmp/head/.github" "$tmp/tree/.github" || die "step workflows could not run (could not read the committed files)"
   rm -f "$tmp/tree/.github/actionlint.yaml" "$tmp/tree/.github/actionlint.yml"
   rc=0
   # shellcheck disable=SC2086

@@ -84,7 +84,7 @@ for c in $(cat "$commits"); do
     if [ "$n" != "0" ]; then echo "word list: $n file(s) in $short"; gg -InE -f "$pat" "$c"; show_at; fail=1; fi
     # the raw text of the commit (every header, the whole message): in the locale of the scan and byte for byte (a pattern's `.`
     # matches a byte that is not valid UTF-8 only in the second run). A word in an encoding that is not UTF-8 does not match.
-    if grep -qiE -f "$pat" "$text" || LC_ALL=C grep -qiE -f "$pat" "$text"; then echo "word list: commit message or author of $short"; fail=1; fi
+    if scan_grep -qiE -f "$pat" "$text" || (LC_ALL=C; export LC_ALL; scan_grep -qiE -f "$pat" "$text"); then echo "word list: commit message or author of $short"; fail=1; fi
   fi
   while IFS= read -r line; do
     prefix=${line%% *}; prefix=${prefix#@}; re=${line#* }

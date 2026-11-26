@@ -19,11 +19,9 @@ scan_ident_ok='^(([0-9]+\+)?[A-Za-z0-9_-]+@users\.noreply\.github\.com|noreply@g
 # scan_grep ARGS...: grep, but an error (exit 2: bad pattern, unreadable file) is recorded in $scan_err and fails the
 # scan at scan_finish. A pipeline runs it in a subshell, where `exit` alone would only end that subshell.
 scan_err=$(mktemp)
-scan_grep() {
-  rc=0; grep "$@" || rc=$?
-  if [ "$rc" -gt 1 ]; then echo "scan: grep failed (exit $rc): an invalid pattern or an unreadable input"; echo x >> "$scan_err"; exit 2; fi
-  return "$rc"
-}
+. "$(dirname "$0")/neutral-git.sh"
+grep_failed() { echo "scan: grep failed (exit $1): an invalid pattern or an unreadable input"; echo x >> "$scan_err"; exit 2; }
+scan_grep() { grep_q "$@"; }
 
 # scan_finish NAME FAIL: the one exit of a scan. A recorded grep error wins over a clean result.
 scan_finish() {

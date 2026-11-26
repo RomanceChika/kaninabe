@@ -581,7 +581,8 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
       shimGrep(); writeWords(sb);
       const r = spawnSync('/bin/sh', [path.join(scripts, 'scan-public.sh')], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ ...words(), SHIM_GREP_FAIL: '-qiE -f' }) });
       assert.equal(r.status, 2, r.stdout + r.stderr);
-      assert.ok((r.stdout + r.stderr).includes('scan-public: ERROR'), r.stdout + r.stderr);
+      assert.ok((r.stdout + r.stderr).includes('scan: grep failed (exit 2)'), r.stdout + r.stderr);
+      assert.ok(!(r.stdout + r.stderr).includes('scan-public: clean'), r.stdout + r.stderr);
       stops(runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_GREP_FAIL: '-qiE -f' }), 2, 'push-gate: step scan-public could not run (exit 2)');
     });
     it('the check of gitleaks\' log for an error line: the gate and the wrapper exit 2', () => {

@@ -22,6 +22,7 @@
 # that is more to scan, never less.
 set -eu
 die() { echo "push-range: $*" >&2; exit 2; }
+grep_failed() { die "a search could not run (grep exit $1)"; }
 
 gate_args=0
 want_head=
@@ -101,7 +102,7 @@ fi
 neutral_git rev-list $revs > "$tmp/commits" 2>/dev/null || die "the history cannot be read to the end"
 # shellcheck disable=SC2086
 neutral_git rev-list --objects --missing=print $revs > "$tmp/objects" 2>/dev/null || die "the history cannot be read to the end"
-if grep -q '^?' "$tmp/objects"; then die "objects are missing here, so the history cannot be read to the end"; fi
+if grep_q -q '^?' "$tmp/objects"; then die "objects are missing here, so the history cannot be read to the end"; fi
 
 n=$(wc -l < "$tmp/commits" | tr -d ' ')
 # The identity of this range: the URL contacted, the head and the exact ordered list (range-id.sh). Computed here, from the

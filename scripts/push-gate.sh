@@ -28,6 +28,13 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/neutral-git.sh"
 . "$here/range-id.sh"
 die() { echo "push-gate: $*" >&2; exit 2; }
+# The clock is read through one checked helper (now_secs): a date that fails or prints text stops the gate, and its output is
+# never shown. elapsed <start> sets $el to the whole seconds since <start>; the time of a step is public (a number, nothing else).
+tick() { now_secs || die "could not read the clock"; }
+elapsed() { tick; el=$(( now_t - $1 )); }
+tick; t_gate=$now_t   # the total runs from here: the very start of the gate
+# a grep that fails (not: finds nothing) stops the gate; see grep_q in neutral-git.sh
+grep_failed() { die "a search could not run (grep exit $1)"; }
 
 mode_set=0; mode=; want_head=; want_list=
 n_ranges=0; range_kind=; range_val=
@@ -117,11 +124,6 @@ fi
 # attributes of the tree). Both the tree scan and the workflow check read this export.
 neutral_export "$head_sha" "$tmp/head" || die "could not export HEAD"
 failed=
-# The clock is read through one checked helper (now_secs): a date that fails or prints text stops the gate, and its output is
-# never shown. elapsed <start> sets $el to the whole seconds since <start>; the time of a step is public (a number, nothing else).
-tick() { now_secs || die "could not read the clock"; }
-elapsed() { tick; el=$(( now_t - $1 )); }
-tick; t_gate=$now_t
 
 # Step 1: gitleaks, three ways: the history, each commit message, and the tree of HEAD exported cleanly (not the working tree).
 # The history is read by `gitleaks git`, ONE COMMIT AT A TIME, each commit checked on its own (scan_history in neutral-git.sh:
@@ -158,7 +160,7 @@ if [ "$count" -gt 0 ]; then
   if [ "$patch_n" -gt 0 ]; then echo x > "$tmp/gl.found"; fi
   # The text of each commit is the raw commit object (neutral_commit_text: every header, the whole message, NUL as a line break), scanned in batches:
   # gitleaks cuts stdin into chunks of about 100 KB (measured: no key lost up to 98 000 bytes, some lost from 140 000), and a key
-  # that straddles a boundary can be lost. A batch is texts put together (each ends with a newline) while it stays at or under
+  # that straddles a boundary can be lost. A batch is texts put together (each followed by a separator line break that counts toward the bound) while it stays at or under
   # 64 KiB, so no boundary can occur in a batch; a single text over 64 KiB stops the gate. Findings are counted, not named.
   msg_n=0; : > "$tmp/batch"; batch_bytes=0
   flush_batch() {
@@ -174,10 +176,11 @@ if [ "$count" -gt 0 ]; then
   }
   for c in $(cat "$tmp/commits"); do
     neutral_commit_text "$c" "$tmp/text" || die "step gitleaks could not run (could not read the text of a commit)"
-    text_bytes=$(wc -c < "$tmp/text" | tr -d ' ')
+    # every text is followed by one separator line break, whatever the text ends with, and that byte counts toward the bound
+    text_bytes=$(( $(wc -c < "$tmp/text" | tr -d ' ') + 1 ))
     [ "$text_bytes" -le 65536 ] || die "step gitleaks could not run (the text of a commit is over 64 KiB)"
     if [ $((batch_bytes + text_bytes)) -gt 65536 ]; then flush_batch; fi
-    cat "$tmp/text" >> "$tmp/batch" || die "step gitleaks could not run (could not make a batch)"
+    { cat "$tmp/text" && printf '\n'; } >> "$tmp/batch" || die "step gitleaks could not run (could not make a batch)"
     batch_bytes=$((batch_bytes + text_bytes))
   done
   flush_batch
@@ -229,7 +232,9 @@ if [ -z "$files" ]; then
   elapsed "$t_step"; echo "push-gate: step workflows: ok (no workflow files) in $el s"
 else
   nfiles=$(printf '%s\n' "$files" | wc -l | tr -d ' ')
-  if printf '%s\n' "$files" | grep -qvE '^[A-Za-z0-9._/-]+$'; then
+  printf '%s\n' "$files" > "$tmp/workflow.names" || die "step workflows could not run (could not write the list of files)"
+  # (a file, not a pipe: a grep that fails inside a pipe would only end the pipe's subshell)
+  if grep_q -qvE '^[A-Za-z0-9._/-]+$' "$tmp/workflow.names"; then
     die "step workflows could not run (a workflow file name has an unsupported character)"
   fi
   mkdir "$tmp/tree"

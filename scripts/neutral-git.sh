@@ -76,7 +76,14 @@ neutral_commit_text() {
   rm -f "$2.raw"
 }
 now_secs() { now_t=$(date +%s 2>/dev/null) || return 1; case $now_t in '' | *[!0-9]*) return 1 ;; esac; }
-log_has_error() { tr -d '\033' < "$1" | sed 's/\[[0-9;]*m//g' | grep -Eq '^[^ ]+ (ERR|FTL|PNC) '; }
+# grep_q <grep arguments...>: grep for a condition: 0 = found, 1 = not found, and any other status (a bad pattern, an unreadable
+# input, an I/O error) calls grep_failed, which the caller defines and which does not return: a search that failed is never
+# "nothing found". (Output of grep is the caller's: the -q or -c is among the arguments.)
+grep_q() { gq_rc=0; grep "$@" || gq_rc=$?; case $gq_rc in 0 | 1) return "$gq_rc" ;; *) grep_failed "$gq_rc" ;; esac; }
+log_has_error() {
+  { tr -d '\033' < "$1" > "$1.n1" && sed 's/\[[0-9;]*m//g' "$1.n1" > "$1.n2"; } 2>/dev/null || grep_failed 1
+  grep_q -Eq '^[^ ]+ (ERR|FTL|PNC) ' "$1.n2"
+}
 # gl_scanned <log>: the number in gitleaks' "N commits scanned." line (colour codes removed), or nothing. The log is private.
 gl_scanned() { tr -d '\033' < "$1" | sed 's/\[[0-9;]*m//g' | sed -n 's/.*[^0-9]\([0-9][0-9]*\) commits scanned.*/\1/p' | tail -1; }
 # scan_history <list> <template-file> <tmp>: why one commit at a time: gitleaks cuts large input (`stdin`, `dir`) into chunks and

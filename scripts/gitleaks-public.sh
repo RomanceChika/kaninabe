@@ -34,6 +34,7 @@ gl() {
   ng_env ${ng_empty:+"GIT_ATTR_SOURCE=$ng_empty"} "$bin" "$gl_sub" --no-banner --redact --exit-code 99 --log-level "${gl_level:-error}" --config "$cfg" \
     --gitleaks-ignore-path "$tmp/no-gitleaksignore" --ignore-gitleaks-allow "$@"
 }
+grep_failed() { echo "gitleaks $mode: could not run (a search failed)"; exit 2; }
 could_not_run() { echo "gitleaks $mode: could not run (exit $1)"; exit 2; }
 
 # the clock is read through one checked helper: a date that fails or prints text stops the run (its output is never shown)

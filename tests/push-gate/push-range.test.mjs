@@ -191,11 +191,11 @@ describe('push-range.sh: the repository is the caller\'s, not whatever encloses 
   beforeEach(() => {
     outer = path.join(dir, 'outer');
     work = path.join(outer, 'sub');
-    inner = path.join(dir, 'inner.git');
+    inner = path.join(dir, 'innerrepo', '.git');
     mkdirSync(work, { recursive: true });
     git(outer, 'init', '-q', '-b', 'main');
     commit(outer, 'o.txt');
-    spawnSync('git', ['init', '-q', '-b', 'main', inner], { env: env() });
+    git(dir, 'init', '-q', '-b', 'main', path.join(dir, 'innerrepo'));
     for (const n of ['1', '2', '3']) {
       writeFileSync(path.join(work, `i${n}.txt`), n);
       igit('add', `i${n}.txt`);

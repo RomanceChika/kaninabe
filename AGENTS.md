@@ -16,6 +16,20 @@
 - マージは squash で、確かめた head の sha を渡し(それより新しい push があれば失敗させる)、commit のタイトルと本文には、マージの直前に読み直した PR のタイトルと本文をそのまま渡します。
 - `## Review` は本文の最後の節にし、記録の 2 行のほかに何も書きません。本文には HTML のタグもコメントも書きません(読む人に見えるものと検査が数えるものを一致させるため。書くと pr-gate が落ちます。`<` の後ろに英字・`!`・`?`・`/` が続く書き方は、コードの中でも落ちます)。
 
+## push の前の関門(public)
+
+このリポジトリは public で、push した瞬間に公開されます。予防は手元にしか置けないので、作業の**最初**に次を確かめます(決まり。関門は hook が呼ばれて初めて効きます)。
+
+```sh
+sh scripts/setup-dev-env.sh                      # hook の経路・gitleaks・actionlint を入れる(版と checksum は script に固定)
+git config --get core.hooksPath                  # .githooks と出ること
+```
+
+- 語の一覧はリポジトリの外に置きます。`SCAN_WORDS_FILE` か、`git config kaninabe.scanWords <path>`(setup に `--words <path>` で渡せます)で hook に教えます。一覧が無い・空・読めないときは、hook は通さずに止まります。owner は `SCAN_OWNER` か `kaninabe.scanOwner`(`--owner <name>`)です。
+- push の前に、push する差分(関門と同じ範囲)を Opus が読み、「公開してよいか」に答えます。読んだ commit の sha を記録します: `git config kaninabe.contentReviewed <sha>`。記録が push する commit と一致しないと pre-push が止めます(commit を足したら読み直します)。記録は作り手が書けるので、防げるのは読み忘れまでです。読んでいないものを読んだことにしません(決まり)。
+- 関門は `scripts/push-gate.sh` の 1 本です(gitleaks・語の一覧の走査・workflow の検査)。hook は必ず `--mode words` で呼びます。手で `--mode` を変えたり、`--no-verify` で飛ばしたりしません(決まり)。
+- 関門の出力は、step の名前・件数・commit の短い id・path と行だけです。当たった語は出ません。作業を別の model に任せるときは、公開される文を書かせる指示に、同じ走査を通すことを含めます。
+
 ## 最小の確認
 
 ```sh

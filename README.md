@@ -35,7 +35,7 @@ node kaninabe/bin/kaninabe.mjs generate
 
 ## Secret safety
 
-No real key goes into this repository; samples use dummy values only. Run `npm run hooks:install` once to enable the pre-commit secret scan (needs `gitleaks`). CI scans the whole tree and history on every push and pull request, including pushes to `main`.
+No real key goes into this repository; samples use dummy values only. Run `npm run hooks:install` once (it runs `scripts/setup-dev-env.sh`, which installs pinned `gitleaks` and `actionlint` and sets the hook path) to enable the pre-commit secret scan and the pre-push gate (`scripts/push-gate.sh`; see AGENTS.md). CI scans the whole tree and history on every push and pull request, including pushes to `main`.
 
 ## Disclaimer
 

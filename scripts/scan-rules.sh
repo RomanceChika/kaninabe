@@ -10,9 +10,11 @@ scan_attrib="co-?authored|claude-session|generated[[:space:]]+(with|by)|claude\\
 # (owner from $SCAN_OWNER, else the Actions variable GITHUB_REPOSITORY_OWNER; with neither, none is allowed).
 scan_owner=${SCAN_OWNER:-${GITHUB_REPOSITORY_OWNER:-}}
 scan_email='[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+'
-scan_email_ok='(\.example|@example\.(com|org|net)|@users\.noreply\.github\.com|^git@github\.com|@(types|kaninabe|supabase|vitest|next|axiomhq)[./]|@[0-9]|@127\.0\.0\.1|@registry\.npmjs\.org|@api\.axiom\.co|@auth\.external|^evil|\.(ts|tsx|js|mjs|json|md|png|svg)$)'
+scan_email_ok='(\.example$|@example\.(com|org|net)$|@users\.noreply\.github\.com$|^git@github\.com|@(types|kaninabe|supabase|vitest|next|axiomhq)[./]|@[0-9]|@127\.0\.0\.1|@registry\.npmjs\.org|@api\.axiom\.co|@auth\.external|^evil|\.(ts|tsx|js|mjs|json|md|png|svg)$)'
 # Author and committer addresses allowed in history: GitHub noreply addresses, and GitHub's own web-flow committer.
-scan_ident_ok='(@users\.noreply\.github\.com|^noreply@github\.com)$'
+# Both ends are anchored, and the pattern is applied to one address per line (an address from %ae / %ce holds no line break): a login is
+# letters, digits, '-' and '_' (GitHub's own rule, plus the underscore of managed accounts), after an optional numeric id and '+'.
+scan_ident_ok='^(([0-9]+\+)?[A-Za-z0-9_-]+@users\.noreply\.github\.com|noreply@github\.com)$'
 
 # scan_grep ARGS...: grep, but an error (exit 2: bad pattern, unreadable file) is recorded in $scan_err and fails the
 # scan at scan_finish. A pipeline runs it in a subshell, where `exit` alone would only end that subshell.

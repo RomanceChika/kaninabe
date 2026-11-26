@@ -139,6 +139,16 @@ describe('push-range.sh', () => {
     assert.equal(r.out.trim(), '', 'it printed a range');
   });
 
+  it('a wc that fails while the commits are counted is exit 2, not an empty count (review round 19, X1)', () => {
+    commit(repo, 'a.txt');
+    const shim = path.join(dir, 'shim-bin-wc');
+    mkdirSync(shim);
+    const realWc = spawnSync('/bin/sh', ['-c', 'command -v wc'], { encoding: 'utf8' }).stdout.trim();
+    writeFileSync(path.join(shim, 'wc'), `#!/bin/sh\ncase "$*" in *-l*) exit 1 ;; esac\nexec ${realWc} "$@"\n`, { mode: 0o755 });
+    const r = run([bare], repo, { PATH: `${shim}:${process.env.PATH}` });
+    assert.equal(r.status, 2, r.all);
+  });
+
   it('stops when the history cannot be read (a missing parent commit)', () => {
     const a = commit(repo, 'a.txt');
     commit(repo, 'b.txt');

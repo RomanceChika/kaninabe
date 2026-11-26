@@ -978,6 +978,8 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
       const lists = {
         'a line that is not valid UTF-8': Buffer.concat([Buffer.from('plainword\ncaf'), Buffer.from([0xe9]), Buffer.from('word\n')]),
         'a NUL byte': Buffer.from('plainword\nab\0cd\n'),
+        'a carriage return': Buffer.from('plainword\r\nsecondone\n'),
+        'a byte order mark': Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('plainword\nsecondone\n')]),
       };
       for (const [label, content] of Object.entries(lists)) {
         it(`a list with ${label} stops the gate, scan-public and scan-pr-text (exit 2) with a fixed reason and no line of the list`, () => {
@@ -1074,6 +1076,38 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
       shimFail('awk', 'who=x_count');
       const r = runGate(sb, ['--mode', 'general', '--all'], { SHIM_GITLEAKS_EXIT: '99', SHIM_REPORT_gitleaks: HIT });
       stops(r, 2, 'push-gate: step gitleaks could not read the result');
+    });
+    describe('a number from wc is validated, one helper for every read (review round 19, X1)', () => {
+      it('a wc that fails on the list of commits does not read as "no commits": the gate exits 2, not 0', () => {
+        shimFail('wc', '-l', 1);
+        stops(runGate(sb, ['--mode', 'general', '--all']), 2, 'push-gate: ');
+      });
+      it('a wc that fails on the size of a commit text does not bypass the 64 KiB bound: the gate exits 2', () => {
+        shimFail('wc', '-c', 1);
+        stops(runGate(sb, ['--mode', 'general', '--all']), 2, 'push-gate: ');
+      });
+      it('scan-public: a wc that fails is exit 2 with its ERROR line, never a count of nothing', () => {
+        writeWords(sb);
+        shimFail('wc', '-l', 1);
+        const p = spawnSync('/bin/sh', [scanPublic], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ SCAN_WORDS_FILE: sb.words }) });
+        assert.equal(p.status, 2, p.stdout + p.stderr);
+        assert.ok((p.stdout + p.stderr).includes('scan-public: ERROR'), p.stdout + p.stderr);
+      });
+    });
+    describe('one trap per script, holding the cleanup and the exit guard (review round 19, X2)', () => {
+      it('scan-public: a command that fails with exit 1 late in the run (cut) is exit 2, and so is the gate that runs it', () => {
+        writeWords(sb);
+        shimFail('cut', '-c1-8', 1);
+        const p = spawnSync('/bin/sh', [scanPublic], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ SCAN_WORDS_FILE: sb.words }) });
+        assert.equal(p.status, 2, p.stdout + p.stderr);
+        stops(runGate(sb, ['--mode', 'words', '--all'], { SCAN_WORDS_FILE: sb.words }), 2, 'push-gate: step scan-public could not run');
+      });
+      it('no script sets a second trap on the same signal', () => {
+        for (const f of ['push-gate.sh', 'push-range.sh', 'gitleaks-public.sh', 'scan-public.sh', 'scan-pr-text.sh', 'scan-rules.sh', 'neutral-git.sh']) {
+          const n = readFileSync(path.join(scripts, f), 'utf8').split('\n').filter((l) => /^\s*[^#]*\btrap\b.*EXIT/.test(l)).length;
+          assert.ok(n <= 1, `${f} has ${n} EXIT traps`);
+        }
+      });
     });
     it('scan-public prints its final ERROR line on the grep-failed path too', () => {
       writeWords(sb);

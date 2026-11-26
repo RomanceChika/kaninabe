@@ -156,7 +156,7 @@ if [ "$count" -gt 0 ]; then
   scan_history "$tmp/commits" "$tmp/gitleaks.tpl" "$tmp" || die "step gitleaks $hist_err"
   patch_n=$hist_n
   if [ "$patch_n" -gt 0 ]; then echo x > "$tmp/gl.found"; fi
-  # The text of each commit (author and committer name and email, then the message, as git prints them) is scanned in batches:
+  # The text of each commit is the raw commit object (neutral_commit_text: every header, the whole message, NUL as a line break), scanned in batches:
   # gitleaks cuts stdin into chunks of about 100 KB (measured: no key lost up to 98 000 bytes, some lost from 140 000), and a key
   # that straddles a boundary can be lost. A batch is texts put together (each ends with a newline) while it stays at or under
   # 64 KiB, so no boundary can occur in a batch; a single text over 64 KiB stops the gate. Findings are counted, not named.
@@ -173,7 +173,7 @@ if [ "$count" -gt 0 ]; then
     : > "$tmp/batch"; batch_bytes=0
   }
   for c in $(cat "$tmp/commits"); do
-    neutral_git log -1 --format='%an%n%ae%n%cn%n%ce%n%B' "$c" > "$tmp/text" 2>/dev/null || die "step gitleaks could not run (could not read the text of a commit)"
+    neutral_commit_text "$c" "$tmp/text" || die "step gitleaks could not run (could not read the text of a commit)"
     text_bytes=$(wc -c < "$tmp/text" | tr -d ' ')
     [ "$text_bytes" -le 65536 ] || die "step gitleaks could not run (the text of a commit is over 64 KiB)"
     if [ $((batch_bytes + text_bytes)) -gt 65536 ]; then flush_batch; fi

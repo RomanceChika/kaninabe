@@ -68,25 +68,35 @@ gg() {
 lines() { wc -l < "$gg_out" | tr -d ' '; }
 # show_at: the places (path:line) of the last gg -n; not printed when SCAN_QUIET is set (a public log: counts only).
 show_at() { [ -n "${SCAN_QUIET:-}" ] || { cut -d: -f2,3 "$gg_out" | head -50 | sed "s|^|  at |"; }; }
+text=$ng_work/text; text_mail=$ng_work/text-mail
 for c in $(cat "$commits"); do
   short=$(echo "$c" | cut -c1-8)
+  # The text of a commit is the raw object with NUL as a line break (neutral_commit_text); a commit that cannot be read stops the scan.
+  neutral_commit_text "$c" "$text" || { echo "scan: could not read a commit"; echo "scan-public: ERROR"; exit 2; }
+  # The mail rule reads the same text without the first author and the first committer line (their addresses have their own
+  # rule below, and a web-flow committer address is allowed there); a second such line, or one after the headers, is read.
+  awk 'BEGIN { h = 1 } h && /^$/ { h = 0 } h && /^author / && !a { a = 1; next } h && /^committer / && !m { m = 1; next } { print }' "$text" > "$text_mail" || { echo "scan: could not read a commit"; echo "scan-public: ERROR"; exit 2; }
   if [ -s "$pat" ]; then
     gg -IlE -f "$pat" "$c"; n=$(lines)
     if [ "$n" != "0" ]; then echo "word list: $n file(s) in $short"; gg -InE -f "$pat" "$c"; show_at; fail=1; fi
-    if neutral_git log -1 --format='%an %ae %cn %ce%n%B' "$c" | grep -qiE -f "$pat"; then echo "word list: commit message or author of $short"; fail=1; fi
+    # the raw text of the commit (every header, the whole message): in the locale of the scan and byte for byte (a pattern's `.`
+    # matches a byte that is not valid UTF-8 only in the second run). A word in an encoding that is not UTF-8 does not match.
+    if grep -qiE -f "$pat" "$text" || LC_ALL=C grep -qiE -f "$pat" "$text"; then echo "word list: commit message or author of $short"; fail=1; fi
   fi
   while IFS= read -r line; do
     prefix=${line%% *}; prefix=${prefix#@}; re=${line#* }
     gg -IlE "$re" "$c" -- "$prefix"; n=$(lines)
     if [ "$n" != "0" ]; then if [ -n "${SCAN_QUIET:-}" ]; then echo "scoped word list: $n file(s) in $short"; else echo "scoped word list: $n file(s) under $prefix in $short"; fi; gg -InE "$re" "$c" -- "$prefix"; show_at; fail=1; fi
   done < "$scoped"
-  if neutral_git log -1 --format='%B' "$c" | scan_attribution; then echo "attribution line in $short"; fail=1; fi
+  if scan_attribution < "$text"; then echo "attribution line in $short"; fail=1; fi
   # Author and committer: a GitHub noreply address naming no AI. A squash merge turns each into a co-author trailer.
-  if neutral_git log -1 --format='%an%n%cn' "$c" | scan_grep -qiE "$scan_ai" \
-     || neutral_git log -1 --format='%ae%n%ce' "$c" | { scan_grep -viE "$scan_ident_ok" || true; } | scan_grep -q .; then
+  # (These stay on the identity fields: the AI words are about who the author is, not about anything written in a message.)
+  neutral_git log -1 --format='%an%n%cn' "$c" > "$ng_work/names" 2>/dev/null && neutral_git log -1 --format='%ae%n%ce' "$c" > "$ng_work/addrs" 2>/dev/null \
+    || { echo "scan: could not read a commit"; echo "scan-public: ERROR"; exit 2; }
+  if scan_grep -qiE "$scan_ai" "$ng_work/names" || { scan_grep -viE "$scan_ident_ok" "$ng_work/addrs" || true; } | scan_grep -q .; then
     echo "author or committer not allowed in $short"; fail=1
   fi
-  if neutral_git log -1 --format='%B' "$c" | scan_bad_email; then echo "email-like string in the message of $short"; fail=1; fi
+  if scan_bad_email < "$text_mail"; then echo "email-like string in the message of $short"; fail=1; fi
   gg -IlE "$generic" "$c" -- . ':!package-lock.json' ':!**/package-lock.json'; n=$(lines)
   if [ "$n" != "0" ]; then
     gg -IhoE '/Users/[A-Za-z0-9_.-]+|/home/[a-z0-9_.-]+/|C:\\Users|BEGIN [A-Z ]*PRIVATE KEY' "$c" -- . ':!package-lock.json' ':!**/package-lock.json'

@@ -13,6 +13,10 @@
 #                           `git diff-tree --numstat`, merges against each parent, renames followed as git log does); returns 1
 #                           when it adds none (a binary file, a deletion, a mode change, an empty file, a pure rename) and 2
 #                           when the patch could not be read
+# neutral_commit_text <sha> <out>  writes the text of a commit into <out>: the raw object (`git cat-file commit`: tree, parents, author,
+#                           committer, every other header such as mergetag and gpgsig, and the whole message) with NUL turned into a
+#                           line break (a message is cut at a NUL by the formats of git log). Not re-encoded: the bytes are the object's.
+#                           Returns 1 if either step fails
 # now_secs                 sets $now_t to the clock in whole seconds; returns 1 when `date +%s` fails or prints anything but digits
 #                           (what it printed is never shown)
 # log_has_error <log>       succeeds when a gitleaks log holds an error line (ERR, FTL or PNC; colour codes ignored)
@@ -65,6 +69,11 @@ neutral_adds_text() {
   nat_raw=$ng_dir/numstat.raw
   neutral_git diff-tree --root -m -M --numstat -z --no-ext-diff --no-textconv --no-color "$1" > "$nat_raw" 2>/dev/null || return 2
   tr '\000' '\n' < "$nat_raw" | awk -F'\t' '$1 ~ /^[0-9]+$/ && $1 > 0 { f = 1 } END { exit f ? 0 : 1 }'
+}
+neutral_commit_text() {
+  neutral_git cat-file commit "$1" > "$2.raw" 2>/dev/null || return 1
+  LC_ALL=C tr '\000' '\n' < "$2.raw" > "$2" || return 1
+  rm -f "$2.raw"
 }
 now_secs() { now_t=$(date +%s 2>/dev/null) || return 1; case $now_t in '' | *[!0-9]*) return 1 ;; esac; }
 log_has_error() { tr -d '\033' < "$1" | sed 's/\[[0-9;]*m//g' | grep -Eq '^[^ ]+ (ERR|FTL|PNC) '; }

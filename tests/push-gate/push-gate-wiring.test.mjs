@@ -841,6 +841,35 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
           assert.ok(r.out.includes('author or committer not allowed in'), r.out);
         });
       }
+      it('an address before the noreply one inside the same <...> is not a noreply identity (plain git config)', () => {
+        git(sb, '-c', `user.email=${addr} 1+tester@users.noreply.github.com`, 'commit', '-q', '--allow-empty', '-m', 'q');
+        const r = scan();
+        assert.equal(r.status, 1, r.out);
+        assert.ok(r.out.includes('author or committer not allowed in'), r.out);
+      });
+      it('the same on a literally built object, in the author and in the committer line', () => {
+        for (const opts of [{ author: 'Tester <a@b <1+t@users.noreply.github.com> 1700000000 +0000' }, { committer: 'Tester <a@b <1+t@users.noreply.github.com> 1700000000 +0000' }]) {
+          rawCommit(opts);
+          const r = scan();
+          assert.equal(r.status, 1, r.out);
+          assert.ok(r.out.includes('author or committer not allowed in'), r.out);
+        }
+      });
+      it('only the exact noreply shapes pass: a login with other characters, text before or after, a different host', () => {
+        for (const bad of ['tester#users.noreply.github.com.attacker.test', 'te ster#users.noreply.github.com', 'tester#users.noreply.github.com ', '+tester#users.noreply.github.com', 'a+b+tester#users.noreply.github.com', 'tester#xusers.noreply.github.com', 'x.noreply#github.com'].map((t) => t.replace('#', '@'))) {
+          rawCommit({ author: `Tester <${bad}> 1700000000 +0000` });
+          const r = scan();
+          assert.equal(r.status, 1, `${bad}: ${r.out}`);
+        }
+      });
+      it('an address that only starts like an allowed one is found by the mail rule (the allowed shapes end the address)', () => {
+        for (const bad of ['a#users.noreply.github.com.attacker.test', 'a#example.com.attacker.test', 'a#host.example.attacker.test'].map((t) => t.replace('#', '@'))) {
+          rawCommit({ message: `note ${bad}\n` });
+          const r = scan();
+          assert.equal(r.status, 1, `${bad}: ${r.out}`);
+          assert.ok(r.out.includes('email-like string in the message of'), `${bad}: ${r.out}`);
+        }
+      });
       it('the web-flow committer and a normal noreply identity (with a numeric prefix) still pass', () => {
         rawCommit({ author: 'Tester <12345+tester@users.noreply.github.com> 1700000000 +0000', committer: `GitHub <${['noreply', 'github.com'].join('@')}> 1700000000 +0000` });
         const r = scan();

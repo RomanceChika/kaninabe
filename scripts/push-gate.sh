@@ -44,6 +44,8 @@ cd "$top"
 if [ "$mode" = words ]; then
   if [ -n "${SCAN_WORDS_FILE:-}" ] && [ -f "$SCAN_WORDS_FILE" ] && [ -r "$SCAN_WORDS_FILE" ] && [ -s "$SCAN_WORDS_FILE" ]; then :
   else die "words mode needs the word list (SCAN_WORDS_FILE is unset, empty or unreadable)"; fi
+  # scan-public.sh takes every line that is not a comment or blank as a pattern; with none, nothing would be scanned.
+  grep -v '^#' "$SCAN_WORDS_FILE" | grep -v '^$' | grep -q . || die "the word list has no pattern (only comments and blank lines): nothing would be scanned"
 else
   unset SCAN_WORDS_FILE
 fi
@@ -64,32 +66,65 @@ case $range_kind in
   all) revs="HEAD" ;;
 esac
 git rev-parse --verify -q 'HEAD^{commit}' >/dev/null || die "HEAD is not a commit"
-count=$(git rev-list $revs | wc -l | tr -d ' ') || die "could not list the commits"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+# The list is written to a file and the status checked: a failing rev-list is not an empty range.
+git rev-list $revs > "$tmp/commits" 2>/dev/null || die "could not list the commits"
+count=$(wc -l < "$tmp/commits" | tr -d ' ')
 failed=
 
-# Step 1: gitleaks. Findings exit 99 (so that gitleaks' own errors, which exit 1, are told apart from findings).
-# The report is a template that holds only the rule, the file, the line and the short commit id.
+# Step 1: gitleaks, three ways: the patches of the commits (merges diffed against each parent: -m), each commit message,
+# and the tree of HEAD exported cleanly (not the working tree). Findings exit 99 (so that gitleaks' own errors, which
+# exit 1, are told apart from findings); anything else is "could not run". Reports are templates that hold only the
+# rule, the file, the line and the short commit id; a message is reported by its commit id alone.
+gl_flags="--no-banner --redact --exit-code 99 --log-level error"
 if [ "$count" -gt 0 ]; then
   printf '%s\n' '{{ range . }}{{ .RuleID }} {{ .File }}:{{ .StartLine }} {{ printf "%.8s" .Commit }}{{ "\n" }}{{ end }}' > "$tmp/gitleaks.tpl"
+  gl_report="--report-format template --report-template $tmp/gitleaks.tpl"
+  gl_lines="$tmp/gitleaks.lines"; : > "$gl_lines"
+  gl_msgs=0
   rc=0
-  gitleaks git --no-banner --redact --exit-code 99 --log-level error \
-    --report-format template --report-template "$tmp/gitleaks.tpl" --report-path "$tmp/gitleaks.out" \
-    --log-opts="$revs" . > /dev/null 2>&1 || rc=$?
+  # shellcheck disable=SC2086
+  gitleaks git $gl_flags $gl_report --report-path "$tmp/gitleaks.out" --log-opts="-m $revs" . > /dev/null 2>&1 || rc=$?
+  case $rc in 0) ;; 99) [ ! -f "$tmp/gitleaks.out" ] || grep . "$tmp/gitleaks.out" >> "$gl_lines" || true; echo x > "$tmp/gl.found" ;; *) die "step gitleaks could not run (exit $rc)" ;; esac
+  : > "$tmp/gl.msgs"
+  for c in $(cat "$tmp/commits"); do
+    git log -1 --format=%B "$c" > "$tmp/msg" 2>/dev/null || die "step gitleaks could not run (could not read a commit message)"
+    rc=0
+    # shellcheck disable=SC2086
+    gitleaks stdin $gl_flags < "$tmp/msg" > /dev/null 2>&1 || rc=$?
+    case $rc in 0) ;; 99) echo "$c" | cut -c1-8 >> "$tmp/gl.msgs"; echo x > "$tmp/gl.found" ;; *) die "step gitleaks could not run (exit $rc)" ;; esac
+  done
+  mkdir "$tmp/head"
+  git archive HEAD | tar -x -C "$tmp/head" || die "step gitleaks could not run (could not export HEAD)"
+  rm -f "$tmp/gitleaks.out"; rc=0; tree_n=0
+  # shellcheck disable=SC2086
+  ( cd "$tmp/head" && gitleaks dir $gl_flags $gl_report --report-path "$tmp/gitleaks.out" . ) > /dev/null 2>&1 || rc=$?
   case $rc in
-    0) echo "push-gate: step gitleaks: ok ($count commit(s))" ;;
-    99)
-      : > "$tmp/gitleaks.lines"
-      [ ! -f "$tmp/gitleaks.out" ] || grep . "$tmp/gitleaks.out" > "$tmp/gitleaks.lines" || true
-      n=$(wc -l < "$tmp/gitleaks.lines" | tr -d ' ')
-      echo "push-gate: step gitleaks: FAILED ($n finding(s))"
-      if [ -n "${CI:-}" ]; then cut -d' ' -f1 "$tmp/gitleaks.lines" | sort | uniq -c | sed 's/^ *\([0-9]*\) \(.*\)$/  rule \2: \1/'
-      else sed 's/^/  at /' "$tmp/gitleaks.lines" | head -50; fi
-      failed="gitleaks" ;;
+    0) ;;
+    99) echo x > "$tmp/gl.found"
+        [ ! -f "$tmp/gitleaks.out" ] || grep . "$tmp/gitleaks.out" > "$tmp/gl.tree" || true
+        [ ! -f "$tmp/gl.tree" ] || tree_n=$(wc -l < "$tmp/gl.tree" | tr -d ' ') ;;
     *) die "step gitleaks could not run (exit $rc)" ;;
   esac
+  if [ -f "$tmp/gl.found" ]; then
+    n=$(wc -l < "$gl_lines" | tr -d ' ')
+    nm=$(wc -l < "$tmp/gl.msgs" | tr -d ' ')
+    echo "push-gate: step gitleaks: FAILED ($n finding(s) in patches, $nm in commit messages, $tree_n in the tree of HEAD)"
+    # In CI (a public log) only rule names and counts; anywhere else, the places.
+    if [ -n "${CI:-}" ]; then
+      { cat "$gl_lines"; [ ! -f "$tmp/gl.tree" ] || cat "$tmp/gl.tree"; } | cut -d' ' -f1 | sort | uniq -c | sed 's/^ *\([0-9]*\) \(.*\)$/  rule \2: \1/'
+    else
+      sed 's/^/  at /' "$gl_lines" | head -50
+      sed 's/^/  commit message of /' "$tmp/gl.msgs"
+      echo "  tree of HEAD: $tree_n finding(s)"
+      [ ! -f "$tmp/gl.tree" ] || sed 's/^\([^ ]*\) \.\/\{0,1\}/  at \1 /' "$tmp/gl.tree" | head -50
+    fi
+    failed="gitleaks"
+  else
+    echo "push-gate: step gitleaks: ok ($count commit(s))"
+  fi
 else
   echo "push-gate: step gitleaks: skipped (no commits in range)"
 fi
@@ -98,6 +133,8 @@ fi
 if [ "$count" -gt 0 ]; then
   rc=0
   # shellcheck disable=SC2086
+  # In CI (a public log) scan-public gives counts only (SCAN_QUIET); anywhere else it names places.
+  if [ -n "${CI:-}" ]; then SCAN_QUIET=1; export SCAN_QUIET; fi
   sh "$here/scan-public.sh" --revs $revs > "$tmp/scan-public.out" 2>&1 || rc=$?
   cat "$tmp/scan-public.out"
   case $rc in
@@ -134,7 +171,8 @@ else
     0) echo "push-gate: step workflows: ok ($nfiles file(s))" ;;
     1)
       echo "push-gate: step workflows: FAILED"
-      sed 's/^/  at /' "$tmp/actionlint.out" | head -50
+      if [ -n "${CI:-}" ]; then sed 's/^.*\[\(.*\)\]$/\1/' "$tmp/actionlint.out" | sort | uniq -c | sed 's/^ *\([0-9]*\) \(.*\)$/  rule \2: \1/'
+      else sed 's/^/  at /' "$tmp/actionlint.out" | head -50; fi
       failed="${failed:+$failed, }workflows" ;;
     *) die "step workflows could not run (exit $rc)" ;;
   esac

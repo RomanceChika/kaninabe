@@ -3,10 +3,12 @@
 # (gitleaks and actionlint), each downloaded at a pinned version and installed only after its sha256 matches the pin.
 # Optionally records where the word list is and who the repository owner is (git config kaninabe.scanWords / scanOwner;
 # the list itself is never read, printed or copied here).
-# Usage: setup-dev-env.sh [--bin-dir <dir>] [--words <file>] [--owner <name>]
+# Usage: setup-dev-env.sh [--bin-dir <dir>] [--words <file>] [--owner <name>] [--no-hooks] [--no-path-check]
 #   --bin-dir  where the tools go (default /usr/local/bin; it must be on PATH afterwards)
 #   --words    the word list file (default: $SCAN_WORDS_FILE); recorded as kaninabe.scanWords
 #   --owner    the repository owner (default: $SCAN_OWNER); recorded as kaninabe.scanOwner
+#   --no-hooks       install the tools only: leave core.hooksPath and the kaninabe.* settings alone (for a CI job)
+#   --no-path-check  do not require the installed tools to be what PATH finds first (the caller adds the dir to PATH)
 # The hook path is set last, after both tools are in and run. Exit 0 only when everything is in place.
 # SETUP_DEV_ENV_MIRROR (a base URL holding the same file names) replaces github.com for the download, for tests; the
 # pinned checksums below are not overridable, so a mirror cannot change what gets installed.
@@ -27,12 +29,16 @@ die() { echo "setup-dev-env: $*" >&2; exit 1; }
 bin_dir=/usr/local/bin
 words=${SCAN_WORDS_FILE:-}
 owner=${SCAN_OWNER:-}
+no_hooks=0
+no_path_check=0
 while [ $# -gt 0 ]; do
   case $1 in
     --bin-dir) [ $# -ge 2 ] || die "--bin-dir needs a value"; bin_dir=$2; shift 2 ;;
     --words) [ $# -ge 2 ] || die "--words needs a value"; words=$2; shift 2 ;;
     --owner) [ $# -ge 2 ] || die "--owner needs a value"; owner=$2; shift 2 ;;
-    *) die "unknown argument (usage: setup-dev-env.sh [--bin-dir <dir>] [--words <file>] [--owner <name>])" ;;
+    --no-hooks) no_hooks=1; shift ;;
+    --no-path-check) no_path_check=1; shift ;;
+    *) die "unknown argument (usage: setup-dev-env.sh [--bin-dir <dir>] [--words <file>] [--owner <name>] [--no-hooks] [--no-path-check])" ;;
   esac
 done
 
@@ -76,15 +82,19 @@ mkdir -p "$bin_dir" || die "cannot create $bin_dir (use --bin-dir <dir> and put 
 install -m 0755 "$work/gl/gitleaks" "$bin_dir/gitleaks" || die "cannot write to $bin_dir (use --bin-dir <dir> and put it on PATH)"
 install -m 0755 "$work/al/actionlint" "$bin_dir/actionlint" || die "cannot write to $bin_dir (use --bin-dir <dir> and put it on PATH)"
 
-# Whatever the gate will find on PATH must be the tools just installed, and they must run.
-for t in gitleaks actionlint; do
-  found=$(command -v "$t" 2>/dev/null || true)
-  [ -n "$found" ] || die "$t is not on PATH: add $bin_dir to PATH"
-  [ "$found" = "$bin_dir/$t" ] || die "$t on PATH is $found, not the one just installed in $bin_dir: put $bin_dir first on PATH"
-done
-gitleaks version >/dev/null 2>&1 || die "gitleaks was installed but does not run"
-actionlint -version >/dev/null 2>&1 || die "actionlint was installed but does not run"
+# The installed tools must run (by their full path). Unless told otherwise, what the gate will find on PATH must also be
+# the tools just installed.
+"$bin_dir/gitleaks" version >/dev/null 2>&1 || die "gitleaks was installed but does not run"
+"$bin_dir/actionlint" -version >/dev/null 2>&1 || die "actionlint was installed but does not run"
+if [ "$no_path_check" = 0 ]; then
+  for t in gitleaks actionlint; do
+    found=$(command -v "$t" 2>/dev/null || true)
+    [ -n "$found" ] || die "$t is not on PATH: add $bin_dir to PATH"
+    [ "$found" = "$bin_dir/$t" ] || die "$t on PATH is $found, not the one just installed in $bin_dir: put $bin_dir first on PATH"
+  done
+fi
 
+if [ "$no_hooks" = 1 ]; then echo "setup-dev-env: tools ready (gitleaks ${GITLEAKS_VERSION}, actionlint ${ACTIONLINT_VERSION}, in $bin_dir); hooks left alone"; exit 0; fi
 [ -x "$root/.githooks/pre-push" ] || die ".githooks/pre-push is missing or not executable"
 git -C "$root" config core.hooksPath .githooks || die "could not set core.hooksPath"
 [ -z "$words" ] || git -C "$root" config kaninabe.scanWords "$words" || die "could not set kaninabe.scanWords"

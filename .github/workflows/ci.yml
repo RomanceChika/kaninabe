@@ -57,8 +57,7 @@ jobs:
           rm -f "$words"
       # The push-before gate (scripts/push-gate.sh), run here as well: the same script that the pre-push hook runs.
       # It is added next to the scans above, which stay until this step has been seen passing in a run on the main
-      # branch (development-flow.md, "検査を入れ替えるとき"). Mode `words` when the word list is available, `general`
-      # for a fork's pull request, which cannot be given it. Same handling of the secret as the step above.
+      # branch (development-flow.md, "検査を入れ替えるとき"). The two steps below differ in the mode and in the secret.
       - name: Install actionlint (pinned, checksum verified) and put the scanners on PATH
         run: |
           curl -sSfL -o al.tgz https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
@@ -67,25 +66,24 @@ jobs:
           tar -xzf al.tgz -C "$RUNNER_TEMP/bin" actionlint
           cp gitleaks "$RUNNER_TEMP/bin/gitleaks"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Push gate (gitleaks, word list and rules over every commit, workflow check)
+      # (1) Every event, no secret in this step's environment: the general mode (gitleaks, the generic rules, the workflow
+      # check). A pull request or a branch runs workflow definitions that have not been reviewed, so only the push to the
+      # main branch (2) is given the word list.
+      - name: Push gate, general mode
+        run: sh scripts/push-gate.sh --mode general --all
+      # (2) The main branch only: the word list is the Actions secret, written to a temp file, never echoed.
+      - name: Push gate, words mode (main branch only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
         env:
           SCAN_WORDS: ${{ secrets.SCAN_WORDS }}
-          IS_FORK: ${{ github.event.pull_request.head.repo.fork == true }}
         run: |
           words="$RUNNER_TEMP/scan-words"
           umask 077
-          if [ -n "$SCAN_WORDS" ]; then
-            printf '%s\n' "$SCAN_WORDS" > "$words"
-            export SCAN_WORDS_FILE="$words"
-            mode=words
-          elif [ "$IS_FORK" = "true" ]; then
-            echo "fork pull request: the word list is not available; the general mode runs"
-            mode=general
-          else
-            echo "SCAN_WORDS is not set"; exit 1
-          fi
+          [ -n "$SCAN_WORDS" ] || { echo "SCAN_WORDS is not set"; exit 1; }
+          printf '%s\n' "$SCAN_WORDS" > "$words"
+          export SCAN_WORDS_FILE="$words"
           rc=0
-          sh scripts/push-gate.sh --mode "$mode" --all || rc=$?
+          sh scripts/push-gate.sh --mode words --all || rc=$?
           rm -f "$words"
           exit "$rc"
 
@@ -107,6 +105,11 @@ jobs:
       - run: npm run typecheck:spec-tools
       - run: npm run lint:spec-tools
       - run: npm run check:fence
+      # The tests of the push gate use the real gitleaks and actionlint (no sudo: a directory of the job, put on PATH).
+      - name: Install gitleaks and actionlint (pinned, checksum verified)
+        run: |
+          sh scripts/setup-dev-env.sh --bin-dir "$RUNNER_TEMP/bin" --no-hooks --no-path-check
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - run: npm run test:bin
       - run: npm run verify -- --fail-on-unclassified
       - run: npm run test:unit

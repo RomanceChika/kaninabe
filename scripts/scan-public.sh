@@ -4,6 +4,8 @@
 # and is never printed. A line of the form `@<path-prefix> <regex>` applies only to files under that prefix
 # (used to keep the rules under docs/rules free of any product's vocabulary). Output is limited to a commit short id, a file path, a line number and counts: never a matched
 # line or snippet, because the logs of a public repository are public. Do not add `set -x` or echo any pattern.
+# With SCAN_QUIET set, the places (the `at path:line` lines) are left out too: counts and short ids only.
+# A failing `git rev-list` or `git grep` (exit above 1) stops the scan with exit 2; it never reads as "no match".
 # Usage: scan-public.sh [<base>]   (scans <base>..HEAD, or every commit reachable from HEAD)
 #        scan-public.sh --revs <rev-list arguments...>   (scans exactly the commits `git rev-list <arguments>` names;
 #        used by push-gate.sh to hand over the same commit set as its other steps)
@@ -23,17 +25,30 @@ fail=0
 generic='/Users/[A-Za-z]|/home/[a-z]+/|C:\\Users|BEGIN [A-Z ]*PRIVATE KEY'
 email=$scan_email
 email_ok=$scan_email_ok
-for c in $(git rev-list $range); do
+commits=$(mktemp); gg_out=$(mktemp)
+trap 'rm -f "$pat" "$scoped" "$commits" "$gg_out"' EXIT
+# A rev-list that fails is not an empty range: it stops the scan (exit 2), it does not read as "clean".
+rc=0; git rev-list $range > "$commits" 2>/dev/null || rc=$?
+if [ "$rc" -ne 0 ]; then echo "scan: git rev-list failed (exit $rc)"; echo "scan-public: ERROR"; exit 2; fi
+# gg ARGS...: git grep into $gg_out. Exit 1 (no match) is an empty result; anything above is an error that stops the scan.
+gg() {
+  rc=0; git grep "$@" > "$gg_out" 2>/dev/null || rc=$?
+  if [ "$rc" -gt 1 ]; then echo "scan: git grep failed (exit $rc)"; echo "scan-public: ERROR"; exit 2; fi
+}
+lines() { wc -l < "$gg_out" | tr -d ' '; }
+# show_at: the places (path:line) of the last gg -n; not printed when SCAN_QUIET is set (a public log: counts only).
+show_at() { [ -n "${SCAN_QUIET:-}" ] || { cut -d: -f2,3 "$gg_out" | head -50 | sed "s|^|  at |"; }; }
+for c in $(cat "$commits"); do
   short=$(echo "$c" | cut -c1-8)
   if [ -s "$pat" ]; then
-    n=$(git grep -IlE -f "$pat" "$c" 2>/dev/null | wc -l | tr -d ' ')
-    if [ "$n" != "0" ]; then echo "word list: $n file(s) in $short"; git grep -InE -f "$pat" "$c" 2>/dev/null | cut -d: -f2,3 | head -50 | sed "s|^|  at |" ; fail=1; fi
+    gg -IlE -f "$pat" "$c"; n=$(lines)
+    if [ "$n" != "0" ]; then echo "word list: $n file(s) in $short"; gg -InE -f "$pat" "$c"; show_at; fail=1; fi
     if git log -1 --format='%an %ae %cn %ce%n%B' "$c" | grep -qiE -f "$pat"; then echo "word list: commit message or author of $short"; fail=1; fi
   fi
   while IFS= read -r line; do
     prefix=${line%% *}; prefix=${prefix#@}; re=${line#* }
-    n=$(git grep -IlE "$re" "$c" -- "$prefix" 2>/dev/null | wc -l | tr -d ' ')
-    if [ "$n" != "0" ]; then echo "scoped word list: $n file(s) under $prefix in $short"; git grep -InE "$re" "$c" -- "$prefix" 2>/dev/null | cut -d: -f2,3 | head -50 | sed "s|^|  at |"; fail=1; fi
+    gg -IlE "$re" "$c" -- "$prefix"; n=$(lines)
+    if [ "$n" != "0" ]; then echo "scoped word list: $n file(s) under $prefix in $short"; gg -InE "$re" "$c" -- "$prefix"; show_at; fail=1; fi
   done < "$scoped"
   if git log -1 --format='%B' "$c" | scan_attribution; then echo "attribution line in $short"; fail=1; fi
   # Author and committer: a GitHub noreply address naming no AI. A squash merge turns each into a co-author trailer.
@@ -42,12 +57,14 @@ for c in $(git rev-list $range); do
     echo "author or committer not allowed in $short"; fail=1
   fi
   if git log -1 --format='%B' "$c" | scan_bad_email; then echo "email-like string in the message of $short"; fail=1; fi
-  n=$(git grep -IlE "$generic" "$c" -- . ':!package-lock.json' ':!**/package-lock.json' 2>/dev/null | wc -l | tr -d ' ')
+  gg -IlE "$generic" "$c" -- . ':!package-lock.json' ':!**/package-lock.json'; n=$(lines)
   if [ "$n" != "0" ]; then
-    m=$(git grep -IhoE '/Users/[A-Za-z0-9_.-]+|/home/[a-z0-9_.-]+/|C:\\Users|BEGIN [A-Z ]*PRIVATE KEY' "$c" -- . ':!package-lock.json' ':!**/package-lock.json' | sed 's/^[^:]*://' | grep -vE '^/home/(u|a|user|x|me|app|runner|node)/$' | wc -l | tr -d ' ')
+    gg -IhoE '/Users/[A-Za-z0-9_.-]+|/home/[a-z0-9_.-]+/|C:\\Users|BEGIN [A-Z ]*PRIVATE KEY' "$c" -- . ':!package-lock.json' ':!**/package-lock.json'
+    m=$(sed 's/^[^:]*://' "$gg_out" | { scan_grep -vE '^/home/(u|a|user|x|me|app|runner|node)/$' || true; } | wc -l | tr -d ' ')
     if [ "$m" != "0" ]; then echo "local path or key shape: $m hit(s) in $short"; fail=1; fi
   fi
-  m=$(git grep -IhoE "$email" "$c" -- . ':!package-lock.json' ':!**/package-lock.json' | sed 's/^[^:]*://' | grep -vE "$email_ok" | wc -l | tr -d ' ')
+  gg -IhoE "$email" "$c" -- . ':!package-lock.json' ':!**/package-lock.json'
+  m=$(sed 's/^[^:]*://' "$gg_out" | { scan_grep -vE "$email_ok" || true; } | wc -l | tr -d ' ')
   if [ "$m" != "0" ]; then echo "email-like string: $m hit(s) in $short"; fail=1; fi
 done
 scan_finish scan-public "$fail"

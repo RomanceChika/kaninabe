@@ -12,7 +12,7 @@
  *   runtime      imports no other kaninabe package; adapters import only @kaninabe/runtime (supabase-session
  *                also @kaninabe/adapter-postgrest); lint-config imports no kaninabe package.
  *                Tool configs (eslint.config.mjs) may name @kaninabe/lint-config.
- *   tests        import node: built-ins and bin/ or scripts/ only (they test those)
+ *   tests        import node: built-ins, bin/ or scripts/ (they test those) and their own helpers under tests/
  *   scripts      import `node:` built-ins and `typescript` (the parser this gate needs) only
  *
  * The one dependency of this file, `typescript`, is a deliberate exception to "gate code uses node: only".
@@ -107,7 +107,7 @@ export function violationsOf(file, specifiers) {
     const target = resolveRelative(file, specifier);
     const isBuiltin = specifier.startsWith('node:');
     if (file.startsWith('bin/') && !isBuiltin) flag('bin imports node: built-ins only', entry);
-    if (file.startsWith('tests/') && !isBuiltin && !(target !== null && /^(?:bin|scripts)\//.test(target))) flag('tests import node: built-ins and bin/ or scripts/ only', entry);
+    if (file.startsWith('tests/') && !isBuiltin && !(target !== null && /^(?:bin|scripts|tests)\//.test(target))) flag('tests import node: built-ins, bin/, scripts/ and tests/ only', entry);
     if (file.startsWith('scripts/') && !isBuiltin && specifier !== 'typescript') flag('scripts import node: built-ins and typescript only', entry);
     if ((file.startsWith('legacy/') || production) && target !== null && target.startsWith('..')) flag('never imports outside the repository (a product tree)', entry);
     if (file.startsWith('legacy/')) {

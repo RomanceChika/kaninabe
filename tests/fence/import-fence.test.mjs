@@ -65,6 +65,8 @@ describe('violationsOf', () => {
     assert.equal(rulesFor('scripts/a.mjs', "import x from 'left-pad';").length, 1);
     assert.deepEqual(rulesFor('tests/bin/a.test.mjs', "import x from '../../bin/kaninabe.mjs';"), []);
     assert.equal(rulesFor('tests/bin/a.test.mjs', "import x from '../../legacy/a.js';").length, 1);
+    assert.deepEqual(rulesFor('tests/scan/a.test.mjs', "import x from './helpers.mjs';"), []);
+    assert.equal(rulesFor('tests/scan/a.test.mjs', "import x from '../../framework/runtime/a.js';").length, 1);
   });
 });
 

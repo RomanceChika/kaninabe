@@ -13,7 +13,7 @@ set -eu
 . "$(dirname "$0")/scan-rules.sh"
 . "$(dirname "$0")/neutral-git.sh"
 if [ "${1:-}" = "--revs" ]; then shift; range="$*"; else range=${1:+$1..}HEAD; fi
-pat=$(mktemp); trap 'rm -f "$pat" "$scoped"' EXIT
+pat=$(mktemp); trap 'rm -f "$pat" "$scoped" "$scan_err"' EXIT
 if [ -n "${SCAN_WORDS_FILE:-}" ] && [ -s "$SCAN_WORDS_FILE" ]; then
   grep -v '^#' "$SCAN_WORDS_FILE" | grep -v '^$' | grep -v '^@' > "$pat" || true
   scoped=$(mktemp); grep '^@' "$SCAN_WORDS_FILE" > "$scoped" || true
@@ -27,7 +27,7 @@ generic='/Users/[A-Za-z]|/home/[a-z]+/|C:\\Users|BEGIN [A-Z ]*PRIVATE KEY'
 email=$scan_email
 email_ok=$scan_email_ok
 commits=$(mktemp); gg_out=$(mktemp); ng_work=$(mktemp -d)
-trap 'rm -rf "$pat" "$scoped" "$commits" "$gg_out" "$ng_work"' EXIT
+trap 'rm -rf "$pat" "$scoped" "$commits" "$gg_out" "$ng_work" "$scan_err"' EXIT
 # git grep runs in a neutral repository (no attributes from the tree or the clone, no user config): see neutral-git.sh.
 neutral_git_setup "$ng_work" || { echo "scan: $ng_error"; echo "scan-public: ERROR"; exit 2; }
 # A rev-list that fails is not an empty range: it stops the scan (exit 2), it does not read as "clean".

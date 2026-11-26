@@ -8,11 +8,12 @@
 # Usage: scan-pr-text.sh <file>   (word list: $SCAN_WORDS_FILE, as in scan-public.sh)
 set -eu
 . "$(dirname "$0")/scan-rules.sh"
+trap 'rm -f "$scan_err"' EXIT
 f=${1:?usage: scan-pr-text.sh <file>}
 [ -f "$f" ] && [ -r "$f" ] || { echo "scan-pr-text: cannot read the input"; exit 2; }
 fail=0
 if [ -n "${SCAN_WORDS_FILE:-}" ] && [ -s "$SCAN_WORDS_FILE" ]; then
-  pat=$(mktemp); trap 'rm -f "$pat"' EXIT
+  pat=$(mktemp); trap 'rm -f "$pat" "$scan_err"' EXIT
   { grep -v '^#' "$SCAN_WORDS_FILE" || true; } | { grep -v '^$' || true; } | { grep -v '^@' || true; } > "$pat"
   scan_check_patterns "$pat"
   if [ -s "$pat" ] && scan_grep -qiE -f "$pat" "$f"; then echo "word list: pull request title or body"; fail=1; fi

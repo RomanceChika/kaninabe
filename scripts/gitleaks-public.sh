@@ -1,14 +1,14 @@
 #!/bin/sh
-# gitleaks for a public log: the old CI steps' key scans (`gitleaks dir .` / `gitleaks git .`), run the way the push gate
-# runs gitleaks, with output limited to what may be printed: ok, or a count and rule names, or a line saying that the run
-# or its result could not be used. gitleaks' own messages are never shown: its errors can name paths and its findings name
-# the file, the commit and the author, and the logs of a public repository are public.
+# gitleaks for a public log: the old CI steps' key scans (`gitleaks dir .` / the history), run the way the push gate runs
+# gitleaks, with output limited to what may be printed: ok, or a count, or a line saying that the run or its result could not
+# be used. Nothing derived from gitleaks' output is printed (its errors can name paths and its findings name the file, the
+# commit and the author, and the logs of a public repository are public); to see details, run gitleaks yourself.
 #   - the configuration is the gate's fixed file (scripts/gitleaks-gate.toml), never one in the scanned tree or in the
 #     environment; the ignore file is a path that does not exist and inline `gitleaks:allow` comments are not honoured;
 #   - `dir` scans a copy of the directory without its .git and without any .gitleaksignore (gitleaks reads
-#     <source>/.gitleaksignore whatever flag says); `git` reads the history from the neutral repository (objects only: see
-#     neutral-git.sh), given as commit ids, so local config, info/attributes, grafts and replace refs cannot change it;
-#   - a rule name is printed only in the shape [a-z0-9][a-z0-9-]{0,63}; any other text is counted as "other".
+#     <source>/.gitleaksignore whatever flag says); `git` never has gitleaks read the history: the added lines of every
+#     commit are made here from the neutral repository (see neutral-git.sh) and scanned as one stream;
+#   - an error line in gitleaks' log, with exit 0 or with findings, is "could not run".
 # Usage: gitleaks-public.sh dir|git [<path>]     ($GL_BIN names the gitleaks binary; default: gitleaks on PATH)
 # Exit 0 = nothing found, 1 = found, 2 = could not run, or could not read the result (a result that cannot be read is never
 # "nothing found"), or bad usage.
@@ -25,35 +25,16 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 cfg="$here/gitleaks-gate.toml"
 [ -f "$cfg" ] && [ -r "$cfg" ] || { echo "gitleaks $mode: could not run (the fixed config is missing)"; exit 2; }
-printf '%s\n' '{{ range . }}{{ .RuleID }}{{ "\n" }}{{ end }}' > "$tmp/rules.tpl"
+printf '%s\n' '{{ range . }}x{{ "\n" }}{{ end }}' > "$tmp/rules.tpl"
 
 # gl <subcommand> <arguments...>: the tool with the fixed flags, in an environment of explicit inputs only.
 gl() {
   gl_sub=$1; shift
-  ng_env ${ng_empty:+"GIT_ATTR_SOURCE=$ng_empty"} "$bin" "$gl_sub" --no-banner --redact --exit-code 99 --log-level "${gl_level:-error}" --config "$cfg" \
+  ng_env ${ng_empty:+"GIT_ATTR_SOURCE=$ng_empty"} "$bin" "$gl_sub" --no-banner --redact --exit-code 99 --log-level error --config "$cfg" \
     --gitleaks-ignore-path "$tmp/no-gitleaksignore" --ignore-gitleaks-allow \
     --report-format template --report-template "$tmp/rules.tpl" --report-path "$tmp/rules.out" "$@"
 }
 could_not_run() { echo "gitleaks $mode: could not run (exit $1)"; exit 2; }
-
-# gl_scanned <log>: the number in gitleaks' "N commits scanned." line, or nothing (the log is private and never printed)
-gl_scanned() { tr -d '\033' < "$1" | sed 's/\[[0-9;]*m//g' | sed -n 's/.*[^0-9]\([0-9][0-9]*\) commits scanned.*/\1/p' | tail -1; }
-
-# confirm_scanned: for the git scan, what gitleaks says it scanned must be our list (gitleaks exits 0 with "0 commits scanned"
-# when it cannot read its options). The log is never printed.
-confirm_scanned() {
-  [ "$mode" = git ] || return 0
-  scanned=$(gl_scanned "$tmp/gl.log")
-  # gitleaks counts only commits whose patch has something to scan: a number it printed, not more than our list, and not 0
-  # when our list adds a text line
-  [ -n "$scanned" ] && [ "$scanned" -le "$ours" ] || { echo "gitleaks git: could not confirm what it scanned"; exit 2; }
-  if [ "$scanned" -eq 0 ]; then
-    # shellcheck disable=SC2046
-    if neutral_git log -m --format= -p -U0 $(cat "$tmp/commit-tips.u") 2>/dev/null | grep -qE '^\+([^+]|\+[^+ ])'; then
-      echo "gitleaks git: could not confirm what it scanned"; exit 2
-    fi
-  fi
-}
 
 rc=0
 if [ "$mode" = dir ]; then
@@ -62,7 +43,7 @@ if [ "$mode" = dir ]; then
   tar -C "$target" --exclude=.git -cf "$tmp/src.tar" . > /dev/null 2>&1 || could_not_run 2
   tar -C "$tmp/src" -xf "$tmp/src.tar" > /dev/null 2>&1 || could_not_run 2
   find "$tmp/src" -name .gitleaksignore -exec rm -f {} + || could_not_run 2
-  ( cd "$tmp/src" && gl dir . ) > /dev/null 2>&1 || rc=$?
+  ( cd "$tmp/src" && gl dir . ) > /dev/null 2> "$tmp/gl.log" || rc=$?
 else
   cd "$target" 2>/dev/null || could_not_run 2
   repo_resolve || could_not_run 2
@@ -88,24 +69,26 @@ else
     sort -u "$tmp/commit-tips" > "$tmp/commit-tips.u"
     # shellcheck disable=SC2046
     neutral_git rev-list $(cat "$tmp/commit-tips.u") > "$tmp/commits" 2>/dev/null || could_not_run 2
-    ours=$(wc -l < "$tmp/commits" | tr -d ' ')
-    [ "$ours" -gt 0 ] || could_not_run 2
-    gl_level=info
-    gl git --log-opts="-m $(tr '\n' ' ' < "$tmp/commit-tips.u" | sed 's/ $//')" "$ng_dir" > /dev/null 2> "$tmp/gl.log" || rc=$?
-    gl_level=error
+    [ -s "$tmp/commits" ] || could_not_run 2
+    neutral_added_lines "$tmp/commits" "$tmp/added.txt" || could_not_run 2
+    # an empty stream (no commit adds a line) has nothing to scan; every commit was still read, each status checked
+    if [ -s "$tmp/added.txt" ]; then
+      gl stdin < "$tmp/added.txt" > /dev/null 2> "$tmp/gl.log" || rc=$?
+    fi
   else
     echo "gitleaks git: ok"; exit 0
   fi
 fi
 case $rc in
-  0) confirm_scanned; echo "gitleaks $mode: ok" ;;
+  0 | 99) if [ -f "$tmp/gl.log" ] && log_has_error "$tmp/gl.log"; then echo "gitleaks $mode: could not run (it logged an error)"; exit 2; fi ;;
+esac
+case $rc in
+  0) echo "gitleaks $mode: ok" ;;
   99)
-    # findings: the report must be readable (not missing, not empty), else this is not "zero findings"
-    if [ ! -s "$tmp/rules.out" ] || ! grep -q . "$tmp/rules.out"; then echo "gitleaks $mode: could not read the result"; exit 2; fi
-    grep . "$tmp/rules.out" > "$tmp/lines"
-    confirm_scanned
-    echo "gitleaks $mode: FAILED ($(wc -l < "$tmp/lines" | tr -d ' ') finding(s))"
-    awk '{ if ($0 ~ /^[a-z0-9][a-z0-9-]{0,63}$/) print $0; else print "other" }' "$tmp/lines" | sort | uniq -c | sed 's/^ *\([0-9]*\) \(.*\)$/  rule \2: \1/'
+    # findings: the report must be readable (every line the x of the template), else this is not "zero findings"
+    if [ ! -s "$tmp/rules.out" ] || ! grep -q . "$tmp/rules.out" || grep . "$tmp/rules.out" | grep -qvx x; then echo "gitleaks $mode: could not read the result"; exit 2; fi
+    echo "gitleaks $mode: FAILED ($(grep -c . "$tmp/rules.out") finding(s))"
+    echo "  (details: run gitleaks yourself on your own copy, for example: gitleaks $mode .)"
     exit 1 ;;
   *) could_not_run "$rc" ;;
 esac

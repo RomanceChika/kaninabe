@@ -46,7 +46,7 @@ jobs:
           from=$(jq -r '.pull_request.head.repo.full_name // ""' "$GITHUB_EVENT_PATH")
           [ "$from" = "$GITHUB_REPOSITORY" ] || { echo "pr-gate: a pull request from a fork is not gated here (push the branch to this repository)"; exit 1; }
       # Read from the event file, never from env (the log prints a step's env). The word list is the Actions secret
-      # SCAN_WORDS, written to a temp file and never printed; the script prints only rule names.
+      # SCAN_WORDS, written to a temp file and never printed; the script prints counts only.
       - name: Scan the title and body (the squash commit message)
         env:
           SCAN_WORDS: ${{ secrets.SCAN_WORDS }}

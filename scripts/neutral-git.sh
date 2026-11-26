@@ -9,6 +9,11 @@
 # (the real repository is $ng_repo, set by the caller)
 # neutral_git_setup <dir>   prepares <dir>/neutral.git; on failure prints the reason in $ng_error and returns 1
 # neutral_git <args...>     runs git (read-only use: grep, ls-tree) against the commits of the real repository
+# neutral_added_lines <list> <out>  the lines that the commits named in <list> (one id per line) add, as one stream in <out>: for
+#                           each commit `git diff-tree` (merges against each parent, no renames, no external diff or textconv,
+#                           attributes from the empty tree, no config), every status checked; only the added lines are kept.
+#                           Returns 1 if any read fails (a stream that is not complete is never scanned as if it were)
+# log_has_error <log>       succeeds when a gitleaks log holds an error line (ERR, FTL or PNC; colour codes ignored)
 # neutral_export <sha> <dir> writes the files of the commit into <dir> exactly as committed (no export-ignore, no
 #                           export-subst, no end-of-line or filter conversion)
 ng_error=
@@ -51,3 +56,15 @@ neutral_export() {
   ng_env GIT_DIR="$ng_dir" GIT_WORK_TREE="$2" GIT_INDEX_FILE="$ng_dir/export-index" git read-tree "$1" >/dev/null 2>&1 \
     && ng_env GIT_DIR="$ng_dir" GIT_WORK_TREE="$2" GIT_INDEX_FILE="$ng_dir/export-index" git --attr-source="$ng_empty" checkout-index -a -f >/dev/null 2>&1
 }
+# neutral_added_lines <list> <out>: see the head of this file. The headers of a diff ("+++ b/path") stay in the stream; every
+# line that begins with "+" is kept, with the "+" taken off. A binary file has no added lines in a diff ("Binary files differ").
+neutral_added_lines() {
+  : > "$2" || return 1
+  while IFS= read -r nal_c; do
+    [ -n "$nal_c" ] || continue
+    neutral_git diff-tree --root -m -p -U0 --no-ext-diff --no-textconv --no-color --no-renames "$nal_c" > "$2.raw" 2>/dev/null || return 1
+    LC_ALL=C sed -n 's/^+//p' "$2.raw" >> "$2" || return 1
+  done < "$1"
+  rm -f "$2.raw"
+}
+log_has_error() { tr -d '\033' < "$1" | sed 's/\[[0-9;]*m//g' | grep -Eq '^[^ ]+ (ERR|FTL|PNC) '; }

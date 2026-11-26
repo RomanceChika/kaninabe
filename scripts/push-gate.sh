@@ -19,8 +19,8 @@
 # Fail closed: a missing gitleaks or actionlint, a missing word list in words mode, and any step that errors (as opposed
 # to finding something) stop the gate. Exit 0 = passed, 1 = a step found something, 2 = the gate could not run.
 # Output is limited to step names, counts, commit short ids, file paths and line numbers. It never prints a matched word,
-# a pattern or a line of scanned text, so there is no `set -x` here and nothing from the word list is echoed. In CI
-# (a public log) gitleaks findings are reduced to rule names and counts.
+# a pattern or a line of scanned text, so there is no `set -x` here and nothing from the word list is echoed. Nothing
+# derived from the output of gitleaks is printed: counts only (a person runs gitleaks themselves for details).
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -69,14 +69,9 @@ clean() {
 # cgit <args...>: git against the REAL repository, in the clean environment. Used only to resolve names (HEAD, --base) to
 # commit ids, with replace refs ignored; everything that reads history goes through the neutral repository (neutral_git).
 cgit() { clean GIT_DIR="$repo_gitdir" git "$@"; }
-# report_ok <file>: a gitleaks report that can be read: not empty, and every line is "<rule> <file>:<line> <short id>".
-# A result that cannot be read is "could not read the result", never "no findings".
-report_ok() { [ -s "$1" ] && grep -q . "$1" && ! grep . "$1" | grep -qvE '^[^ ]+ .+:[0-9]+ [0-9a-f]{0,8}$'; }
-# label: a name from a tool goes into a public log only in a fixed shape; anything else is counted as "other".
-# gl_scanned <log>: the number in gitleaks' "N commits scanned." line (colour codes removed), or nothing. The log is a private
-# temporary file and is never printed.
-gl_scanned() { tr -d '\033' < "$1" | sed 's/\[[0-9;]*m//g' | sed -n 's/.*[^0-9]\([0-9][0-9]*\) commits scanned.*/\1/p' | tail -1; }
-label() { awk '{ if ($0 ~ /^[a-z0-9][a-z0-9-]{0,63}$/) print $0; else print "other" }'; }
+# report_ok <file>: a gitleaks report that can be read: not empty, and every line is the "x" that the template writes for one
+# finding. A result that cannot be read is "could not read the result", never "no findings".
+report_ok() { [ -s "$1" ] && grep -q . "$1" && ! grep . "$1" | grep -qvx x; }
 
 if [ "$mode" = words ]; then
   if [ -n "${SCAN_WORDS_FILE:-}" ] && [ -f "$SCAN_WORDS_FILE" ] && [ -r "$SCAN_WORDS_FILE" ] && [ -s "$SCAN_WORDS_FILE" ]; then :
@@ -123,81 +118,68 @@ fi
 neutral_export "$head_sha" "$tmp/head" || die "could not export HEAD"
 failed=
 
-# Step 1: gitleaks, three ways: the patches of the commits (merges diffed against each parent: -m), each commit message,
-# and the tree of HEAD exported cleanly (not the working tree). Findings exit 99 (so that gitleaks' own errors, which
-# exit 1, are told apart from findings); anything else is "could not run". Reports are templates that hold only the
-# rule, the file, the line and the short commit id; a message is reported by its commit id alone.
+# Step 1: gitleaks, three ways: the lines that the commits add (made here, below), each commit message, and the tree of HEAD
+# exported cleanly (not the working tree). gitleaks is never asked to read the history: the gate makes what is scanned. For each
+# listed commit `git diff-tree` runs in the neutral repository (neutral_added_lines), every status checked, and the added lines
+# of all of them are one stream for `gitleaks stdin`. Findings exit 99 (so that gitleaks' own errors, which exit 1, are told
+# apart from findings); anything else is "could not run", and so is an error line in gitleaks' log with exit 0 or 99. The
+# reports are templates that write an x per finding: the output holds counts, nothing from the tool's own text.
 # Nothing in the scanned tree may change what is read: the configuration is the fixed file next to this script (not
 # .gitleaks.toml of the tree, not GITLEAKS_CONFIG / GITLEAKS_CONFIG_TOML); the ignore file is a path that does not exist
 # (not the default ".", where a .gitleaksignore of the tree would be read); inline `gitleaks:allow` comments are not
 # honoured; no baseline is given. The environment is not the caller's (see clean above), so no GITLEAKS_* variable gets in.
-# gitleaks also reads <source>/.gitleaksignore whatever --gitleaks-ignore-path says, so the history is scanned with the git
-# directory as the source (it holds no such file) and the exported tree has every .gitleaksignore taken out before the scan.
-gitdir=$ng_dir   # the neutral repository: objects only
+# gitleaks also reads <source>/.gitleaksignore whatever --gitleaks-ignore-path says, so the exported tree has every
+# .gitleaksignore taken out before the scan (a stream has no source directory).
 gl_config="$here/gitleaks-gate.toml"
 [ -f "$gl_config" ] && [ -r "$gl_config" ] || die "gitleaks-gate.toml is missing next to the gate"
 # gl <subcommand> <arguments...>: gitleaks with the fixed flags; every path is one quoted argument (spaces are fine).
 gl() {
   gl_sub=$1; shift
-  clean GIT_ATTR_SOURCE="$ng_empty" gitleaks "$gl_sub" --no-banner --redact --exit-code 99 --log-level "${gl_level:-error}" --config "$gl_config" \
+  clean GIT_ATTR_SOURCE="$ng_empty" gitleaks "$gl_sub" --no-banner --redact --exit-code 99 --log-level error --config "$gl_config" \
     --gitleaks-ignore-path "$tmp/no-gitleaksignore" --ignore-gitleaks-allow "$@"
 }
-if [ "$count" -gt 0 ]; then
-  printf '%s\n' '{{ range . }}{{ .RuleID }} {{ .File }}:{{ .StartLine }} {{ printf "%.8s" .Commit }}{{ "\n" }}{{ end }}' > "$tmp/gitleaks.tpl"
-  gl_lines="$tmp/gitleaks.lines"; : > "$gl_lines"
-  gl_msgs=0
-  rc=0
-  gl_level=info
-  gl git --report-format template --report-template "$tmp/gitleaks.tpl" --report-path "$tmp/gitleaks.out" --log-opts="-m $revs" "$gitdir" > /dev/null 2> "$tmp/gl.log" || rc=$?
-  gl_level=error
-  case $rc in
-    0) ;;
-    99) report_ok "$tmp/gitleaks.out" || die "step gitleaks could not read the result"
-        grep . "$tmp/gitleaks.out" >> "$gl_lines"; echo x > "$tmp/gl.found" ;;
-    *) die "step gitleaks could not run (exit $rc)" ;;
+# gl_check <exit status>: what a run's status and log mean. An error line in the log is "could not run" even with exit 0 or 99.
+gl_check() {
+  case $1 in
+    0 | 99) if log_has_error "$tmp/gl.log"; then die "step gitleaks could not run (it logged an error)"; fi ;;
+    *) die "step gitleaks could not run (exit $1)" ;;
   esac
-  # What gitleaks says it scanned is checked against our list: gitleaks exits 0 with "0 commits scanned" when it cannot read
-  # its options. It counts only commits whose patch has something to scan (not a deletion-only or an empty commit), so the
-  # check is: a number it printed, not more than our list, and not 0 when our list adds a text line.
-  scanned=$(gl_scanned "$tmp/gl.log")
-  [ -n "$scanned" ] && [ "$scanned" -le "$count" ] || die "step gitleaks could not confirm what it scanned (it reports ${scanned:-no number}, the list has $count)"
-  if [ "$scanned" -eq 0 ]; then
-    # shellcheck disable=SC2086
-    if neutral_git log -m --format= -p -U0 $revs 2>/dev/null | grep -qE '^\+([^+]|\+[^+ ])'; then
-      die "step gitleaks could not confirm what it scanned (it reports 0, the list adds lines)"
+}
+if [ "$count" -gt 0 ]; then
+  printf '%s\n' '{{ range . }}x{{ "\n" }}{{ end }}' > "$tmp/gitleaks.tpl"
+  patch_n=0
+  neutral_added_lines "$tmp/commits" "$tmp/added.txt" || die "step gitleaks could not run (could not read the patch of a commit)"
+  if [ -s "$tmp/added.txt" ]; then
+    rc=0
+    gl stdin --report-format template --report-template "$tmp/gitleaks.tpl" --report-path "$tmp/gitleaks.out" < "$tmp/added.txt" > /dev/null 2> "$tmp/gl.log" || rc=$?
+    gl_check "$rc"
+    if [ "$rc" = 99 ]; then
+      report_ok "$tmp/gitleaks.out" || die "step gitleaks could not read the result"
+      patch_n=$(grep -c . "$tmp/gitleaks.out" || true); echo x > "$tmp/gl.found"
     fi
   fi
-  rm -f "$tmp/gl.log"
   : > "$tmp/gl.msgs"
   for c in $(cat "$tmp/commits"); do
     neutral_git log -1 --format=%B "$c" > "$tmp/msg" 2>/dev/null || die "step gitleaks could not run (could not read a commit message)"
     rc=0
-    gl stdin < "$tmp/msg" > /dev/null 2>&1 || rc=$?
-    case $rc in 0) ;; 99) echo "$c" | cut -c1-8 >> "$tmp/gl.msgs"; echo x > "$tmp/gl.found" ;; *) die "step gitleaks could not run (exit $rc)" ;; esac
+    gl stdin < "$tmp/msg" > /dev/null 2> "$tmp/gl.log" || rc=$?
+    gl_check "$rc"
+    if [ "$rc" = 99 ]; then echo "$c" | cut -c1-8 >> "$tmp/gl.msgs"; echo x > "$tmp/gl.found"; fi
   done
   find "$tmp/head" -name .gitleaksignore -exec rm -f {} + || die "step gitleaks could not run (could not prepare the export of HEAD)"
   rm -f "$tmp/gitleaks.out"; rc=0; tree_n=0
-  ( cd "$tmp/head" && gl dir --report-format template --report-template "$tmp/gitleaks.tpl" --report-path "$tmp/gitleaks.out" . ) > /dev/null 2>&1 || rc=$?
-  case $rc in
-    0) ;;
-    99) report_ok "$tmp/gitleaks.out" || die "step gitleaks could not read the result"
-        echo x > "$tmp/gl.found"
-        grep . "$tmp/gitleaks.out" > "$tmp/gl.tree"; tree_n=$(wc -l < "$tmp/gl.tree" | tr -d ' ') ;;
-    *) die "step gitleaks could not run (exit $rc)" ;;
-  esac
+  ( cd "$tmp/head" && gl dir --report-format template --report-template "$tmp/gitleaks.tpl" --report-path "$tmp/gitleaks.out" . ) > /dev/null 2> "$tmp/gl.log" || rc=$?
+  gl_check "$rc"
+  if [ "$rc" = 99 ]; then
+    report_ok "$tmp/gitleaks.out" || die "step gitleaks could not read the result"
+    echo x > "$tmp/gl.found"; tree_n=$(grep -c . "$tmp/gitleaks.out" || true)
+  fi
   if [ -f "$tmp/gl.found" ]; then
-    n=$(wc -l < "$gl_lines" | tr -d ' ')
     nm=$(wc -l < "$tmp/gl.msgs" | tr -d ' ')
-    echo "push-gate: step gitleaks: FAILED ($n finding(s) in patches, $nm in commit messages, $tree_n in the tree of HEAD)"
-    # In CI (a public log) only rule names and counts; anywhere else, the places.
-    if [ -n "${CI:-}" ]; then
-      { cat "$gl_lines"; [ ! -f "$tmp/gl.tree" ] || cat "$tmp/gl.tree"; } | cut -d' ' -f1 | label | sort | uniq -c | sed 's/^ *\([0-9]*\) \(.*\)$/  rule \2: \1/'
-    else
-      sed 's/^/  at /' "$gl_lines" | head -50
-      sed 's/^/  commit message of /' "$tmp/gl.msgs"
-      echo "  tree of HEAD: $tree_n finding(s)"
-      [ ! -f "$tmp/gl.tree" ] || sed 's/^\([^ ]*\) \.\/\{0,1\}/  at \1 /' "$tmp/gl.tree" | head -50
-    fi
+    echo "push-gate: step gitleaks: FAILED ($patch_n finding(s) in patches, $nm in commit messages, $tree_n in the tree of HEAD)"
+    # The commits of messages are ids from our own list: named locally, never in CI (a public log).
+    if [ -z "${CI:-}" ]; then sed 's/^/  commit message of /' "$tmp/gl.msgs"; fi
+    echo "  (details: run gitleaks yourself on your own copy, for example: gitleaks git . and gitleaks dir .)"
     failed="gitleaks"
   else
     echo "push-gate: step gitleaks: ok ($count commit(s))"
@@ -248,9 +230,9 @@ else
     0) echo "push-gate: step workflows: ok ($nfiles file(s))" ;;
     1)
       [ -s "$tmp/actionlint.out" ] && ! grep -qvE '^.+:[0-9]+: \[.*\]$' "$tmp/actionlint.out" || die "step workflows could not read the result"
-      echo "push-gate: step workflows: FAILED"
-      if [ -n "${CI:-}" ]; then sed 's/^.*\[\(.*\)\]$/\1/' "$tmp/actionlint.out" | label | sort | uniq -c | sed 's/^ *\([0-9]*\) \(.*\)$/  rule \2: \1/'
-      else sed 's/^/  at /' "$tmp/actionlint.out" | head -50; fi
+      echo "push-gate: step workflows: FAILED ($(wc -l < "$tmp/actionlint.out" | tr -d ' ') problem(s))"
+      # In CI (a public log) the count only; anywhere else, the places.
+      if [ -z "${CI:-}" ]; then sed 's/^/  at /' "$tmp/actionlint.out" | head -50; fi
       failed="${failed:+$failed, }workflows" ;;
     *) die "step workflows could not run (exit $rc)" ;;
   esac

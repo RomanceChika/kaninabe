@@ -55,6 +55,39 @@ jobs:
             sh scripts/scan-pr-text.sh "$RUNNER_TEMP/pr-text"
           fi
           rm -f "$words"
+      # The push-before gate (scripts/push-gate.sh), run here as well: the same script that the pre-push hook runs.
+      # It is added next to the scans above, which stay until this step has been seen passing in a run on the main
+      # branch (development-flow.md, "検査を入れ替えるとき"). Mode `words` when the word list is available, `general`
+      # for a fork's pull request, which cannot be given it. Same handling of the secret as the step above.
+      - name: Install actionlint (pinned, checksum verified) and put the scanners on PATH
+        run: |
+          curl -sSfL -o al.tgz https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          echo "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757  al.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf al.tgz -C "$RUNNER_TEMP/bin" actionlint
+          cp gitleaks "$RUNNER_TEMP/bin/gitleaks"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Push gate (gitleaks, word list and rules over every commit, workflow check)
+        env:
+          SCAN_WORDS: ${{ secrets.SCAN_WORDS }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork == true }}
+        run: |
+          words="$RUNNER_TEMP/scan-words"
+          umask 077
+          if [ -n "$SCAN_WORDS" ]; then
+            printf '%s\n' "$SCAN_WORDS" > "$words"
+            export SCAN_WORDS_FILE="$words"
+            mode=words
+          elif [ "$IS_FORK" = "true" ]; then
+            echo "fork pull request: the word list is not available; the general mode runs"
+            mode=general
+          else
+            echo "SCAN_WORDS is not set"; exit 1
+          fi
+          rc=0
+          sh scripts/push-gate.sh --mode "$mode" --all || rc=$?
+          rm -f "$words"
+          exit "$rc"
 
   checks:
     runs-on: ubuntu-latest

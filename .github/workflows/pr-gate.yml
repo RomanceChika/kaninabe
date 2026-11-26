@@ -35,7 +35,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Name the pull request (first, so that a run that fails later can still be told apart)
-        run: echo "pr-gate: pr $(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")"
+        run: |
+          echo "pr-gate: pr $(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")"
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}

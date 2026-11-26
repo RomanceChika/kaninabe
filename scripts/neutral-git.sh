@@ -6,6 +6,7 @@
 # without the user's and the system's git configuration. A git too old for --attr-source is not worked around: the
 # scans stop, because scanning less is worse than not scanning.
 #
+# (the real repository is $ng_repo, set by the caller)
 # neutral_git_setup <dir>   prepares <dir>/neutral.git; on failure prints the reason in $ng_error and returns 1
 # neutral_git <args...>     runs git (read-only use: grep, ls-tree) against the commits of the real repository
 # neutral_export <sha> <dir> writes the files of the commit into <dir> exactly as committed (no export-ignore, no
@@ -17,13 +18,19 @@ ng_env() {
   env -i PATH="$PATH" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent LC_ALL=C.UTF-8 \
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 "$@"
 }
+# ng_real <command...>: the same, inside the real repository named by $ng_repo (its git directory, found by the caller
+# once, in the caller's environment: see repo-context.sh). Without it the repository is looked for from the current directory.
+ng_repo=${ng_repo:-}
+ng_real() {
+  if [ -n "${ng_repo:-}" ]; then ng_env GIT_DIR="$ng_repo" "$@"; else ng_env "$@"; fi
+}
 neutral_git_setup() {
   ng_empty=$(ng_env git hash-object -t tree /dev/null 2>/dev/null) || { ng_error="could not compute the empty tree"; return 1; }
-  if ! ng_env git --attr-source="$ng_empty" rev-parse --git-dir >/dev/null 2>&1; then
+  if ! ng_real git --attr-source="$ng_empty" rev-parse --git-dir >/dev/null 2>&1; then
     ng_error="this git does not support --attr-source (git 2.40 or newer is needed): not scanning with a weaker scan"
     return 1
   fi
-  ng_objects=$(ng_env git rev-parse --path-format=absolute --git-path objects 2>/dev/null) || { ng_error="could not find the objects of the repository"; return 1; }
+  ng_objects=$(ng_real git rev-parse --path-format=absolute --git-path objects 2>/dev/null) || { ng_error="could not find the objects of the repository"; return 1; }
   ng_dir=$1/neutral.git
   ng_env git init -q --bare "$ng_dir" >/dev/null 2>&1 || { ng_error="could not prepare a neutral git directory"; return 1; }
   printf '%s\n' "$ng_objects" > "$ng_dir/objects/info/alternates" || { ng_error="could not prepare a neutral git directory"; return 1; }

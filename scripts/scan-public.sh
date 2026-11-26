@@ -12,13 +12,20 @@
 set -eu
 # The scan runs with explicit inputs only, not with whatever the caller's environment and git configuration say: it
 # starts itself again under `env -i`, keeping just the variables that are inputs of the scan (the word list, the owner,
-# the quiet switch, PATH and the temporary directory).
-if [ -z "${SCAN_PUBLIC_CLEAN:-}" ]; then
+# the quiet switch, PATH and the temporary directory) and the git directory of the repository, which is decided here once,
+# in the caller's environment (repo-context.sh). The second start is told so by its first ARGUMENT, which only this
+# re-exec passes: a marker in the environment could be set from outside and would skip the clean environment, so there is none.
+if [ "${1:-}" = "--inside-clean-env" ]; then
+  shift
+  ng_repo=${GIT_DIR:-}
+else
+  . "$(dirname "$0")/repo-context.sh"
+  repo_resolve || { echo "scan: $repo_error"; echo "scan-public: ERROR"; exit 2; }
   exec env -i PATH="$PATH" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent LC_ALL=C.UTF-8 \
-    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 SCAN_PUBLIC_CLEAN=1 \
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 GIT_DIR="$repo_gitdir" \
     ${TMPDIR:+"TMPDIR=$TMPDIR"} ${SCAN_WORDS_FILE:+"SCAN_WORDS_FILE=$SCAN_WORDS_FILE"} ${SCAN_OWNER:+"SCAN_OWNER=$SCAN_OWNER"} \
     ${GITHUB_REPOSITORY_OWNER:+"GITHUB_REPOSITORY_OWNER=$GITHUB_REPOSITORY_OWNER"} ${SCAN_QUIET:+"SCAN_QUIET=$SCAN_QUIET"} \
-    sh "$0" "$@"
+    sh "$0" --inside-clean-env "$@"
 fi
 . "$(dirname "$0")/scan-rules.sh"
 . "$(dirname "$0")/neutral-git.sh"

@@ -2,7 +2,10 @@
 # Push-before gate (docs/rules/process/common/development-flow.md, "security"). Install: sh scripts/setup-dev-env.sh
 # Git passes <remote name> <url> as arguments and one line per ref on stdin: <local ref> <local sha> <remote ref> <remote sha>.
 #   - a deletion (local sha all zeros) has nothing to scan and passes;
-#   - anything but the checked-out commit is refused, so that what is scanned and read is what is pushed;
+#   - anything but the checked-out commit is refused, so that what is scanned and read is what is pushed (the pushed object
+#     itself is compared with HEAD, not what it points to: an annotated tag object is not a commit);
+#   - only refs/heads/* may be pushed to (a branch deletion passes): the message of a tag, a note and any other non-branch
+#     object is not scanned, and the object reaches the destination even if the ref update is refused afterwards;
 #   - the content review record (git config kaninabe.contentReviewed) must name that commit: it is written after the
 #     push has been read for publication, and must be written again after any new commit;
 #   - every push of a tag is refused, a deletion included (tags are made and deleted by the tag workflow only);
@@ -22,9 +25,13 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   case "$local_ref $remote_ref" in
     *refs/tags/*) refuse "refusing to push a tag ($remote_ref): tags are created and deleted only by the tag workflow, and a tag message is not scanned" ;;
   esac
+  case $remote_ref in
+    refs/heads/?*) ;;
+    *) refuse "refusing to push to $remote_ref: only branches (refs/heads/*) are pushed; tags, notes, remote-tracking and pull request refs can carry objects that no scan has read" ;;
+  esac
   case $local_sha in *[!0]*) ;; *) continue ;; esac
-  commit=$(git rev-parse --verify -q "$local_sha^{commit}" || true)
-  if [ -z "$commit" ] || [ "$commit" != "$head" ]; then
+  # The object itself, not what it points to: an annotated tag object peels to a commit and would pass as HEAD.
+  if [ -z "$head" ] || [ "$local_sha" != "$head" ]; then
     refuse "refusing to push $(short "$local_sha"): it is not the checked-out commit; check it out first"
   fi
   reviewed=$(git config --get kaninabe.contentReviewed || true)
@@ -54,6 +61,6 @@ fi
 url=${2:-}
 [ -n "$url" ] || refuse "git did not pass the URL of the destination"
 # shellcheck disable=SC2086
-range_args=$(sh "$here/../scripts/push-range.sh" --gate-args "$url" $remote_shas) || exit 1
+range_args=$(sh "$here/../scripts/push-range.sh" --gate-args --head "$head" "$url" $remote_shas) || exit 1
 # shellcheck disable=SC2086
-exec sh "$here/../scripts/push-gate.sh" --mode words $range_args
+exec sh "$here/../scripts/push-gate.sh" --mode words --head "$head" $range_args

@@ -14,6 +14,7 @@ backend にも frontend にも属さないプロセス文書の置き場であ�
 | パス | 内容 |
 |---|---|
 | [ai_execution_guidelines.md](./ai_execution_guidelines.md) | 全 Skill・playbook 実行時の共通ガイドライン。個別の手順書に先立って読む |
+| [development-flow.md](./development-flow.md) | 開発の流れ。branch・review・CI の段と起動の条件・merge の条件・release の関門 |
 | [specification/](./specification/README.md) | スコープに閉じない仕様の standards(基準)と playbooks(手順)。ドメイン仕様(`docs/specs/domain/`)の書き方の置き場 |
 | [tooling/](./tooling/README.md) | 開発ツール(検証器・生成器・静的解析)の品質基準・拡張手順・利用ガイドの置き場。内訳は standards / playbooks / guides の3箱 |
 

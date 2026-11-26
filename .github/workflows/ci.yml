@@ -24,9 +24,10 @@ jobs:
           echo "79a3ab579b53f71efd634f3aaf7e04a0fa0cf206b7ed434638d1547a2470a66e  gl.tgz" | sha256sum -c -
           tar -xzf gl.tgz gitleaks
       - name: Scan the whole tree and the history
+        # The scans are the same; only the output changes: a count and rule names, never gitleaks' own messages (a public log).
         run: |
-          ./gitleaks dir . --no-banner --redact
-          ./gitleaks git . --no-banner --redact
+          GL_BIN=./gitleaks sh scripts/gitleaks-public.sh dir .
+          GL_BIN=./gitleaks sh scripts/gitleaks-public.sh git .
       # Product words, personal data and local paths, over every commit. The word list is the Actions secret SCAN_WORDS:
       # it is read only in this step, written to a temp file, never echoed, and the script prints only
       # a short commit id, a file path, a line number and counts (the logs of a public repository are public).
@@ -46,7 +47,7 @@ jobs:
           else
             echo "SCAN_WORDS is not set"; exit 1
           fi
-          sh scripts/scan-public.sh
+          SCAN_QUIET=1 sh scripts/scan-public.sh
           # The squash commit on the base branch is made at merge time from this title and body, so it is checked here,
           # before the merge (scan-public.sh above sees only the commits that already exist).
           # Read from the event file, not from env: the log prints a step's env, and the text is never printed.
@@ -71,7 +72,12 @@ jobs:
       # main branch (2) is given the word list.
       - name: Push gate, general mode
         run: sh scripts/push-gate.sh --mode general --all
-      # (2) The main branch only: the word list is the Actions secret, written to a temp file, never echoed.
+      # (2) The word list is the Actions secret, written to a temp file, never echoed. The `if` below only keeps this step from
+      # running by mistake. IT IS NOT A BOUNDARY: a branch or a pull request from this repository can change this file
+      # and still read the secret. The boundary (the word list readable only by reviewed definitions that run from the
+      # base branch, for example an environment secret restricted to the main branch) comes with the CI rework and needs
+      # a repository setting that only the owner can make (docs/known-gaps.md, 15). Until then the word list is readable
+      # by any workflow run of this repository.
       - name: Push gate, words mode (main branch only)
         if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
         env:

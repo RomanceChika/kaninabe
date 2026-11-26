@@ -10,6 +10,16 @@
 #        scan-public.sh --revs <rev-list arguments...>   (scans exactly the commits `git rev-list <arguments>` names;
 #        used by push-gate.sh to hand over the same commit set as its other steps)
 set -eu
+# The scan runs with explicit inputs only, not with whatever the caller's environment and git configuration say: it
+# starts itself again under `env -i`, keeping just the variables that are inputs of the scan (the word list, the owner,
+# the quiet switch, PATH and the temporary directory).
+if [ -z "${SCAN_PUBLIC_CLEAN:-}" ]; then
+  exec env -i PATH="$PATH" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent LC_ALL=C.UTF-8 \
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 SCAN_PUBLIC_CLEAN=1 \
+    ${TMPDIR:+"TMPDIR=$TMPDIR"} ${SCAN_WORDS_FILE:+"SCAN_WORDS_FILE=$SCAN_WORDS_FILE"} ${SCAN_OWNER:+"SCAN_OWNER=$SCAN_OWNER"} \
+    ${GITHUB_REPOSITORY_OWNER:+"GITHUB_REPOSITORY_OWNER=$GITHUB_REPOSITORY_OWNER"} ${SCAN_QUIET:+"SCAN_QUIET=$SCAN_QUIET"} \
+    sh "$0" "$@"
+fi
 . "$(dirname "$0")/scan-rules.sh"
 . "$(dirname "$0")/neutral-git.sh"
 if [ "${1:-}" = "--revs" ]; then shift; range="$*"; else range=${1:+$1..}HEAD; fi
@@ -51,7 +61,7 @@ for c in $(cat "$commits"); do
   while IFS= read -r line; do
     prefix=${line%% *}; prefix=${prefix#@}; re=${line#* }
     gg -IlE "$re" "$c" -- "$prefix"; n=$(lines)
-    if [ "$n" != "0" ]; then echo "scoped word list: $n file(s) under $prefix in $short"; gg -InE "$re" "$c" -- "$prefix"; show_at; fail=1; fi
+    if [ "$n" != "0" ]; then if [ -n "${SCAN_QUIET:-}" ]; then echo "scoped word list: $n file(s) in $short"; else echo "scoped word list: $n file(s) under $prefix in $short"; fi; gg -InE "$re" "$c" -- "$prefix"; show_at; fail=1; fi
   done < "$scoped"
   if git log -1 --format='%B' "$c" | scan_attribution; then echo "attribution line in $short"; fail=1; fi
   # Author and committer: a GitHub noreply address naming no AI. A squash merge turns each into a co-author trailer.

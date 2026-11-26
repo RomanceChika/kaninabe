@@ -1,7 +1,7 @@
 #!/bin/sh
 # The push-before gate: the one script that runs every check that must be green before commits are pushed to a public
 # repository (docs/rules/process/common/development-flow.md, "security"). The hook (.githooks/pre-push) and CI call it.
-# Usage: push-gate.sh --mode words|general (--base <sha> | --not-on-remote <remote> | --all)
+# Usage: push-gate.sh --mode words|general (--base <sha> | --not-on <sha>,<sha>... | --all)
 #   --mode words    the word list (the file named by $SCAN_WORDS_FILE) is required; without it the gate stops.
 #                   Used by the hook, pr-gate and the CI of the main branch.
 #   --mode general  the rules without the word list (the list is never read, even if set). For pull requests and
@@ -30,16 +30,26 @@ while [ $# -gt 0 ]; do
   case $1 in
     --mode) [ $# -ge 2 ] || die "--mode needs a value"; mode=$2; mode_set=1; shift 2 ;;
     --base) [ $# -ge 2 ] || die "--base needs a value"; range_kind=base; range_val=$2; n_ranges=$((n_ranges + 1)); shift 2 ;;
-    --not-on-remote) [ $# -ge 2 ] || die "--not-on-remote needs a value"; range_kind=remote; range_val=$2; n_ranges=$((n_ranges + 1)); shift 2 ;;
+    --not-on) [ $# -ge 2 ] || die "--not-on needs a value"; range_kind=noton; range_val=$2; n_ranges=$((n_ranges + 1)); shift 2 ;;
     --all) range_kind=all; n_ranges=$((n_ranges + 1)); shift ;;
-    *) die "unknown argument (usage: push-gate.sh --mode words|general --base <sha> | --not-on-remote <remote> | --all)" ;;
+    *) die "unknown argument (usage: push-gate.sh --mode words|general --base <sha> | --not-on <sha>,<sha>... | --all)" ;;
   esac
 done
 [ "$mode_set" = 1 ] || die "--mode is required (words or general)"
 case $mode in words | general) ;; *) die "unknown mode \"$mode\" (words or general)" ;; esac
-[ "$n_ranges" = 1 ] || die "exactly one of --base, --not-on-remote, --all is required"
+[ "$n_ranges" = 1 ] || die "exactly one of --base, --not-on, --all is required"
 
-top=$(git rev-parse --show-toplevel 2>/dev/null) || die "not inside a git repository"
+tmp=$(mktemp -d 2>/dev/null || TMPDIR=/tmp mktemp -d) || die "could not make a temporary directory"
+trap 'rm -rf "$tmp"' EXIT
+mkdir "$tmp/home"
+# clean <command...>: every tool and every git command of the gate runs with an environment of explicit inputs only,
+# not with the caller's (no GIT_*, GREP_*, GITLEAKS_* or anything else), without the user's or the system's git
+# configuration, and with the locale and the temporary directory fixed.
+clean() {
+  env -i PATH="$PATH" HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/home/.config" TMPDIR="$tmp" LC_ALL=C.UTF-8 \
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 "$@"
+}
+top=$(clean git rev-parse --show-toplevel 2>/dev/null) || die "not inside a git repository"
 cd "$top"
 
 if [ "$mode" = words ]; then
@@ -57,26 +67,27 @@ command -v actionlint >/dev/null 2>&1 || die "actionlint is not on PATH"
 case $range_kind in
   base)
     case $range_val in -*) die "--base is not a commit of this repository" ;; esac
-    base=$(git rev-parse --verify -q "$range_val^{commit}") || die "--base is not a commit of this repository"
+    base=$(clean git rev-parse --verify -q "$range_val^{commit}") || die "--base is not a commit of this repository"
     revs="$base..HEAD" ;;
-  remote)
-    case $range_val in
-      '' | -* | *[!A-Za-z0-9._-]*) die "not a valid remote name" ;;
-    esac
-    revs="HEAD --not --remotes=$range_val" ;;
+  noton)
+    # The commits that the destination is known to have (push-range.sh decides which): everything reachable from HEAD
+    # except what is reachable from them.
+    printf '%s\n' "$range_val" | grep -Eq '^([0-9a-f]{40}(,[0-9a-f]{40})*|[0-9a-f]{64}(,[0-9a-f]{64})*)$' || die "--not-on needs full commit ids, comma separated"
+    for sha in $(printf '%s' "$range_val" | tr ',' ' '); do
+      clean git rev-parse --verify -q "$sha^{commit}" >/dev/null || die "--not-on is not a commit of this repository"
+    done
+    revs="HEAD --not $(printf '%s' "$range_val" | tr ',' ' ')" ;;
   all) revs="HEAD" ;;
 esac
-git rev-parse --verify -q 'HEAD^{commit}' >/dev/null || die "HEAD is not a commit"
+clean git rev-parse --verify -q 'HEAD^{commit}' >/dev/null || die "HEAD is not a commit"
 
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
 # The list is written to a file and the status checked: a failing rev-list is not an empty range.
-git rev-list $revs > "$tmp/commits" 2>/dev/null || die "could not list the commits"
+clean git rev-list $revs > "$tmp/commits" 2>/dev/null || die "could not list the commits"
 count=$(wc -l < "$tmp/commits" | tr -d ' ')
 # The files of HEAD, exactly as committed (see neutral-git.sh: git archive would honour export-ignore and export-subst
 # attributes of the tree). Both the tree scan and the workflow check read this export.
 neutral_git_setup "$tmp" || die "$ng_error"
-head_sha=$(git rev-parse --verify -q 'HEAD^{commit}') || die "HEAD is not a commit"
+head_sha=$(clean git rev-parse --verify -q 'HEAD^{commit}') || die "HEAD is not a commit"
 neutral_export "$head_sha" "$tmp/head" || die "could not export HEAD"
 failed=
 
@@ -87,17 +98,16 @@ failed=
 # Nothing in the scanned tree may change what is read: the configuration is the fixed file next to this script (not
 # .gitleaks.toml of the tree, not GITLEAKS_CONFIG / GITLEAKS_CONFIG_TOML); the ignore file is a path that does not exist
 # (not the default ".", where a .gitleaksignore of the tree would be read); inline `gitleaks:allow` comments are not
-# honoured; no baseline is given. Every GITLEAKS_* variable is dropped.
-for v in $(env | sed -n 's/^\(GITLEAKS_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
+# honoured; no baseline is given. The environment is not the caller's (see clean above), so no GITLEAKS_* variable gets in.
 # gitleaks also reads <source>/.gitleaksignore whatever --gitleaks-ignore-path says, so the history is scanned with the git
 # directory as the source (it holds no such file) and the exported tree has every .gitleaksignore taken out before the scan.
-gitdir=$(git rev-parse --absolute-git-dir) || die "could not find the git directory"
+gitdir=$(clean git rev-parse --absolute-git-dir) || die "could not find the git directory"
 gl_config="$here/gitleaks-gate.toml"
 [ -f "$gl_config" ] && [ -r "$gl_config" ] || die "gitleaks-gate.toml is missing next to the gate"
 # gl <subcommand> <arguments...>: gitleaks with the fixed flags; every path is one quoted argument (spaces are fine).
 gl() {
   gl_sub=$1; shift
-  gitleaks "$gl_sub" --no-banner --redact --exit-code 99 --log-level error --config "$gl_config" \
+  clean gitleaks "$gl_sub" --no-banner --redact --exit-code 99 --log-level error --config "$gl_config" \
     --gitleaks-ignore-path "$tmp/no-gitleaksignore" --ignore-gitleaks-allow "$@"
 }
 if [ "$count" -gt 0 ]; then
@@ -109,7 +119,7 @@ if [ "$count" -gt 0 ]; then
   case $rc in 0) ;; 99) [ ! -f "$tmp/gitleaks.out" ] || grep . "$tmp/gitleaks.out" >> "$gl_lines" || true; echo x > "$tmp/gl.found" ;; *) die "step gitleaks could not run (exit $rc)" ;; esac
   : > "$tmp/gl.msgs"
   for c in $(cat "$tmp/commits"); do
-    git log -1 --format=%B "$c" > "$tmp/msg" 2>/dev/null || die "step gitleaks could not run (could not read a commit message)"
+    clean git log -1 --format=%B "$c" > "$tmp/msg" 2>/dev/null || die "step gitleaks could not run (could not read a commit message)"
     rc=0
     gl stdin < "$tmp/msg" > /dev/null 2>&1 || rc=$?
     case $rc in 0) ;; 99) echo "$c" | cut -c1-8 >> "$tmp/gl.msgs"; echo x > "$tmp/gl.found" ;; *) die "step gitleaks could not run (exit $rc)" ;; esac
@@ -151,7 +161,7 @@ if [ "$count" -gt 0 ]; then
   # shellcheck disable=SC2086
   # In CI (a public log) scan-public gives counts only (SCAN_QUIET); anywhere else it names places.
   if [ -n "${CI:-}" ]; then SCAN_QUIET=1; export SCAN_QUIET; fi
-  sh "$here/scan-public.sh" --revs $revs > "$tmp/scan-public.out" 2>&1 || rc=$?
+  clean ${SCAN_WORDS_FILE:+"SCAN_WORDS_FILE=$SCAN_WORDS_FILE"} ${SCAN_OWNER:+"SCAN_OWNER=$SCAN_OWNER"} ${GITHUB_REPOSITORY_OWNER:+"GITHUB_REPOSITORY_OWNER=$GITHUB_REPOSITORY_OWNER"} ${SCAN_QUIET:+"SCAN_QUIET=$SCAN_QUIET"} sh "$here/scan-public.sh" --revs $revs > "$tmp/scan-public.out" 2>&1 || rc=$?
   cat "$tmp/scan-public.out"
   case $rc in
     0) echo "push-gate: step scan-public: ok ($count commit(s))" ;;
@@ -166,7 +176,7 @@ fi
 # actionlint's own config file is not extracted, so that a file in the tree cannot switch checks off; the shellcheck
 # and pyflakes integrations are off so that the result does not depend on what else is installed. The report template
 # holds only the file, the line and the kind of problem, never the message or the source line.
-files=$(git ls-tree -r --name-only HEAD -- .github/workflows | grep -E '\.ya?ml$' || true)
+files=$(clean git ls-tree -r --name-only HEAD -- .github/workflows | grep -E '\.ya?ml$' || true)
 if [ -z "$files" ]; then
   echo "push-gate: step workflows: ok (no workflow files)"
 else
@@ -179,7 +189,7 @@ else
   rm -f "$tmp/tree/.github/actionlint.yaml" "$tmp/tree/.github/actionlint.yml"
   rc=0
   # shellcheck disable=SC2086
-  ( cd "$tmp/tree" && actionlint -no-color -shellcheck= -pyflakes= \
+  ( cd "$tmp/tree" && clean actionlint -no-color -shellcheck= -pyflakes= \
       -format '{{range $e := .}}{{$e.Filepath}}:{{$e.Line}}: [{{$e.Kind}}]|{{end}}' $files ) > "$tmp/actionlint.raw" 2>/dev/null || rc=$?
   # (actionlint cannot be given a line feed or a \n escape in the template; entries are cut at '|' here.)
   tr '|' '\n' < "$tmp/actionlint.raw" | grep . > "$tmp/actionlint.out" || true

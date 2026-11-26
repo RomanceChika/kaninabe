@@ -5,24 +5,24 @@
 #   - anything but the checked-out commit is refused, so that what is scanned and read is what is pushed;
 #   - the content review record (git config kaninabe.contentReviewed) must name that commit: it is written after the
 #     push has been read for publication, and must be written again after any new commit;
-#   - a tag push is refused (tags are made by the tag workflow only);
-#   - then the gate runs, always in words mode (no way to ask for general mode here), over the commits the remote does
-#     not have. The word list is $SCAN_WORDS_FILE or git config kaninabe.scanWords; the owner is $SCAN_OWNER or
+#   - every push of a tag is refused, a deletion included (tags are made and deleted by the tag workflow only);
+#   - then the gate runs, always in words mode (no way to ask for general mode here), over the commits that the destination does
+#     not itself say it has (scripts/push-range.sh prints exactly that set, which is also what the content reviewer reads). The word list is $SCAN_WORDS_FILE or git config kaninabe.scanWords; the owner is $SCAN_OWNER or
 #     kaninabe.scanOwner. Skipping this hook (--no-verify, no hooksPath) is forbidden by rule; it cannot be prevented.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
-remote=${1:-}
 head=$(git rev-parse --verify -q 'HEAD^{commit}' || true)
 short() { printf '%s' "$1" | cut -c1-8; }
 refuse() { echo "pre-push: $*" >&2; exit 1; }
 
 pushing=0
+remote_shas=
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ -n "${local_sha:-}" ] || continue
-  case $local_sha in *[!0]*) ;; *) continue ;; esac
   case "$local_ref $remote_ref" in
-    *refs/tags/*) refuse "refusing to push a tag ($remote_ref): tags are created only by the tag workflow, and a tag message is not scanned" ;;
+    *refs/tags/*) refuse "refusing to push a tag ($remote_ref): tags are created and deleted only by the tag workflow, and a tag message is not scanned" ;;
   esac
+  case $local_sha in *[!0]*) ;; *) continue ;; esac
   commit=$(git rev-parse --verify -q "$local_sha^{commit}" || true)
   if [ -z "$commit" ] || [ "$commit" != "$head" ]; then
     refuse "refusing to push $(short "$local_sha"): it is not the checked-out commit; check it out first"
@@ -32,6 +32,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     echo "pre-push: the content review record (kaninabe.contentReviewed) does not name $(short "$head")" >&2
     refuse "have the push read for publication, then run: git config kaninabe.contentReviewed $head"
   fi
+  case $remote_sha in *[!0]*) remote_shas="$remote_shas $remote_sha" ;; esac
   pushing=1
 done
 [ "$pushing" = 1 ] || exit 0
@@ -47,13 +48,12 @@ fi
 [ -z "${SCAN_WORDS_FILE:-}" ] || export SCAN_WORDS_FILE
 [ -z "${SCAN_OWNER:-}" ] || export SCAN_OWNER
 
-# The commits the remote already has are left out only when the URL being pushed to is the remote's fetch URL and also
-# its push URL: with a separate pushurl, what the fetch side has is not necessarily on the push destination. Anything
-# else (a bare URL, a name that is not a remote, differing URLs) scans everything (the fail-safe).
+# Which commits: the ones the destination does not itself say it has (push-range.sh asks it now, with the URL git
+# passes as $2 and the remote shas of the refs being pushed; remote-tracking refs are never consulted). If the destination
+# cannot be asked, or the history cannot be read to the end, push-range.sh stops with a reason and so does the push.
 url=${2:-}
-if [ -n "$remote" ] && [ -n "$url" ] \
-   && fetch_url=$(git remote get-url "$remote" 2>/dev/null) && push_url=$(git remote get-url --push "$remote" 2>/dev/null) \
-   && [ "$url" = "$fetch_url" ] && [ "$url" = "$push_url" ]; then
-  exec sh "$here/../scripts/push-gate.sh" --mode words --not-on-remote "$remote"
-fi
-exec sh "$here/../scripts/push-gate.sh" --mode words --all
+[ -n "$url" ] || refuse "git did not pass the URL of the destination"
+# shellcheck disable=SC2086
+range_args=$(sh "$here/../scripts/push-range.sh" --gate-args "$url" $remote_shas) || exit 1
+# shellcheck disable=SC2086
+exec sh "$here/../scripts/push-gate.sh" --mode words $range_args

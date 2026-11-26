@@ -1,7 +1,8 @@
 /**
- * Tests of scripts/push-gate.sh with the REAL gitleaks and actionlint (the other file uses fakes, which cannot show
- * that the gate asks the real tools the right questions). These tests do not skip: without the two tools on PATH they
- * fail with one line saying how to install them (scripts/setup-dev-env.sh).
+ * VERDICT tests of the push-before gate: scripts/push-gate.sh and scripts/gitleaks-public.sh with the REAL gitleaks and
+ * actionlint. The wiring tests (push-gate-wiring.test.mjs) use fakes, which cannot show that the gate's questions get
+ * the right answers from a real scanner; these can. They do not skip: without the two tools on PATH they fail with one
+ * line saying how to install them (scripts/setup-dev-env.sh).
  *
  * Fake keys are assembled at run time from pieces and written only into throwaway repositories, so no key-shaped text
  * is committed here (push protection and the secret scan of this repository stay quiet on this file).
@@ -140,16 +141,15 @@ describe('push-gate.sh with the real tools', () => {
     assert.ok(!r.out.includes('echo'), 'no line of the file is printed');
   });
 
-  it('--not-on-remote leaves out commits the remote has, and takes everything when it has no refs', () => {
+  it('--not-on leaves out the commits it names, and takes everything with --all', () => {
     const key = fakeKey();
     const pushed = commit({ 'conf.txt': `token = ${key}\n` });
     git('rm', '-q', 'conf.txt');
     git('commit', '-q', '-m', 'remove');
     commit({ 'b.txt': 'two\n' });
-    stoppedOnKey(general('--not-on-remote', 'origin'), key);
-    git('update-ref', 'refs/remotes/origin/main', pushed);
-    const r = general('--not-on-remote', 'origin');
-    assert.equal(r.status, 0, `the commit that the remote has is not scanned: ${r.out}`);
+    stoppedOnKey(general(), key);
+    const r = general('--not-on', pushed);
+    assert.equal(r.status, 0, `the commit that the destination has is not scanned: ${r.out}`);
     assert.ok(r.out.includes('(mode general, 2 commit(s))'), r.out);
   });
 });
@@ -237,10 +237,9 @@ describe('push-gate.sh with the real tools: what is scanned does not depend on t
     const key = fakeKey();
     commit({ '.gitattributes': 'conf.dat export-ignore\n', 'conf.dat': `token = ${key}\n` });
     const pushed = git('rev-parse', 'HEAD');
-    git('update-ref', 'refs/remotes/origin/main', pushed);
     commit({ 'b.txt': 'two\n' });
-    // The history scan leaves the commit out (the remote has it); only the tree of HEAD can see the key.
-    stoppedOnKey(general('--not-on-remote', 'origin'), key);
+    // The history scan leaves the commit out (the destination has it); only the tree of HEAD can see the key.
+    stoppedOnKey(general('--not-on', pushed), key);
   });
 
   it('an export-ignore attribute does not hide a workflow from actionlint', () => {
@@ -284,29 +283,140 @@ describe('push-gate.sh with the real tools: filter=lfs in the tree does not make
   it('an attribute added by a later commit (the tree scan alone sees the key: the remote has the earlier commit)', () => {
     const key = fakeKey();
     commit({ 'x.cfg': `token = ${key}\n` });
-    git('update-ref', 'refs/remotes/origin/main', git('rev-parse', 'HEAD'));
+    const earlier = git('rev-parse', 'HEAD');
     commit({ '.gitattributes': '* filter=lfs\n' });
-    stoppedOnKey(general('--not-on-remote', 'origin'), key);
+    stoppedOnKey(general('--not-on', earlier), key);
   });
 
   it('a nested .gitattributes', () => {
     const key = fakeKey();
     commit({ 'sub/dir/.gitattributes': '* filter=lfs\n', 'sub/dir/x.cfg': `token = ${key}\n` });
     const pushed = git('rev-parse', 'HEAD');
-    git('update-ref', 'refs/remotes/origin/main', pushed);
     commit({ 'b.txt': 'two\n' });
-    stoppedOnKey(general('--not-on-remote', 'origin'), key);
+    stoppedOnKey(general('--not-on', pushed), key);
     stoppedOnKey(general(), key);
   });
 
   it('with an LFS-style smudge filter in the user\'s git configuration, the export of HEAD still holds the committed bytes', () => {
     const key = fakeKey();
     commit({ '.gitattributes': '*.cfg filter=lfs\n', 'x.cfg': `token = ${key}\n` });
-    git('update-ref', 'refs/remotes/origin/main', git('rev-parse', 'HEAD'));
+    const pushedLfs = git('rev-parse', 'HEAD');
     commit({ 'b.txt': 'two\n' });
     const cfg = path.join(dir, 'lfs-gitconfig');
     writeFileSync(cfg, '[filter "lfs"]\n\tclean = cat\n\tsmudge = sh -c \'cat >/dev/null; echo pointer\'\n\trequired = true\n');
-    const r = gateRun(['--mode', 'general', '--not-on-remote', 'origin'], { GIT_CONFIG_GLOBAL: cfg });
+    const r = gateRun(['--mode', 'general', '--not-on', pushedLfs], { GIT_CONFIG_GLOBAL: cfg });
     stoppedOnKey(r, key);
+  });
+});
+
+describe('push-gate.sh with the real tools: the same commit gets the same verdict in a hostile setting and a clean one', () => {
+  const WORD = 'zzgatewordzz';
+  const ALLOW_ALL = '[extend]\nuseDefault = true\n[allowlist]\npaths = [".*"]\n';
+  const nonexistent = path.join(tmpdir(), 'push-gate-no-such-path');
+  /** In-tree files that try to change what is scanned. */
+  const inTree = () => ({
+    '.gitattributes': '* binary -diff export-ignore filter=lfs\n',
+    '.gitleaks.toml': ALLOW_ALL,
+    '.gitleaksignore': 'x:y:z:1\n',
+  });
+  /** Settings outside the tree: environment variables and configuration files, each a table row. */
+  const hostile = () => {
+    const lfs = path.join(dir, 'lfs-config');
+    writeFileSync(lfs, '[filter "lfs"]\n\tclean = cat\n\tsmudge = sh -c \'cat >/dev/null; echo pointer\'\n\trequired = true\n[diff]\n\tnoprefix = true\n\tmnemonicPrefix = true\n[grep]\n\tpatternType = fixed\n');
+    const allow = path.join(dir, 'allow.toml');
+    writeFileSync(allow, ALLOW_ALL);
+    const xdg = path.join(dir, 'xdg');
+    mkdirSync(path.join(xdg, 'git'), { recursive: true });
+    writeFileSync(path.join(xdg, 'git', 'attributes'), '* binary\n');
+    writeFileSync(path.join(xdg, 'git', 'config'), '[core]\n\tattributesFile = ' + path.join(xdg, 'git', 'attributes') + '\n');
+    return {
+      'GITLEAKS_CONFIG': { GITLEAKS_CONFIG: allow },
+      'GITLEAKS_CONFIG_TOML': { GITLEAKS_CONFIG_TOML: ALLOW_ALL },
+      'GITLEAKS_BASELINE_PATH': { GITLEAKS_BASELINE_PATH: nonexistent },
+      'GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE': { GIT_DIR: nonexistent, GIT_WORK_TREE: nonexistent, GIT_INDEX_FILE: nonexistent },
+      'GIT_ATTR_SOURCE': { GIT_ATTR_SOURCE: 'no-such-tree' },
+      'GIT_CONFIG_COUNT injection': { GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'core.attributesFile', GIT_CONFIG_VALUE_0: nonexistent, GIT_CONFIG_KEY_1: 'diff.external', GIT_CONFIG_VALUE_1: 'false' },
+      'GIT_CONFIG_GLOBAL with LFS filters and diff settings': { GIT_CONFIG_GLOBAL: lfs },
+      'XDG_CONFIG_HOME / HOME git config': { XDG_CONFIG_HOME: xdg, HOME: xdg },
+      'GREP_OPTIONS': { GREP_OPTIONS: '-v' },
+      'GIT_EXTERNAL_DIFF / PAGER': { GIT_EXTERNAL_DIFF: 'false', GIT_PAGER: 'false', PAGER: 'false' },
+      'TMPDIR': { TMPDIR: nonexistent },
+    };
+  };
+  const verdict = (r) => ({
+    status: r.status,
+    gitleaks: /push-gate: step gitleaks: FAILED \(\d+ finding\(s\) in patches, \d+ in commit messages, \d+ in the tree of HEAD\)/.exec(r.out)?.[0],
+    wordList: r.out.includes('word list: 1 file(s)'),
+    tail: /push-gate: FAILED \([^)]*\)/.exec(r.out)?.[0],
+  });
+  const words = () => {
+    const f = path.join(dir, 'words.txt');
+    writeFileSync(f, `${WORD}\n`);
+    return { SCAN_WORDS_FILE: f };
+  };
+
+  const setupRepo = (withTreeTricks) => {
+    repo = path.join(dir, withTreeTricks ? 'hostile-repo' : 'clean-repo');
+    mkdirSync(repo);
+    git('init', '-q', '-b', 'main');
+    const key = fakeKey();
+    commit({ ...(withTreeTricks ? inTree() : {}), 'conf.txt': `token = ${key}\n`, 'notes.txt': `${WORD}\n` });
+    return key;
+  };
+
+  it('one table: every hostile row, and all of them at once, give the verdict of the clean setting', () => {
+    const cleanKey = setupRepo(false);
+    const fakeKeyOf = () => cleanKey;
+    const cleanVerdict = verdict(gateRun(['--mode', 'words', '--all'], words()));
+    assert.equal(cleanVerdict.status, 1);
+    assert.ok(cleanVerdict.gitleaks && cleanVerdict.wordList && cleanVerdict.tail, JSON.stringify(cleanVerdict));
+    const rows = hostile();
+    const all = Object.assign({}, ...Object.values(rows));
+    delete all.GIT_ATTR_SOURCE; // the combined row keeps one value per variable; the single rows above cover each
+    const table = { ...rows, 'ALL OF THEM AT ONCE': all };
+    for (const withTreeTricks of [false, true]) {
+      const key = withTreeTricks ? setupRepo(true) : fakeKeyOf(repo);
+      for (const [name, extra] of Object.entries(table)) {
+        const r = gateRun(['--mode', 'words', '--all'], { ...words(), ...extra });
+        assert.deepEqual(verdict(r), cleanVerdict, `${name}${withTreeTricks ? ' (with hostile files in the tree)' : ''} changed the verdict: ${r.out}`);
+        assert.ok(!r.out.includes(key.slice(4, 20)), 'the key leaked into the output');
+      }
+    }
+  });
+});
+
+describe('scripts/gitleaks-public.sh: what the old CI steps print, with the real gitleaks', () => {
+  const run = (args, cwd = repo) => {
+    const r = spawnSync('/bin/sh', [path.join(path.dirname(gate), 'gitleaks-public.sh'), ...args], { cwd, encoding: 'utf8', env: env() });
+    return { status: r.status, out: r.stdout + r.stderr };
+  };
+  const secretRepo = (key) => {
+    mkdirSync(path.join(repo, 'secret-dir'));
+    git('config', 'user.name', 'Some Author');
+    commit({ 'secret-dir/conf.txt': `note token = ${key} trailing words\n` }, 'a message');
+  };
+
+  it('a finding prints a rule name and a count, and no path, commit id, author, line or key', () => {
+    const key = fakeKey();
+    secretRepo(key);
+    for (const mode of ['dir', 'git']) {
+      const r = run([mode, '.']);
+      assert.equal(r.status, 1, r.out);
+      assert.ok(r.out.includes(`gitleaks ${mode}: FAILED (1 finding(s))`), r.out);
+      assert.ok(r.out.includes('rule github-pat: 1'), r.out);
+      for (const leak of ['secret-dir', 'conf.txt', 'Some Author', 'trailing words', key.slice(4, 20), git('rev-parse', 'HEAD').slice(0, 8)]) {
+        assert.ok(!r.out.includes(leak), `"${leak}" reached the output: ${r.out}`);
+      }
+    }
+  });
+
+  it('a clean tree prints ok; an error prints the exit code and no path', () => {
+    commit({ 'a.txt': 'one\n' });
+    assert.ok(run(['dir', '.']).out.includes('gitleaks dir: ok'));
+    const r = run(['dir', path.join(dir, 'secret-missing-dir')]);
+    assert.equal(r.status, 2, r.out);
+    assert.ok(/gitleaks dir: could not run \(exit \d+\)/.test(r.out), r.out);
+    assert.ok(!r.out.includes('secret-missing-dir'), r.out);
+    assert.equal(run(['nonsense']).status, 2);
   });
 });

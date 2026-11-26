@@ -1,15 +1,19 @@
 /**
- * Tests of the push-before gate: scripts/push-gate.sh, .githooks/pre-push and scripts/setup-dev-env.sh.
+ * WIRING tests of the push-before gate: scripts/push-gate.sh, scripts/push-range.sh, .githooks/pre-push and
+ * scripts/setup-dev-env.sh, with FAKE gitleaks and actionlint on PATH. They show that the scripts ask the tools the
+ * right questions in the right order, stop for the stated reason, and print only what may be printed. They cannot show
+ * that a real scanner finds anything: that is the job of push-gate-verdict.test.mjs (real tools, real verdicts).
  *
  * The gate stops for the stated reason (the tests read the reason line, not just the exit code); a scan that cannot
  * run is never a pass; every commit of the range is scanned, the intermediate ones too; the output never repeats a
- * matched word. The hook refuses anything but the checked-out commit, wants the content review record to name it,
- * and always runs the gate in words mode. The setup script refuses a download whose checksum is not the pinned one.
+ * matched word. The hook refuses anything but the checked-out commit, every tag push, wants the content review record
+ * to name the pushed commit, asks the destination which commits it has, and always runs the gate in words mode. The
+ * setup script refuses a download whose checksum is not the pinned one.
  *
  * Each test builds a throwaway git repository under a temp dir, with a PATH that holds a short list of ordinary tools
- * and fake `gitleaks` / `actionlint` whose behaviour the test controls, so the gate's own logic is what is tested
- * (exit 1 = the gate found something; exit 2 = it could not run a step). The only word used in word lists is invented
- * and harmless. (One file: the import fence lets tests import only node: built-ins and scripts/ or bin/.)
+ * and fake `gitleaks` / `actionlint` whose behaviour the test controls (exit 1 = the gate found something; exit 2 = it
+ * could not run a step). The only word used in word lists is invented and harmless. (One file: the import fence lets
+ * tests import only node: built-ins and scripts/ or bin/.)
  */
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
@@ -179,7 +183,7 @@ describe('push-gate.sh: arguments and mode', () => {
   });
 
   it('needs exactly one way to say which commits', () => {
-    const reason = 'push-gate: exactly one of --base, --not-on-remote, --all is required';
+    const reason = 'push-gate: exactly one of --base, --not-on, --all is required';
     stops(runGate(sb, ['--mode', 'general']), 2, reason);
     stops(runGate(sb, ['--mode', 'general', '--all', '--base', 'HEAD']), 2, reason);
     stops(runGate(sb, ['--mode', 'general', '--base']), 2, 'push-gate: --base needs a value');
@@ -187,11 +191,15 @@ describe('push-gate.sh: arguments and mode', () => {
     assert.deepEqual(sb.calls(), []);
   });
 
-  it('refuses a base that is not a commit and a remote name that is not a name', () => {
+  it('refuses a base that is not a commit and --not-on values that are not commit ids', () => {
     stops(runGate(sb, ['--mode', 'general', '--base', 'no-such-ref']), 2, 'push-gate: --base is not a commit of this repository');
-    stops(runGate(sb, ['--mode', 'general', '--not-on-remote', '--all']), 2, 'push-gate: not a valid remote name');
-    stops(runGate(sb, ['--mode', 'general', '--not-on-remote', 'a b']), 2, 'push-gate: not a valid remote name');
-    stops(runGate(sb, ['--mode', 'general', '--not-on-remote', '-x']), 2, 'push-gate: not a valid remote name');
+    const need = 'push-gate: --not-on needs full commit ids, comma separated';
+    stops(runGate(sb, ['--mode', 'general', '--not-on', 'HEAD']), 2, need);
+    stops(runGate(sb, ['--mode', 'general', '--not-on', '']), 2, need);
+    stops(runGate(sb, ['--mode', 'general', '--not-on', 'abc123']), 2, need);
+    stops(runGate(sb, ['--mode', 'general', '--not-on', `${'a'.repeat(40)},`]), 2, need);
+    stops(runGate(sb, ['--mode', 'general', '--not-on', 'a'.repeat(40)]), 2, 'push-gate: --not-on is not a commit of this repository');
+    stops(runGate(sb, ['--mode', 'general', '--not-on-remote', 'origin']), 2, 'push-gate: unknown argument');
   });
 });
 
@@ -329,35 +337,26 @@ describe('push-gate.sh: which commits are scanned', () => {
     assert.ok(r.out.includes('4 commit(s)'), r.out);
   });
 
-  it('--not-on-remote leaves out commits that the remote already has', () => {
-    commit(sb, { 'notes.txt': `${WORD}\n` });
-    addRemote(sb);
-    git(sb, 'push', '-q', 'origin', 'main');
-    removeFile(sb, 'notes.txt');
+  it('--not-on leaves out every commit reachable from the given commits, and nothing else', () => {
+    const first = commit(sb, { 'notes.txt': `${WORD}\n` });
+    const second = removeFile(sb, 'notes.txt');
     commit(sb, { 'b.txt': 'two\n' });
-    const r = runGate(sb, ['--mode', 'words', '--not-on-remote', 'origin'], words());
+    let r = runGate(sb, ['--mode', 'words', '--not-on', first], words());
     assert.equal(r.status, 0, r.out);
     assert.ok(r.out.includes('(mode words, 2 commit(s))'), r.out);
+    r = runGate(sb, ['--mode', 'words', '--not-on', `${first},${second}`], words());
+    assert.ok(r.out.includes('(mode words, 1 commit(s))'), r.out);
+    const other = commit(sb, { 'c.txt': 'three\n' });
+    r = runGate(sb, ['--mode', 'words', '--not-on', other], words());
+    assert.ok(r.out.includes('(mode words, 0 commit(s))'), r.out);
   });
 
-  it('--not-on-remote takes every commit when the remote has no tracking refs (the fail-safe)', () => {
+  it('there is no way left to subtract what only a remote-tracking ref says a remote has', () => {
     commit(sb, { 'notes.txt': `${WORD}\n` });
-    removeFile(sb, 'notes.txt');
     addRemote(sb);
-    const r = runGate(sb, ['--mode', 'words', '--not-on-remote', 'origin'], words());
-    assert.equal(r.status, 1, r.out);
-    assert.ok(r.out.includes('2 commit(s)'), r.out);
-    const unknown = runGate(sb, ['--mode', 'words', '--not-on-remote', 'nowhere'], words());
-    assert.equal(unknown.status, 1, 'a remote that does not exist knows no commit: all are scanned');
-  });
-
-  it('--not-on-remote does not count commits that only another remote has', () => {
-    const first = commit(sb, { 'notes.txt': `${WORD}\n` });
-    addRemote(sb, 'origin');
-    addRemote(sb, 'other');
-    git(sb, 'update-ref', 'refs/remotes/other/main', first);
+    git(sb, 'update-ref', 'refs/remotes/origin/main', git(sb, 'rev-parse', 'HEAD'));
     commit(sb, { 'b.txt': 'two\n' });
-    const r = runGate(sb, ['--mode', 'words', '--not-on-remote', 'origin'], words());
+    const r = runGate(sb, ['--mode', 'words', '--all'], words());
     assert.equal(r.status, 1, r.out);
     assert.ok(r.out.includes('2 commit(s)'), r.out);
   });
@@ -469,6 +468,13 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     }
   });
 
+  it('runs every tool with an explicit environment: hostile GIT_*, GREP_* and GITLEAKS_* variables of the caller change nothing', () => {
+    const hostile = { GIT_DIR: '/nonexistent/git', GIT_WORK_TREE: '/nonexistent/tree', GIT_INDEX_FILE: '/nonexistent/index', GIT_ATTR_SOURCE: 'nonsense', GREP_OPTIONS: '-v', GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.attributesFile', GIT_CONFIG_VALUE_0: '/nonexistent/attrs', GITLEAKS_BASELINE_PATH: '/nonexistent/baseline.json' };
+    const r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), ...hostile });
+    assert.equal(r.status, 0, r.out);
+    assert.ok(r.out.includes('push-gate: passed (mode words, 2 commit(s))'), r.out);
+  });
+
   it('names where gitleaks found something without printing it: messages and the tree are reported by place', () => {
     const r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_GITLEAKS_EXIT: '99' });
     assert.equal(r.status, 1, r.out);
@@ -521,6 +527,29 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     writeFileSync(path.join(sb.dir, 'body'), 'text\n');
     spawnSync('/bin/sh', [path.join(scripts, 'scan-pr-text.sh'), path.join(sb.dir, 'body')], { cwd: sb.repo, env });
     assert.deepEqual(left(), [], 'after a clean scan-pr-text.sh');
+  });
+
+  it('in quiet mode even the scope of a scoped word-list line is not printed', () => {
+    writeWords(sb, `@docs/ ${WORD}\n`);
+    commit(sb, { 'docs/x.txt': `${WORD}\n` });
+    const run = (extra) => {
+      const r = spawnSync('/bin/sh', [scanPublic], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ ...words(), ...extra }) });
+      return r.stdout + r.stderr;
+    };
+    assert.ok(run({}).includes('under docs/'), 'locally the scope is named');
+    const quiet = run({ SCAN_QUIET: '1' });
+    assert.ok(quiet.includes('scoped word list: 1 file(s) in'), quiet);
+    assert.ok(!quiet.includes('docs/') && !quiet.includes('x.txt'), quiet);
+  });
+
+  it('the quiet output on an error path holds no path or scanned text either', () => {
+    commit(sb, { 'notes.txt': `${WORD}\n` });
+    writeWords(sb, '(\n');
+    const r = spawnSync('/bin/sh', [scanPublic], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ ...words(), SCAN_QUIET: '1' }) });
+    const out = r.stdout + r.stderr;
+    assert.equal(r.status, 2, out);
+    assert.ok(out.includes('scan: grep failed'), out);
+    assert.ok(!out.includes('notes.txt') && !out.includes(WORD) && !out.includes(sb.words), out);
   });
 
   it('in CI the public output is rule names and counts only; locally it names places', () => {
@@ -653,6 +682,7 @@ describe('pre-push hook', () => {
     head = commit(sb, { 'a.txt': 'one\n' });
     writeWords(sb);
     record(head);
+    addRemote(sb);
     const r = runHook(sb, { lines: [pushLine(head)], env: words() });
     assert.notEqual(r.status, 0, r.out);
     assert.ok(r.out.includes('push-gate: gitleaks is not on PATH'), r.out);
@@ -665,37 +695,47 @@ describe('pre-push hook', () => {
     assert.ok(r.out.includes('not the checked-out commit'), r.out);
   });
 
-  it('uses --not-on-remote only when the pushed URL is both the fetch URL and the push URL', () => {
-    git(sb, 'update-ref', 'refs/remotes/origin/main', head);
+  it('subtracts only what the destination itself says it has, never what a tracking ref says', () => {
+    const bad = commit(sb, { 'notes.txt': `${WORD}\n` });
+    git(sb, 'update-ref', 'refs/remotes/origin/main', bad); // local state: the destination (an empty bare repository) does not have it
     const next = commit(sb, { 'b.txt': 'two\n' });
     record(next);
-    const fetchUrl = git(sb, 'remote', 'get-url', 'origin');
-    let r = runHook(sb, { lines: [pushLine(next, head)], env: words(), url: fetchUrl });
-    assert.equal(r.status, 0, r.out);
-    assert.ok(r.out.includes('(mode words, 1 commit(s))'), `commits the remote has are left out: ${r.out}`);
-    const other = path.join(sb.dir, 'elsewhere.git');
-    git({ ...sb, cwd: sb.dir }, 'init', '-q', '--bare', other);
-    git(sb, 'config', 'remote.origin.pushurl', other);
-    r = runHook(sb, { lines: [pushLine(next, head)], env: words(), url: other });
-    assert.equal(r.status, 0, r.out);
-    assert.ok(r.out.includes('(mode words, 2 commit(s))'), `a push URL that differs from the fetch URL scans everything: ${r.out}`);
-    r = runHook(sb, { lines: [pushLine(next, head)], env: words(), url: 'https://example.invalid/x.git' });
-    assert.ok(r.out.includes('(mode words, 2 commit(s))'), `a URL that is neither scans everything: ${r.out}`);
+    let r = runHook(sb, { lines: [pushLine(next)], env: words() });
+    assert.notEqual(r.status, 0, r.out);
+    assert.ok(r.out.includes('push-gate: step scan-public: FAILED'), `the commit is scanned: ${r.out}`);
+    git(sb, 'push', '-q', 'origin', 'main');
+    commit(sb, { 'c.txt': 'three\n' });
+    const tip = git(sb, 'rev-parse', 'HEAD');
+    record(tip);
+    r = runHook(sb, { lines: [pushLine(tip, next)], env: words() });
+    assert.equal(r.status, 0, `what the destination has is left out: ${r.out}`);
+    assert.ok(r.out.includes('(mode words, 1 commit(s))'), r.out);
   });
 
-  it('refuses a tag push with the reason, and lets a tag deletion through', () => {
+  it('stops when the destination cannot be asked, instead of scanning less', () => {
+    record(head);
+    const r = runHook(sb, { lines: [pushLine(head)], env: words(), url: path.join(sb.dir, 'no-such-remote.git') });
+    assert.notEqual(r.status, 0, r.out);
+    assert.ok(r.out.includes('push-range: could not ask the destination for its branches (git ls-remote failed)'), r.out);
+    assert.deepEqual(sb.calls(), []);
+  });
+
+  it('refuses every push of a tag, a deletion too, with the reason', () => {
     git(sb, 'tag', '-a', 'v1', '-m', 'note');
     const tagObject = git(sb, 'rev-parse', 'v1');
     record(head);
-    for (const sha of [tagObject, head]) {
-      const r = runHook(sb, { lines: [`refs/tags/v1 ${sha} refs/tags/v1 ${ZERO}`], env: words() });
-      assert.notEqual(r.status, 0, r.out);
+    const lines = [
+      `refs/tags/v1 ${tagObject} refs/tags/v1 ${ZERO}`,
+      `refs/tags/v1 ${head} refs/tags/v1 ${ZERO}`,
+      `(delete) ${ZERO} refs/tags/v1 ${tagObject}`,
+    ];
+    for (const line of lines) {
+      const r = runHook(sb, { lines: [line], env: words() });
+      assert.notEqual(r.status, 0, `${line}: ${r.out}`);
       assert.ok(r.out.includes('pre-push: refusing to push a tag'), r.out);
-      assert.ok(r.out.includes('tags are created only by the tag workflow'), r.out);
+      assert.ok(r.out.includes('tags are created and deleted only by the tag workflow'), r.out);
     }
     assert.deepEqual(sb.calls(), []);
-    const del = runHook(sb, { lines: [`(delete) ${ZERO} refs/tags/v1 ${tagObject}`] });
-    assert.equal(del.status, 0, del.out);
   });
 
   it('with nothing to push, does nothing', () => {

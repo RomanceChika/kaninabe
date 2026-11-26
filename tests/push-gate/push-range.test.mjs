@@ -334,6 +334,7 @@ describe('push-range.sh: a forged commit-graph in the repository does not change
     const i = oids.indexOf(c);
     assert.ok(i >= 0, 'the tip is in the graph');
     buf.writeUInt32BE(0x70000000, chunks.CDAT + i * 36 + 20); // first parent: none
+    rmSync(file); // git writes the graph read-only (0444): replace the file, do not write into it (root would not notice)
     writeFileSync(file, buf);
     assert.deepEqual(git(repo, 'rev-list', 'HEAD').split('\n'), [c], 'the forged graph is in effect for the real repository');
     const r = run([bare]);

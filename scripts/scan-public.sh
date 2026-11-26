@@ -22,14 +22,16 @@ else
   . "$(dirname "$0")/repo-context.sh"
   repo_resolve || { echo "scan: $repo_error"; echo "scan-public: ERROR"; exit 2; }
   exec env -i PATH="$PATH" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent LC_ALL=C.UTF-8 \
-    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 GIT_DIR="$repo_gitdir" \
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_DIR="$repo_gitdir" \
     ${TMPDIR:+"TMPDIR=$TMPDIR"} ${SCAN_WORDS_FILE:+"SCAN_WORDS_FILE=$SCAN_WORDS_FILE"} ${SCAN_OWNER:+"SCAN_OWNER=$SCAN_OWNER"} \
     ${GITHUB_REPOSITORY_OWNER:+"GITHUB_REPOSITORY_OWNER=$GITHUB_REPOSITORY_OWNER"} ${SCAN_QUIET:+"SCAN_QUIET=$SCAN_QUIET"} \
     sh "$0" --inside-clean-env "$@"
 fi
 . "$(dirname "$0")/scan-rules.sh"
 . "$(dirname "$0")/neutral-git.sh"
-if [ "${1:-}" = "--revs" ]; then shift; range="$*"; else range=${1:+$1..}HEAD; fi
+# The range is given to git as commit ids. With --revs the caller (the gate) already did that; names (a base, HEAD) are
+# resolved here, once, in the real repository with replace refs ignored; the history is then read from the neutral repository.
+if [ "${1:-}" = "--revs" ]; then shift; range="$*"; resolve_names=0; else base_name=${1:-}; resolve_names=1; fi
 pat=$(mktemp); trap 'rm -f "$pat" "$scoped" "$scan_err"' EXIT
 if [ -n "${SCAN_WORDS_FILE:-}" ] && [ -s "$SCAN_WORDS_FILE" ]; then
   grep -v '^#' "$SCAN_WORDS_FILE" | grep -v '^$' | grep -v '^@' > "$pat" || true
@@ -48,7 +50,15 @@ trap 'rm -rf "$pat" "$scoped" "$commits" "$gg_out" "$ng_work" "$scan_err"' EXIT
 # git grep runs in a neutral repository (no attributes from the tree or the clone, no user config): see neutral-git.sh.
 neutral_git_setup "$ng_work" || { echo "scan: $ng_error"; echo "scan-public: ERROR"; exit 2; }
 # A rev-list that fails is not an empty range: it stops the scan (exit 2), it does not read as "clean".
-rc=0; git rev-list $range > "$commits" 2>/dev/null || rc=$?
+if [ "$resolve_names" = 1 ]; then
+  head_id=$(ng_real git rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null) || { echo "scan: git rev-list failed (HEAD is not a commit)"; echo "scan-public: ERROR"; exit 2; }
+  range=$head_id
+  if [ -n "$base_name" ]; then
+    base_id=$(ng_real git rev-parse --verify -q "$base_name^{commit}" 2>/dev/null) || { echo "scan: git rev-list failed (the base is not a commit)"; echo "scan-public: ERROR"; exit 2; }
+    range="$base_id..$head_id"
+  fi
+fi
+rc=0; neutral_git rev-list $range > "$commits" 2>/dev/null || rc=$?
 if [ "$rc" -ne 0 ]; then echo "scan: git rev-list failed (exit $rc)"; echo "scan-public: ERROR"; exit 2; fi
 # gg ARGS...: git grep into $gg_out. Exit 1 (no match) is an empty result; anything above is an error that stops the scan.
 gg() {
@@ -63,20 +73,20 @@ for c in $(cat "$commits"); do
   if [ -s "$pat" ]; then
     gg -IlE -f "$pat" "$c"; n=$(lines)
     if [ "$n" != "0" ]; then echo "word list: $n file(s) in $short"; gg -InE -f "$pat" "$c"; show_at; fail=1; fi
-    if git log -1 --format='%an %ae %cn %ce%n%B' "$c" | grep -qiE -f "$pat"; then echo "word list: commit message or author of $short"; fail=1; fi
+    if neutral_git log -1 --format='%an %ae %cn %ce%n%B' "$c" | grep -qiE -f "$pat"; then echo "word list: commit message or author of $short"; fail=1; fi
   fi
   while IFS= read -r line; do
     prefix=${line%% *}; prefix=${prefix#@}; re=${line#* }
     gg -IlE "$re" "$c" -- "$prefix"; n=$(lines)
     if [ "$n" != "0" ]; then if [ -n "${SCAN_QUIET:-}" ]; then echo "scoped word list: $n file(s) in $short"; else echo "scoped word list: $n file(s) under $prefix in $short"; fi; gg -InE "$re" "$c" -- "$prefix"; show_at; fail=1; fi
   done < "$scoped"
-  if git log -1 --format='%B' "$c" | scan_attribution; then echo "attribution line in $short"; fail=1; fi
+  if neutral_git log -1 --format='%B' "$c" | scan_attribution; then echo "attribution line in $short"; fail=1; fi
   # Author and committer: a GitHub noreply address naming no AI. A squash merge turns each into a co-author trailer.
-  if git log -1 --format='%an%n%cn' "$c" | scan_grep -qiE "$scan_ai" \
-     || git log -1 --format='%ae%n%ce' "$c" | { scan_grep -viE "$scan_ident_ok" || true; } | scan_grep -q .; then
+  if neutral_git log -1 --format='%an%n%cn' "$c" | scan_grep -qiE "$scan_ai" \
+     || neutral_git log -1 --format='%ae%n%ce' "$c" | { scan_grep -viE "$scan_ident_ok" || true; } | scan_grep -q .; then
     echo "author or committer not allowed in $short"; fail=1
   fi
-  if git log -1 --format='%B' "$c" | scan_bad_email; then echo "email-like string in the message of $short"; fail=1; fi
+  if neutral_git log -1 --format='%B' "$c" | scan_bad_email; then echo "email-like string in the message of $short"; fail=1; fi
   gg -IlE "$generic" "$c" -- . ':!package-lock.json' ':!**/package-lock.json'; n=$(lines)
   if [ "$n" != "0" ]; then
     gg -IhoE '/Users/[A-Za-z0-9_.-]+|/home/[a-z0-9_.-]+/|C:\\Users|BEGIN [A-Z ]*PRIVATE KEY' "$c" -- . ':!package-lock.json' ':!**/package-lock.json'

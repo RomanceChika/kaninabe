@@ -59,9 +59,10 @@ mkdir "$tmp/home"
 # configuration, and with the locale and the temporary directory fixed.
 clean() {
   env -i PATH="$PATH" HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/home/.config" TMPDIR="$tmp" LC_ALL=C.UTF-8 \
-    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 "$@"
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 "$@"
 }
-# cgit <args...>: git of the repository found above, in the clean environment.
+# cgit <args...>: git against the REAL repository, in the clean environment. Used only to resolve names (HEAD, --base) to
+# commit ids, with replace refs ignored; everything that reads history goes through the neutral repository (neutral_git).
 cgit() { clean GIT_DIR="$repo_gitdir" git "$@"; }
 
 if [ "$mode" = words ]; then
@@ -75,32 +76,33 @@ fi
 command -v gitleaks >/dev/null 2>&1 || die "gitleaks is not on PATH"
 command -v actionlint >/dev/null 2>&1 || die "actionlint is not on PATH"
 
-# The commits, as arguments of `git rev-list` and `git log`.
+# The commits, as arguments of `git rev-list` and `git log`: commit ids only. The real repository is asked for nothing but
+# the ids of HEAD and of a --base name (replace refs ignored); the history itself is read from the neutral repository, which
+# borrows the objects and nothing else, so that .git/config, info/attributes, info/grafts and refs/replace cannot change it.
+head_sha=$(cgit rev-parse --verify -q 'HEAD^{commit}') || die "HEAD is not a commit"
+if [ -n "$want_head" ] && [ "$head_sha" != "$want_head" ]; then die "HEAD is not the commit being pushed"; fi
+neutral_git_setup "$tmp" || die "$ng_error"
 case $range_kind in
   base)
     case $range_val in -*) die "--base is not a commit of this repository" ;; esac
     base=$(cgit rev-parse --verify -q "$range_val^{commit}") || die "--base is not a commit of this repository"
-    revs="$base..HEAD" ;;
+    revs="$base..$head_sha" ;;
   noton)
     # The commits that the destination is known to have (push-range.sh decides which): everything reachable from HEAD
     # except what is reachable from them.
     printf '%s\n' "$range_val" | grep -Eq '^([0-9a-f]{40}(,[0-9a-f]{40})*|[0-9a-f]{64}(,[0-9a-f]{64})*)$' || die "--not-on needs full commit ids, comma separated"
     for sha in $(printf '%s' "$range_val" | tr ',' ' '); do
-      cgit rev-parse --verify -q "$sha^{commit}" >/dev/null || die "--not-on is not a commit of this repository"
+      neutral_git rev-parse --verify -q "$sha^{commit}" >/dev/null || die "--not-on is not a commit of this repository"
     done
-    revs="HEAD --not $(printf '%s' "$range_val" | tr ',' ' ')" ;;
-  all) revs="HEAD" ;;
+    revs="$head_sha --not $(printf '%s' "$range_val" | tr ',' ' ')" ;;
+  all) revs="$head_sha" ;;
 esac
-cgit rev-parse --verify -q 'HEAD^{commit}' >/dev/null || die "HEAD is not a commit"
-if [ -n "$want_head" ] && [ "$(cgit rev-parse --verify -q 'HEAD^{commit}')" != "$want_head" ]; then die "HEAD is not the commit being pushed"; fi
 
 # The list is written to a file and the status checked: a failing rev-list is not an empty range.
-cgit rev-list $revs > "$tmp/commits" 2>/dev/null || die "could not list the commits"
+neutral_git rev-list $revs > "$tmp/commits" 2>/dev/null || die "could not list the commits"
 count=$(wc -l < "$tmp/commits" | tr -d ' ')
 # The files of HEAD, exactly as committed (see neutral-git.sh: git archive would honour export-ignore and export-subst
 # attributes of the tree). Both the tree scan and the workflow check read this export.
-neutral_git_setup "$tmp" || die "$ng_error"
-head_sha=$(cgit rev-parse --verify -q 'HEAD^{commit}') || die "HEAD is not a commit"
 neutral_export "$head_sha" "$tmp/head" || die "could not export HEAD"
 failed=
 
@@ -114,13 +116,13 @@ failed=
 # honoured; no baseline is given. The environment is not the caller's (see clean above), so no GITLEAKS_* variable gets in.
 # gitleaks also reads <source>/.gitleaksignore whatever --gitleaks-ignore-path says, so the history is scanned with the git
 # directory as the source (it holds no such file) and the exported tree has every .gitleaksignore taken out before the scan.
-gitdir=$repo_gitdir
+gitdir=$ng_dir   # the neutral repository: objects only
 gl_config="$here/gitleaks-gate.toml"
 [ -f "$gl_config" ] && [ -r "$gl_config" ] || die "gitleaks-gate.toml is missing next to the gate"
 # gl <subcommand> <arguments...>: gitleaks with the fixed flags; every path is one quoted argument (spaces are fine).
 gl() {
   gl_sub=$1; shift
-  clean gitleaks "$gl_sub" --no-banner --redact --exit-code 99 --log-level error --config "$gl_config" \
+  clean GIT_ATTR_SOURCE="$ng_empty" gitleaks "$gl_sub" --no-banner --redact --exit-code 99 --log-level error --config "$gl_config" \
     --gitleaks-ignore-path "$tmp/no-gitleaksignore" --ignore-gitleaks-allow "$@"
 }
 if [ "$count" -gt 0 ]; then
@@ -132,7 +134,7 @@ if [ "$count" -gt 0 ]; then
   case $rc in 0) ;; 99) [ ! -f "$tmp/gitleaks.out" ] || grep . "$tmp/gitleaks.out" >> "$gl_lines" || true; echo x > "$tmp/gl.found" ;; *) die "step gitleaks could not run (exit $rc)" ;; esac
   : > "$tmp/gl.msgs"
   for c in $(cat "$tmp/commits"); do
-    cgit log -1 --format=%B "$c" > "$tmp/msg" 2>/dev/null || die "step gitleaks could not run (could not read a commit message)"
+    neutral_git log -1 --format=%B "$c" > "$tmp/msg" 2>/dev/null || die "step gitleaks could not run (could not read a commit message)"
     rc=0
     gl stdin < "$tmp/msg" > /dev/null 2>&1 || rc=$?
     case $rc in 0) ;; 99) echo "$c" | cut -c1-8 >> "$tmp/gl.msgs"; echo x > "$tmp/gl.found" ;; *) die "step gitleaks could not run (exit $rc)" ;; esac
@@ -189,7 +191,7 @@ fi
 # actionlint's own config file is not extracted, so that a file in the tree cannot switch checks off; the shellcheck
 # and pyflakes integrations are off so that the result does not depend on what else is installed. The report template
 # holds only the file, the line and the kind of problem, never the message or the source line.
-files=$(cgit ls-tree -r --name-only HEAD -- .github/workflows | grep -E '\.ya?ml$' || true)
+files=$(neutral_git ls-tree -r --name-only "$head_sha" -- .github/workflows | grep -E '\.ya?ml$' || true)
 if [ -z "$files" ]; then
   echo "push-gate: step workflows: ok (no workflow files)"
 else

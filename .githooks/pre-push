@@ -14,7 +14,7 @@
 #     kaninabe.scanOwner. Skipping this hook (--no-verify, no hooksPath) is forbidden by rule; it cannot be prevented.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
-head=$(git rev-parse --verify -q 'HEAD^{commit}' || true)
+head=$(GIT_NO_REPLACE_OBJECTS=1 git rev-parse --verify -q 'HEAD^{commit}' || true)   # replace refs are ignored, as push ignores them
 short() { printf '%s' "$1" | cut -c1-8; }
 refuse() { echo "pre-push: $*" >&2; exit 1; }
 

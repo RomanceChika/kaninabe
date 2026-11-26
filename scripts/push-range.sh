@@ -40,6 +40,7 @@ fi
 
 # The repository is decided here, in the caller's environment, and handed on explicitly.
 . "$(dirname "$0")/repo-context.sh"
+. "$(dirname "$0")/neutral-git.sh"
 repo_resolve_top || die "$repo_error"
 cd "$repo_top"
 
@@ -49,11 +50,15 @@ trap 'rm -rf "$tmp"' EXIT
 mkdir "$tmp/home"
 cg() {
   env -i PATH="$PATH" HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/home/.config" TMPDIR="$tmp" LC_ALL=C.UTF-8 \
-    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 GIT_DIR="$repo_gitdir" git "$@"
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_DIR="$repo_gitdir" git "$@"
 }
 
-cg rev-parse --verify -q 'HEAD^{commit}' >/dev/null || die "HEAD is not a commit"
-if [ -n "$want_head" ] && [ "$(cg rev-parse --verify -q 'HEAD^{commit}')" != "$want_head" ]; then die "HEAD is not the commit being pushed"; fi
+# The real repository is asked for the id of HEAD (replace refs ignored) and whether it is shallow, nothing else about
+# history: the commits are read from the neutral repository (objects only: no config, no info/, no refs, no replace refs).
+head_sha=$(cg rev-parse --verify -q 'HEAD^{commit}') || die "HEAD is not a commit"
+if [ -n "$want_head" ] && [ "$head_sha" != "$want_head" ]; then die "HEAD is not the commit being pushed"; fi
+ng_repo=$repo_gitdir
+neutral_git_setup "$tmp" || die "$ng_error"
 [ "$(cg rev-parse --is-shallow-repository)" = false ] || die "this is a shallow clone, so the history cannot be read to the end"
 
 # A remote name is read as the URL that a push to it uses (caller's configuration, as push does it).
@@ -79,21 +84,21 @@ done
 : > "$tmp/confirmed"
 sort -u "$tmp/shas" | while IFS= read -r s; do
   [ -n "$s" ] || continue
-  if cg cat-file -e "$s^{commit}" 2>/dev/null; then printf '%s\n' "$s" >> "$tmp/confirmed"; fi
+  if neutral_git cat-file -e "$s^{commit}" 2>/dev/null; then printf '%s\n' "$s" >> "$tmp/confirmed"; fi
 done
 
 confirmed=$(tr '\n' ' ' < "$tmp/confirmed")
 if [ -n "$confirmed" ]; then
   # shellcheck disable=SC2086
-  cg rev-list $confirmed > /dev/null 2>&1 || die "the history cannot be read to the end"
-  revs="HEAD --not $confirmed"
+  neutral_git rev-list $confirmed > /dev/null 2>&1 || die "the history cannot be read to the end"
+  revs="$head_sha --not $confirmed"
 else
-  revs="HEAD"
+  revs="$head_sha"
 fi
 # shellcheck disable=SC2086
-cg rev-list $revs > "$tmp/commits" 2>/dev/null || die "the history cannot be read to the end"
+neutral_git rev-list $revs > "$tmp/commits" 2>/dev/null || die "the history cannot be read to the end"
 # shellcheck disable=SC2086
-cg rev-list --objects --missing=print $revs > "$tmp/objects" 2>/dev/null || die "the history cannot be read to the end"
+neutral_git rev-list --objects --missing=print $revs > "$tmp/objects" 2>/dev/null || die "the history cannot be read to the end"
 if grep -q '^?' "$tmp/objects"; then die "objects are missing here, so the history cannot be read to the end"; fi
 
 n=$(wc -l < "$tmp/commits" | tr -d ' ')

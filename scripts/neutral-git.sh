@@ -16,7 +16,7 @@ ng_error=
 # the caller had, no user or system git configuration, no attributes from outside the repository).
 ng_env() {
   env -i PATH="$PATH" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent LC_ALL=C.UTF-8 \
-    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 "$@"
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 "$@"
 }
 # ng_real <command...>: the same, inside the real repository named by $ng_repo (its git directory, found by the caller
 # once, in the caller's environment: see repo-context.sh). Without it the repository is looked for from the current directory.

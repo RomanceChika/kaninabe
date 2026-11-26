@@ -6,6 +6,7 @@
 # line or snippet, because the logs of a public repository are public. Do not add `set -x` or echo any pattern.
 # Usage: scan-public.sh [<base>]   (scans <base>..HEAD, or every commit reachable from HEAD)
 set -eu
+. "$(dirname "$0")/scan-rules.sh"
 range=${1:+$1..}HEAD
 pat=$(mktemp); trap 'rm -f "$pat" "$scoped"' EXIT
 if [ -n "${SCAN_WORDS_FILE:-}" ] && [ -s "$SCAN_WORDS_FILE" ]; then
@@ -14,10 +15,12 @@ if [ -n "${SCAN_WORDS_FILE:-}" ] && [ -s "$SCAN_WORDS_FILE" ]; then
 else
   scoped=$(mktemp)
 fi
+scan_check_patterns "$pat"
+while IFS= read -r line; do printf '%s\n' "${line#* }" > "$pat.one"; scan_check_patterns "$pat.one"; done < "$scoped"; rm -f "$pat.one"
 fail=0
 generic='/Users/[A-Za-z]|/home/[a-z]+/|C:\\Users|BEGIN [A-Z ]*PRIVATE KEY'
-email='[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+'
-email_ok='(\.example|@example\.(com|org|net)|@users\.noreply\.github\.com|^git@github\.com|@(types|kaninabe|supabase|vitest|next|axiomhq)[./]|@[0-9]|@127\.0\.0\.1|@registry\.npmjs\.org|@api\.axiom\.co|@auth\.external|^evil|\.(ts|tsx|js|mjs|json|md|png|svg)$)'
+email=$scan_email
+email_ok=$scan_email_ok
 for c in $(git rev-list $range); do
   short=$(echo "$c" | cut -c1-8)
   if [ -s "$pat" ]; then
@@ -30,7 +33,13 @@ for c in $(git rev-list $range); do
     n=$(git grep -IlE "$re" "$c" -- "$prefix" 2>/dev/null | wc -l | tr -d ' ')
     if [ "$n" != "0" ]; then echo "scoped word list: $n file(s) under $prefix in $short"; git grep -InE "$re" "$c" -- "$prefix" 2>/dev/null | cut -d: -f2,3 | head -50 | sed "s|^|  at |"; fail=1; fi
   done < "$scoped"
-  if git log -1 --format='%an%n%ae%n%cn%n%ce%n%B' "$c" | grep -qiE 'Co-Authored|Claude-Session|Generated with'; then echo "attribution line in $short"; fail=1; fi
+  if git log -1 --format='%B' "$c" | scan_attribution; then echo "attribution line in $short"; fail=1; fi
+  # Author and committer: a GitHub noreply address naming no AI. A squash merge turns each into a co-author trailer.
+  if git log -1 --format='%an%n%cn' "$c" | scan_grep -qiE "$scan_ai" \
+     || git log -1 --format='%ae%n%ce' "$c" | { scan_grep -viE "$scan_ident_ok" || true; } | scan_grep -q .; then
+    echo "author or committer not allowed in $short"; fail=1
+  fi
+  if git log -1 --format='%B' "$c" | scan_bad_email; then echo "email-like string in the message of $short"; fail=1; fi
   n=$(git grep -IlE "$generic" "$c" -- . ':!package-lock.json' ':!**/package-lock.json' 2>/dev/null | wc -l | tr -d ' ')
   if [ "$n" != "0" ]; then
     m=$(git grep -IhoE '/Users/[A-Za-z0-9_.-]+|/home/[a-z0-9_.-]+/|C:\\Users|BEGIN [A-Z ]*PRIVATE KEY' "$c" -- . ':!package-lock.json' ':!**/package-lock.json' | sed 's/^[^:]*://' | grep -vE '^/home/(u|a|user|x|me|app|runner|node)/$' | wc -l | tr -d ' ')
@@ -39,4 +48,4 @@ for c in $(git rev-list $range); do
   m=$(git grep -IhoE "$email" "$c" -- . ':!package-lock.json' ':!**/package-lock.json' | sed 's/^[^:]*://' | grep -vE "$email_ok" | wc -l | tr -d ' ')
   if [ "$m" != "0" ]; then echo "email-like string: $m hit(s) in $short"; fail=1; fi
 done
-[ "$fail" -eq 0 ] && echo "scan-public: clean" || { echo "scan-public: FAILED"; exit 1; }
+scan_finish scan-public "$fail"

@@ -551,3 +551,32 @@ describe('scripts/gitleaks-public.sh with the real gitleaks: nothing in the scan
   });
 });
 
+describe('real gitleaks: the number of commits it reports equals our list (review round 9, L2)', () => {
+  it('holds with a merge commit and the root commit, for the gate and for the old-step wrapper', () => {
+    commit({ 'a.txt': 'one\n' });
+    git('checkout', '-q', '-b', 'side');
+    commit({ 'b.txt': 'two\n' });
+    git('checkout', '-q', 'main');
+    commit({ 'c.txt': 'three\n' });
+    git('merge', '-q', '--no-ff', 'side', '-m', 'merge');
+    commit({ 'd.txt': 'four\n' });
+    const r = general();
+    assert.equal(r.status, 0, r.out);
+    assert.ok(r.out.includes('push-gate: passed (mode general, 5 commit(s))'), r.out);
+    const w = spawnSync('/bin/sh', [path.join(path.dirname(gate), 'gitleaks-public.sh'), 'git', '.'], { cwd: repo, encoding: 'utf8', env: env() });
+    assert.equal(w.status, 0, w.stdout + w.stderr);
+    assert.ok((w.stdout + w.stderr).includes('gitleaks git: ok'), w.stdout + w.stderr);
+  });
+
+  it('a key in the merged-in branch is still found with the count check in place', () => {
+    const key = fakeKey();
+    commit({ 'a.txt': 'one\n' });
+    git('checkout', '-q', '-b', 'side');
+    commit({ 'conf.txt': `token = ${key}\n` });
+    git('checkout', '-q', 'main');
+    commit({ 'c.txt': 'three\n' });
+    git('merge', '-q', '--no-ff', 'side', '-m', 'merge');
+    stoppedOnKey(general(), key);
+  });
+});
+

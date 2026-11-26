@@ -4,7 +4,9 @@
 #
 #   ## Review
 #   - opus: <full commit sha the review saw, with no finding left open>
-#   - codex: <full commit sha>   (or `未実施(<reason>)` when Codex did not answer or was rate-limited)
+#   - codex: <full commit sha the review saw, with no finding left open>
+#
+# A merge needs both: each reviewer has said that nothing more needs fixing at the head. There is no way to skip one.
 #
 # Every push moves the head, so the record no longer matches and this check fails until the new diff is reviewed and
 # the record is rewritten. Editing the body re-runs it (the workflow listens to `edited`).
@@ -21,7 +23,5 @@ opus=$(line opus); codex=$(line codex)
 if [ "$(printf '%s\n' "$opus" | grep -c .)" != "1" ]; then echo "review record: need exactly one '- opus:' line under '## Review'"; fail=1
 elif [ "$opus" != "$head" ]; then echo "review record: opus reviewed ${opus%"${opus#????????}"}, the head is ${head%"${head#????????}"} (review the new diff, then update the record)"; fail=1; fi
 if [ "$(printf '%s\n' "$codex" | grep -c .)" != "1" ]; then echo "review record: need exactly one '- codex:' line under '## Review'"; fail=1
-elif [ "$codex" = "$head" ]; then :
-elif printf '%s\n' "$codex" | grep -qE '^未実施\(.*[^[:space:]].*\)$'; then echo "review record: codex not done (reason given)"
-else echo "review record: codex line is neither the head sha nor 未実施(<reason>)"; fail=1; fi
+elif [ "$codex" != "$head" ]; then echo "review record: codex reviewed ${codex%"${codex#????????}"}, the head is ${head%"${head#????????}"} (review the new diff, then update the record)"; fail=1; fi
 [ "$fail" -eq 0 ] && echo "review record: matches the head" || { echo "review record: FAILED"; exit 1; }

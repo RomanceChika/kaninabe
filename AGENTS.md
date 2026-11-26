@@ -11,7 +11,7 @@
 - 変更を確定させる前に、`npm run verify -- --fail-on-unclassified` と `npm run test:unit` と `npm run test:spec-tools` を通します(この木のデモ製品は実装の木を持たないので、`generate:check` はまだ回しません。docs/known-gaps.md の 1)。エラーを黙らせるための雑な定義を書きません。
 - 仕組み自身のコード(`framework/` と `legacy/spec-tools/`)を変えたら、`npm run test:spec-tools` / `typecheck:spec-tools` / `lint:spec-tools` / `typecheck:framework` / `lint:framework` を通します。
 - 検査の無効化コメント(`eslint-disable` など)で警告を黙らせません。
-- PR は、Opus のレビュー(こちらの結論を見せずに頼む)と Codex のレビュー(`@codex` と `@dot` を付けて頼む)を通してからマージします。**指摘を直したら、直した差分をもう一度両方に見てもらい、指摘が残らなくなるまでマージしません。** 見てもらった commit は PR 本文の `## Review` に書きます(`- opus: <commit>` と `- codex: <commit>`。Codex が答えないときは `- codex: 未実施(<理由>)`)。CI の review-record がこれを PR の最新の commit と照らすので、直しを push すると記録が古くなり、再レビューするまで赤になります。
+- PR は、Opus のレビュー(こちらの結論を見せずに頼む)と Codex のレビュー(`@codex` と `@dot` を付けて頼む)の**両方が「これ以上直すところは無い」と答えるまでマージしません**。指摘を直したら、直した差分をもう一度両方に見てもらい、これを繰り返します。片方だけで進めることはしません(Codex が答えないあいだは待ちます)。両方が指摘なしと答えた commit を、PR 本文の `## Review` に書きます(`- opus: <commit>` と `- codex: <commit>`)。CI の review-record がこれを PR の最新の commit と照らすので、直しを push すると記録が古くなり、再レビューが終わるまで赤になります。
 - マージは squash で、commit のタイトルと本文に PR のタイトルと本文をそのまま渡します(CI が検査したのと同じ文にするため)。
 
 ## 最小の確認

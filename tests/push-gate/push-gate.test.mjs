@@ -507,6 +507,22 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     assert.ok(!(r.stdout + r.stderr).includes('scan-public: clean'));
   });
 
+  it('the scan scripts leave no temporary file behind, on a clean run or when they stop', () => {
+    const tmpDir = path.join(sb.dir, 'tmp');
+    mkdirSync(tmpDir);
+    const env = sb.env({ TMPDIR: tmpDir, ...words() });
+    const left = () => readdirSync(tmpDir);
+    spawnSync('/bin/sh', [scanPublic], { cwd: sb.repo, env });
+    assert.deepEqual(left(), [], 'after a clean scan');
+    spawnSync('/bin/sh', [scanPublic, '--revs'], { cwd: sb.repo, env });
+    assert.deepEqual(left(), [], 'after a scan that stopped on a rev-list failure');
+    spawnSync('/bin/sh', [path.join(scripts, 'scan-pr-text.sh'), path.join(sb.dir, 'absent')], { cwd: sb.repo, env });
+    assert.deepEqual(left(), [], 'after scan-pr-text.sh that could not read its input');
+    writeFileSync(path.join(sb.dir, 'body'), 'text\n');
+    spawnSync('/bin/sh', [path.join(scripts, 'scan-pr-text.sh'), path.join(sb.dir, 'body')], { cwd: sb.repo, env });
+    assert.deepEqual(left(), [], 'after a clean scan-pr-text.sh');
+  });
+
   it('in CI the public output is rule names and counts only; locally it names places', () => {
     commit(sb, { 'notes.txt': `${WORD}\n`, '.github/workflows/ci.yml': 'name: x\n' });
     const env = { ...words(), SHIM_ACTIONLINT_EXIT: '1', SHIM_OUT_actionlint: '.github/workflows/ci.yml:3: [syntax-check]|' };

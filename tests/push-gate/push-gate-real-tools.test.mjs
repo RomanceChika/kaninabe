@@ -271,3 +271,42 @@ describe('push-gate.sh with the real tools: what is scanned does not depend on t
     stoppedOnKey(run(), key);
   });
 });
+
+describe('push-gate.sh with the real tools: filter=lfs in the tree does not make gitleaks skip a file', () => {
+  // A key committed raw in a file that an attribute calls LFS-managed: the commit holds the key itself (this repository
+  // has no LFS filter configured, as in the tests' environment), and the gate must find it in the patch and in the tree.
+  it('an attribute in the same commit as the key', () => {
+    const key = fakeKey();
+    commit({ '.gitattributes': '*.cfg filter=lfs diff=lfs merge=lfs -text\n', 'x.cfg': `token = ${key}\n` });
+    stoppedOnKey(general(), key);
+  });
+
+  it('an attribute added by a later commit (the tree scan alone sees the key: the remote has the earlier commit)', () => {
+    const key = fakeKey();
+    commit({ 'x.cfg': `token = ${key}\n` });
+    git('update-ref', 'refs/remotes/origin/main', git('rev-parse', 'HEAD'));
+    commit({ '.gitattributes': '* filter=lfs\n' });
+    stoppedOnKey(general('--not-on-remote', 'origin'), key);
+  });
+
+  it('a nested .gitattributes', () => {
+    const key = fakeKey();
+    commit({ 'sub/dir/.gitattributes': '* filter=lfs\n', 'sub/dir/x.cfg': `token = ${key}\n` });
+    const pushed = git('rev-parse', 'HEAD');
+    git('update-ref', 'refs/remotes/origin/main', pushed);
+    commit({ 'b.txt': 'two\n' });
+    stoppedOnKey(general('--not-on-remote', 'origin'), key);
+    stoppedOnKey(general(), key);
+  });
+
+  it('with an LFS-style smudge filter in the user\'s git configuration, the export of HEAD still holds the committed bytes', () => {
+    const key = fakeKey();
+    commit({ '.gitattributes': '*.cfg filter=lfs\n', 'x.cfg': `token = ${key}\n` });
+    git('update-ref', 'refs/remotes/origin/main', git('rev-parse', 'HEAD'));
+    commit({ 'b.txt': 'two\n' });
+    const cfg = path.join(dir, 'lfs-gitconfig');
+    writeFileSync(cfg, '[filter "lfs"]\n\tclean = cat\n\tsmudge = sh -c \'cat >/dev/null; echo pointer\'\n\trequired = true\n');
+    const r = gateRun(['--mode', 'general', '--not-on-remote', 'origin'], { GIT_CONFIG_GLOBAL: cfg });
+    stoppedOnKey(r, key);
+  });
+});

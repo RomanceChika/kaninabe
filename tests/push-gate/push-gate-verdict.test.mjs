@@ -113,7 +113,44 @@ describe('push-gate.sh with the real tools', () => {
     commit({ 'b.txt': 'two\n' }, `note: token ${key}`);
     const r = general();
     stoppedOnKey(r, key);
-    assert.ok(/commit message of [0-9a-f]{8}/.test(r.out), r.out);
+    assert.ok(/, 1 in commit messages,/.test(r.out), r.out);
+  });
+
+  describe('the names and emails of author and committer are scanned too (review round 13, Q1)', () => {
+    const commitAs = (envVars) => {
+      commit({ 'a.txt': 'one\n' });
+      const r = spawnSync('git', ['commit', '-q', '--allow-empty', '-m', 'plain'], { cwd: repo, encoding: 'utf8', env: { ...process.env, ...env(), PATH: process.env.PATH, GIT_AUTHOR_NAME: 'Tester', GIT_AUTHOR_EMAIL: 'tester@users.noreply.github.com', GIT_COMMITTER_NAME: 'Tester', GIT_COMMITTER_EMAIL: 'tester@users.noreply.github.com', ...envVars } });
+      assert.equal(r.status, 0, r.stderr);
+    };
+    for (const [label, vars] of [
+      ['author name', (k) => ({ GIT_AUTHOR_NAME: k })],
+      ['committer name', (k) => ({ GIT_COMMITTER_NAME: k })],
+      ['author email local part', (k) => ({ GIT_AUTHOR_EMAIL: `${k}@users.noreply.github.com` })],
+      ['committer email local part', (k) => ({ GIT_COMMITTER_EMAIL: `${k}@users.noreply.github.com` })],
+    ]) {
+      it(`a key in the ${label} stops the gate`, () => {
+        const key = fakeKey();
+        commitAs(vars(key));
+        stoppedOnKey(general('--base', git('rev-parse', 'HEAD~1')), key);
+      });
+    }
+  });
+
+  describe('texts are scanned in batches: no key is lost between batches (review round 13, B1)', () => {
+    const body = (lines) => `${'lorem ipsum dolor sit amet\n'.repeat(lines)}`;
+    it('K keys in K messages across several batches give exactly K findings, a key at the end of one message and at the start of the next', () => {
+      const k = 12;
+      commit({ 'a.txt': 'one\n' });
+      const first = git('rev-parse', 'HEAD');
+      for (let i = 0; i < k; i += 1) {
+        const key = fakeKey();
+        const text = i % 2 === 0 ? `${body(780)}note ${key}` : `note ${key}\n${body(780)}`;
+        git('commit', '-q', '--allow-empty', '-m', text);
+      }
+      const r = general('--base', first);
+      assert.equal(r.status, 1, r.out);
+      assert.equal(Number(/, (\d+) in commit messages,/.exec(r.out)?.[1]), k, r.out);
+    });
   });
 
   it('stops on a key that only a merge commit adds (the merge is diffed against each parent)', () => {

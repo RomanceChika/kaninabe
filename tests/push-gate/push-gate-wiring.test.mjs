@@ -466,7 +466,7 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     assert.deepEqual(sb.calls(), []);
   });
 
-  it('runs gitleaks git once per listed commit, each with that commit only (ids, never names), plus each message and the tree of HEAD', () => {
+  it('runs gitleaks git once per listed commit, each with that commit only (ids, never names), plus the texts of the commits (one batch) and the tree of HEAD', () => {
     const r = runGate(sb, ['--mode', 'words', '--all'], words());
     assert.equal(r.status, 0, r.out);
     const calls = sb.calls();
@@ -476,9 +476,8 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     for (const id of ids) {
       assert.equal(histories.filter((l) => l.includes(`--log-opts=-1 -m ${id} `)).length, 1, `no run for ${id}: ${histories.join('\n')}`);
     }
-    assert.equal(calls.filter((l) => l.startsWith('gitleaks stdin')).length, ids.length, 'one per commit message');
-    assert.ok(!calls.some((l) => l.startsWith('gitleaks stdin') && l.includes('--report-path')), 'no stream of added lines any more');
-    assert.ok(calls.some((l) => l.startsWith('gitleaks dir')), calls.join('\n'));
+    assert.equal(calls.filter((l) => l.startsWith('gitleaks stdin')).length, 1, 'one batch for the texts of all the commits');
+        assert.ok(calls.some((l) => l.startsWith('gitleaks dir')), calls.join('\n'));
   });
 
   it('only the commits of the range are read: not a commit before --base', () => {
@@ -506,20 +505,84 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     assert.ok(/^push-gate: FAILED \(gitleaks\) in \d+ s$/m.test(bad.out), bad.out);
   });
 
-  describe('a commit message above 64 KiB stops the gate, so that the chunking of gitleaks stdin cannot apply to messages (review round 12, P3)', () => {
-    const withMessage = (bytes) => {
+  describe('the text of each commit (names, emails, message) is scanned in batches of at most 64 KiB (review round 13, Q1, B1)', () => {
+    const TEXT_FORMAT = '%an%n%ae%n%cn%n%ce%n%B';
+    /** The bytes of the text of one commit as the gate reads it: names, emails and message, as git prints them. */
+    const textBytes = (rev = 'HEAD') => Buffer.byteLength(spawnSync('git', ['log', '-1', `--format=${TEXT_FORMAT}`, rev], { cwd: sb.repo, encoding: 'utf8', env: sb.env() }).stdout, 'utf8');
+    /** An empty commit whose text is exactly `size` bytes (padding in the message). */
+    const commitOfSize = (size) => {
       const f = path.join(sb.dir, 'msg.txt');
-      writeFileSync(f, `${'m'.repeat(bytes - 1)}\n`);
+      writeFileSync(f, 'p\n');
       git(sb, 'commit', '-q', '--allow-empty', '-F', f);
+      const overhead = textBytes() - 2;
+      writeFileSync(f, `${'m'.repeat(size - overhead - 1)}\n`);
+      git(sb, 'commit', '-q', '--allow-empty', '--amend', '-F', f);
+      assert.equal(textBytes(), size, 'the text has the size the test asked for');
     };
-    it('a message of 64 KiB passes, one byte over stops (2) with a fixed reason', () => {
-      withMessage(65536);
-      assert.equal(runGate(sb, ['--mode', 'words', '--all'], words()).status, 0);
-      withMessage(65537 + 100);
+    const stdinRuns = () => sb.calls().filter((l) => l.startsWith('gitleaks stdin'));
+    const base = () => git(sb, 'rev-parse', 'HEAD');
+
+    it('small commits are one batch: one gitleaks stdin for all of them', () => {
+      commit(sb, { 'c.txt': 'x\n' });
       const r = runGate(sb, ['--mode', 'words', '--all'], words());
-      stops(r, 2, 'push-gate: step gitleaks could not run (a commit message is over 64 KiB)');
+      assert.equal(r.status, 0, r.out);
+      assert.equal(stdinRuns().length, 1, sb.calls().join('\n'));
+    });
+
+    it('texts are put together while the batch stays at or under 64 KiB, and a new batch starts otherwise', () => {
+      const first = base();
+      for (let i = 0; i < 5; i += 1) commitOfSize(30000);
+      const r = runGate(sb, ['--mode', 'words', '--base', first], words());
+      assert.equal(r.status, 0, r.out);
+      assert.equal(stdinRuns().length, 3, `5 texts of 30000 bytes are 2 + 2 + 1: ${sb.calls().join('\n')}`);
+    });
+
+    it('a batch exactly at the bound is one batch; one byte more starts another', () => {
+      const first = base();
+      commitOfSize(32768); commitOfSize(32768);
+      assert.equal(runGate(sb, ['--mode', 'words', '--base', first], words()).status, 0);
+      assert.equal(stdinRuns().length, 1, 'two texts of 32768 bytes are exactly 65536');
+      const second = base();
+      commitOfSize(32768); commitOfSize(32769);
+      const calls = stdinRuns().length;
+      assert.equal(runGate(sb, ['--mode', 'words', '--base', second], words()).status, 0);
+      assert.equal(stdinRuns().length - calls, 2, 'one byte more than the bound is two batches');
+    });
+
+    it('a single text of exactly 64 KiB passes; one byte over stops (2) with a fixed reason, and nothing of it is printed', () => {
+      const first = base();
+      commitOfSize(65536);
+      assert.equal(runGate(sb, ['--mode', 'words', '--base', first], words()).status, 0);
+      const second = base();
+      commitOfSize(65537);
+      const r = runGate(sb, ['--mode', 'words', '--base', second], words());
+      stops(r, 2, 'push-gate: step gitleaks could not run (the text of a commit is over 64 KiB)');
       assert.ok(!r.out.includes('mmmmmmmm'), 'the message is not printed');
     });
+
+    it('a finding in a batch is counted, not named: one number for all batches', () => {
+      for (let i = 0; i < 3; i += 1) commitOfSize(40000);
+      const r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_GITLEAKS_EXIT: '99', SHIM_REPORT_gitleaks: 'x\nx\n' });
+      assert.equal(r.status, 1, r.out);
+      assert.ok(/, (\d+) in commit messages,/.test(r.out) && Number(/, (\d+) in commit messages,/.exec(r.out)[1]) >= 6, r.out);
+      assert.ok(!/commit message of/.test(r.out), r.out);
+    });
+  });
+
+  describe('the clock is checked once, in one helper (review round 13, Q3)', () => {
+    const shimDate = (body) => {
+      rmSync(path.join(sb.bin, 'date'), { force: true });
+      writeFileSync(path.join(sb.bin, 'date'), `#!/bin/sh\n${body}\n`);
+      chmodSync(path.join(sb.bin, 'date'), 0o755);
+    };
+    for (const [label, body] of [['fails', 'exit 1'], ['prints text that is not a number', 'echo "Mon Jan  1 SECRETTEXT"'], ['prints nothing', 'exit 0']]) {
+      it(`a date that ${label} stops the gate (2) with a fixed reason and nothing of its output`, () => {
+        shimDate(body);
+        const r = runGate(sb, ['--mode', 'words', '--all'], words());
+        stops(r, 2, 'push-gate: could not read the clock');
+        assert.ok(!r.out.includes('SECRETTEXT'), r.out);
+      });
+    }
   });
 
   describe('what gitleaks says it scanned is checked, commit by commit (review round 11, P1)', () => {
@@ -569,7 +632,7 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     const r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), GITLEAKS_CONFIG: '/nonexistent/allow.toml', GITLEAKS_CONFIG_TOML: 'x' });
     assert.equal(r.status, 0, r.out);
     const calls = sb.calls().filter((l) => l.startsWith('gitleaks '));
-    assert.equal(calls.length, 5, 'git x2, stdin x2 for messages, dir');
+    assert.equal(calls.length, 4, 'git x2, stdin x1 for the texts, dir');
     for (const call of calls) {
       assert.ok(call.includes('--config') && call.includes('gitleaks-gate.toml'), `no fixed config: ${call}`);
       assert.ok(call.includes('--gitleaks-ignore-path'), `no ignore path: ${call}`);
@@ -588,8 +651,8 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
   it('says how much gitleaks found without printing any of it: counts, and the commits of messages', () => {
     const r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_GITLEAKS_EXIT: '99', SHIM_REPORT_gitleaks: HIT });
     assert.equal(r.status, 1, r.out);
-    assert.ok(r.out.includes('push-gate: step gitleaks: FAILED (2 finding(s) in patches, 2 in commit messages, 1 in the tree of HEAD)'), r.out);
-    assert.equal((r.out.match(/commit message of [0-9a-f]{8}/g) ?? []).length, 2, r.out);
+    assert.ok(r.out.includes('push-gate: step gitleaks: FAILED (2 finding(s) in patches, 1 in commit messages, 1 in the tree of HEAD)'), r.out);
+    assert.ok(!/commit message of/.test(r.out), 'a count, no ids');
   });
 
   it('a gitleaks error while reading a message or the tree stops the gate', () => {
@@ -1286,6 +1349,23 @@ describe('gitleaks-public.sh git: a history that cannot be read is exit 2, never
       chmodSync(bad, 0o755);
       const b = spawnSync('/bin/sh', [wrapper, mode, sb.repo], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ GL_BIN: bad }) });
       assert.ok(new RegExp(`^gitleaks ${mode}: FAILED \\(\\d+ finding\\(s\\)\\) in \\d+ s$`, 'm').test(b.stdout + b.stderr), `${mode}: ${b.stdout + b.stderr}`);
+    }
+  });
+
+  it('a date that fails or prints text that is not a number stops the wrapper (2) with a fixed reason (review round 13, Q3)', () => {
+    for (const body of ['exit 1', 'echo "Mon Jan  1 SECRETTEXT"']) {
+      rmSync(path.join(sb.bin, 'date'), { force: true });
+      writeFileSync(path.join(sb.bin, 'date'), `#!/bin/sh\n${body}\n`);
+      chmodSync(path.join(sb.bin, 'date'), 0o755);
+      for (const mode of ['git', 'dir']) {
+        const f = path.join(sb.dir, 'clock-gitleaks');
+        writeFileSync(f, '#!/bin/sh\n[ "$1" != git ] || echo "6:02PM INF 1 commits scanned." >&2\nexit 0\n');
+        chmodSync(f, 0o755);
+        const r = spawnSync('/bin/sh', [wrapper, mode, sb.repo], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ GL_BIN: f }) });
+        assert.equal(r.status, 2, `${mode}: ${r.stdout + r.stderr}`);
+        assert.ok((r.stdout + r.stderr).includes(`gitleaks ${mode}: could not run (could not read the clock)`), r.stdout + r.stderr);
+        assert.ok(!(r.stdout + r.stderr).includes('SECRETTEXT'), r.stdout + r.stderr);
+      }
     }
   });
 

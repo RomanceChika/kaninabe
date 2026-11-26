@@ -27,7 +27,9 @@ git config --get core.hooksPath                  # .githooks と出ること
 
 - 語の一覧はリポジトリの外に置きます。`SCAN_WORDS_FILE` か、`git config kaninabe.scanWords <path>`(setup に `--words <path>` で渡せます)で hook に教えます。一覧が無い・空・読めないときは、hook は通さずに止まります。owner は `SCAN_OWNER` か `kaninabe.scanOwner`(`--owner <name>`)です。
 - push の前に、push する差分(関門と同じ範囲)を Opus が読み、「公開してよいか」に答えます。読んだ commit の sha を記録します: `git config kaninabe.contentReviewed <sha>`。記録が push する commit と一致しないと pre-push が止めます(commit を足したら読み直します)。記録は作り手が書けるので、防げるのは読み忘れまでです。読んでいないものを読んだことにしません(決まり)。
-- 関門は `scripts/push-gate.sh` の 1 本です(gitleaks・語の一覧の走査・workflow の検査)。hook は必ず `--mode words` で呼びます。手で `--mode` を変えたり、`--no-verify` で飛ばしたりしません(決まり)。
+- 関門は `scripts/push-gate.sh` の 1 本です(gitleaks=履歴・各 commit の message・HEAD の木、語の一覧の走査、workflow の検査)。hook は必ず `--mode words` で呼びます。手で `--mode` を変えたり、`--no-verify` で飛ばしたりしません(決まり)。
+- hook は、いま checkout している commit のほかの push と、tag の push(tag は tag の workflow だけが作る)を断ります。push 先の URL が、fetch の URL とも push の URL とも一致しないとき(`pushurl` を分けているとき等)は、「remote にすでにある」とみなさず、全部の commit を走査します。
+- 語の一覧に、コメントと空行しか無い(効く行が 0 本の)ときは、走査が走らないので止まります。
 - 関門の出力は、step の名前・件数・commit の短い id・path と行だけです。当たった語は出ません。作業を別の model に任せるときは、公開される文を書かせる指示に、同じ走査を通すことを含めます。
 
 ## 最小の確認

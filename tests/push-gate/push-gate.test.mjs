@@ -37,6 +37,7 @@ const CORE = [
 
 const SHIM_BODY = (name, exitVar) => `#!/bin/sh
 printf '%s\\n' "${name} $*" >> "$SHIM_LOG"
+[ -z "\${SHIM_OUT_${name}:-}" ] || printf '%s' "\${SHIM_OUT_${name}}"
 exit "\${${exitVar}:-0}"
 `;
 
@@ -138,9 +139,11 @@ function runGate(sb, args, env = {}) {
 }
 
 /** Runs the pre-push hook as git does: `<remote> <url>` as arguments and the ref lines on stdin. */
-function runHook(sb, { remote = 'origin', lines = [], env = {} } = {}) {
+function runHook(sb, { remote = 'origin', lines = [], env = {}, url } = {}) {
   const input = lines.map((l) => `${l}\n`).join('');
-  const r = spawnSync('/bin/sh', [hook, remote, 'unused-url'], { cwd: sb.repo, encoding: 'utf8', env: sb.env(env), input });
+  // Git passes the URL it pushes to; by default, the remote's own URL when there is one.
+  const own = spawnSync('git', ['remote', 'get-url', remote], { cwd: sb.repo, encoding: 'utf8' });
+  const r = spawnSync('/bin/sh', [hook, remote, url ?? (own.status === 0 ? own.stdout.trim() : 'unused-url')], { cwd: sb.repo, encoding: 'utf8', env: sb.env(env), input });
   return { status: r.status, out: r.stdout + r.stderr };
 }
 
@@ -428,6 +431,84 @@ describe('push-gate.sh: output', () => {
     assert.ok(!/^\+ /m.test(r.out), r.out);
   });
 });
+
+describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failures of listing)', () => {
+  const words = () => ({ SCAN_WORDS_FILE: sb.words });
+  const scanPublic = path.join(scripts, 'scan-public.sh');
+  beforeEach(() => {
+    commit(sb, { 'a.txt': 'one\n' });
+    commit(sb, { 'b.txt': 'two\n' });
+    writeWords(sb);
+  });
+
+  it('words mode: a list that holds only comments and blank lines did not run, so the gate stops', () => {
+    writeWords(sb, '# only a comment\n\n# another\n');
+    stops(runGate(sb, ['--mode', 'words', '--all'], words()), 2, 'push-gate: the word list has no pattern (only comments and blank lines)');
+    assert.deepEqual(sb.calls(), []);
+  });
+
+  it('asks gitleaks for the history with merges diffed, each commit message, and the tree of HEAD', () => {
+    const r = runGate(sb, ['--mode', 'words', '--all'], words());
+    assert.equal(r.status, 0, r.out);
+    const calls = sb.calls();
+    assert.ok(calls.some((l) => l.startsWith('gitleaks git') && l.includes('--log-opts=-m HEAD')), calls.join('\n'));
+    assert.equal(calls.filter((l) => l.startsWith('gitleaks stdin')).length, 2, 'one per commit message');
+    assert.ok(calls.some((l) => l.startsWith('gitleaks dir')), calls.join('\n'));
+  });
+
+  it('names where gitleaks found something without printing it: messages and the tree are reported by place', () => {
+    const r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_GITLEAKS_EXIT: '99' });
+    assert.equal(r.status, 1, r.out);
+    assert.equal((r.out.match(/commit message of [0-9a-f]{8}/g) ?? []).length, 2, r.out);
+    assert.ok(r.out.includes('tree of HEAD'), r.out);
+    assert.ok(r.out.includes('push-gate: step gitleaks: FAILED'), r.out);
+  });
+
+  it('a gitleaks error while reading a message or the tree stops the gate', () => {
+    stops(runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_GITLEAKS_EXIT: '2' }), 2, 'push-gate: step gitleaks could not run (exit 2)');
+  });
+
+  it('stops when the commits cannot be listed (a missing parent object), instead of scanning nothing', () => {
+    const first = git(sb, 'rev-list', '--max-parents=0', 'HEAD');
+    rmSync(path.join(sb.repo, '.git/objects', first.slice(0, 2), first.slice(2)), { force: true });
+    stops(runGate(sb, ['--mode', 'words', '--all'], words()), 2, 'push-gate: could not list the commits');
+  });
+
+  it('scan-public.sh itself stops when rev-list fails: --revs with nothing after it is not "clean"', () => {
+    const r = spawnSync('/bin/sh', [scanPublic, '--revs'], { cwd: sb.repo, encoding: 'utf8', env: sb.env() });
+    assert.equal(r.status, 2, r.stdout + r.stderr);
+    assert.ok((r.stdout + r.stderr).includes('scan: git rev-list failed'), r.stdout + r.stderr);
+    assert.ok(!(r.stdout + r.stderr).includes('scan-public: clean'));
+  });
+
+  it('in CI the public output is rule names and counts only; locally it names places', () => {
+    commit(sb, { 'notes.txt': `${WORD}\n`, '.github/workflows/ci.yml': 'name: x\n' });
+    const env = { ...words(), SHIM_ACTIONLINT_EXIT: '1', SHIM_OUT_actionlint: '.github/workflows/ci.yml:3: [syntax-check]|' };
+    const ci = runGate(sb, ['--mode', 'words', '--all'], { ...env, CI: 'true' });
+    assert.equal(ci.status, 1, ci.out);
+    assert.ok(ci.out.includes('word list: 1 file(s)'), ci.out);
+    assert.ok(ci.out.includes('rule syntax-check: 1'), ci.out);
+    assert.ok(!ci.out.includes('notes.txt'), `a path leaked into the CI output: ${ci.out}`);
+    assert.ok(!ci.out.includes('ci.yml:3'), `a path leaked into the CI output: ${ci.out}`);
+    const local = runGate(sb, ['--mode', 'words', '--all'], env);
+    assert.ok(local.out.includes('at notes.txt:1'), local.out);
+    assert.ok(local.out.includes('at .github/workflows/ci.yml:3: [syntax-check]'), local.out);
+  });
+
+  it('scan-public.sh keeps its default output (the old CI step relies on it); SCAN_QUIET=1 drops the places', () => {
+    commit(sb, { 'notes.txt': `${WORD}\n` });
+    const run = (extra) => {
+      const r = spawnSync('/bin/sh', [scanPublic], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ ...words(), CI: 'true', ...extra }) });
+      return { status: r.status, out: r.stdout + r.stderr };
+    };
+    const plain = run({});
+    assert.equal(plain.status, 1, plain.out);
+    assert.ok(plain.out.includes('at notes.txt:1'), plain.out);
+    const quiet = run({ SCAN_QUIET: '1' });
+    assert.equal(quiet.status, 1, quiet.out);
+    assert.ok(quiet.out.includes('word list: 1 file(s)') && !quiet.out.includes('notes.txt'), quiet.out);
+  });
+});
 }
 
 // ---- the hook ----
@@ -542,6 +623,39 @@ describe('pre-push hook', () => {
     assert.ok(r.out.includes('not the checked-out commit'), r.out);
   });
 
+  it('uses --not-on-remote only when the pushed URL is both the fetch URL and the push URL', () => {
+    git(sb, 'update-ref', 'refs/remotes/origin/main', head);
+    const next = commit(sb, { 'b.txt': 'two\n' });
+    record(next);
+    const fetchUrl = git(sb, 'remote', 'get-url', 'origin');
+    let r = runHook(sb, { lines: [pushLine(next, head)], env: words(), url: fetchUrl });
+    assert.equal(r.status, 0, r.out);
+    assert.ok(r.out.includes('(mode words, 1 commit(s))'), `commits the remote has are left out: ${r.out}`);
+    const other = path.join(sb.dir, 'elsewhere.git');
+    git({ ...sb, cwd: sb.dir }, 'init', '-q', '--bare', other);
+    git(sb, 'config', 'remote.origin.pushurl', other);
+    r = runHook(sb, { lines: [pushLine(next, head)], env: words(), url: other });
+    assert.equal(r.status, 0, r.out);
+    assert.ok(r.out.includes('(mode words, 2 commit(s))'), `a push URL that differs from the fetch URL scans everything: ${r.out}`);
+    r = runHook(sb, { lines: [pushLine(next, head)], env: words(), url: 'https://example.invalid/x.git' });
+    assert.ok(r.out.includes('(mode words, 2 commit(s))'), `a URL that is neither scans everything: ${r.out}`);
+  });
+
+  it('refuses a tag push with the reason, and lets a tag deletion through', () => {
+    git(sb, 'tag', '-a', 'v1', '-m', 'note');
+    const tagObject = git(sb, 'rev-parse', 'v1');
+    record(head);
+    for (const sha of [tagObject, head]) {
+      const r = runHook(sb, { lines: [`refs/tags/v1 ${sha} refs/tags/v1 ${ZERO}`], env: words() });
+      assert.notEqual(r.status, 0, r.out);
+      assert.ok(r.out.includes('pre-push: refusing to push a tag'), r.out);
+      assert.ok(r.out.includes('tags are created only by the tag workflow'), r.out);
+    }
+    assert.deepEqual(sb.calls(), []);
+    const del = runHook(sb, { lines: [`(delete) ${ZERO} refs/tags/v1 ${tagObject}`] });
+    assert.equal(del.status, 0, del.out);
+  });
+
   it('with nothing to push, does nothing', () => {
     const r = runHook(sb, { lines: [] });
     assert.equal(r.status, 0, r.out);
@@ -587,6 +701,13 @@ describe('setup-dev-env.sh', { skip: !supported && 'the pinned tools are for lin
     const r = setup(['--bin-dir', target], { SETUP_DEV_ENV_MIRROR: `file://${path.join(sb.dir, 'absent')}` });
     assert.notEqual(r.status, 0, r.out);
     assert.ok(r.out.includes('setup-dev-env: could not download gitleaks'), r.out);
+  });
+
+  it('accepts --no-hooks and --no-path-check (for a CI job that only needs the tools) and still refuses a bad download', () => {
+    writeFileSync(path.join(mirror, 'gitleaks_8.30.0_linux_x64.tar.gz'), 'not the real archive');
+    const r = setup(['--bin-dir', target, '--no-hooks', '--no-path-check'], { SETUP_DEV_ENV_MIRROR: `file://${mirror}` });
+    assert.notEqual(r.status, 0, r.out);
+    assert.ok(r.out.includes('setup-dev-env: checksum mismatch for gitleaks'), r.out);
   });
 
   it('rejects an unknown option', () => {

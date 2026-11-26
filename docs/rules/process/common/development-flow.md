@@ -111,7 +111,8 @@ PR をどう切るか、どの順に書くか、review で何を読むかを決�
   - `basis` の commit が、その PR の履歴の上にある(head から 1 番目の親をたどった道の上にあり、起点の子孫である)。
   - 差分は、その道の commit から数える。道に merge commit があれば赤にする(下の「`dev` の取り込みがある履歴」)。
   - `basis-opus` と `basis-codex` の sha が `basis` と同じである。**記録を動かしたら、前の 2 行は合わなくなり、書き直すまで赤のままである**(古い review は、新しい基準に引き継がれない)。
-  - 2 行の URL が、その PR の comment を指し(ほかの PR や issue の comment は通さない)、その comment に、pr-gate が求めた起点の sha と `basis` の sha が書いてある。どれかが照合できなければ、未確認として赤にする。comment はあとから編集できるので、照合するのは、そのときの comment の中身である(編集の履歴は GitHub に残る)。
+  - 2 行の URL が、その PR の comment を指し(ほかの PR や issue の comment は通さない)、その comment に、pr-gate が求めた起点の sha と `basis` の sha が書いてある。どれかが照合できなければ、未確認として赤にする。2 行が同じ comment を指していれば赤にする(2 本の別々の答えであること)。
+  - comment はあとから編集も削除もできるので、照合は、そのときの comment の中身に対するものである。pr-gate は、照合した 2 本の comment の id と本文の hash を出力に残す。**merge-check は、merge の直前に 2 本の comment を取り直し、id と本文の hash が pr-gate の出力と同じであることを確かめる。** 違っていれば pr-gate を回し直して照合し直し、取れなければ未確認として merge しない。これは照合の結果が古くなっていないことの確かめであり、答えた者の独立を示すものではない。
   - **機械が確かめるのは、ここまでである。** その comment を書いたのが reviewer 本人であること、2 人が独立に読んだこと、差分を本当に読んだことは、機械では確かめられない(review の記録と同じで、決まりである)。
   - 起点から `basis` までに、その PR が持ち込んだ差分が、基準と生成物だけである(基準の段階に実装を混ぜない)。
   - `basis` から head までに、その PR が持ち込んだ差分に、基準の file が無い。
@@ -315,7 +316,7 @@ framework では種類で検査を減らさないので、この表は product �
 merge-check(framework が持つ 1 つの script)が、**merge する head の sha について**次を確かめる。1 つでも欠ければ merge しない。
 
 1. base が `dev` である。
-2. その head に対する最新の pr-gate の run が success で、検査された題と本文の hash が、merge に渡す文の hash と一致する。
+2. その head に対する最新の pr-gate の run が success で、検査された題と本文の hash が、merge に渡す文の hash と一致する。基準の commit の記録がある PR では、pr-gate が照合した 2 本の答えの comment の id と本文の hash が、いまの comment と一致する(「基準の commit の記録」)。
 3. その head に対する最新の CI の run が success で、最後の照合の step が「base 側の表が指した段がすべて成功した」と出している。run が無い・実行中・古い run しか無いのは合格ではない。
 4. (product)その CI が検査した base の sha が、いまの `dev` の先頭と同じである。違えば ready にし直して proof を取り直す(head は変わらないので review の記録は有効なまま)。これは **merge の直前の照合と、merge の後の検出**の組であり、照合から squash が成立するまでのあいだに `dev` が動くことを機械で止めてはいない(「draft でない PR は 1 度に 1 本」がその窓を狭くしている)。厳密に防ぐこと、つまり base を固定して検査と取り込みを 1 つの操作に結び付けることは、merge-check の実装の受け入れ条件にする(できないと分かったら、known gaps に書く)。
 5. `## Review` の 2 つの sha が head と一致する(pr-gate が確かめる)。2 人が収束していて、Codex の指摘に答えの無いものが残っていない(決まり)。
@@ -370,7 +371,7 @@ merge-check は merge する側が回すので、回さずに merge すること
 | review を受けずに記録を書かない | **決まり**。検査が防げるのは「古い・無い」まで | 決まり |
 | `.github/**` の変更が検査を空にせず、権限を広げない | pr-gate が、PR や branch への push で動く workflow の権限と secret の参照を確かめる(最初の実行の後の検出)。ほかは **決まり**(混ぜない、review の観点の固定、merge 後に持ち主へ知らせる)。毎晩の定期の task が、固定の script で検出をやり直す | 決まり + 検出 |
 | 基準の commit の記録のあとで、仕様と test と test が読むものが変わらない。基準の段階に実装が混ざらない | 「基準」の path の一覧(base 側)と、pr-gate の照合(入るまでは手順と review) | 予防 |
-| 基準を動かしたら、2 人の答えの記録が新しい基準を指すまで merge できない | pr-gate が、`basis` と 2 人の行の sha の一致と、答えの comment(その PR の comment であること、起点、`basis`)を照合する。照合できなければ未確認として赤 | 予防(sha と comment の照合まで。本人が読んだことは決まり) |
+| 基準を動かしたら、2 人の答えの記録が新しい基準を指すまで merge できない | pr-gate が、`basis` と 2 人の行の sha の一致と、答えの comment(その PR の comment であること、起点、`basis`)を照合する。2 行が同じ comment なら赤。照合できなければ未確認として赤。merge-check が、merge の直前に comment の id と本文の hash を照合し直す | 予防(sha と comment の照合まで。本人が読んだことは決まり) |
 | 基準の改訂のどれにも、実装が混ざらない | pr-gate が、最初の記録から `basis` までの commit を全部見る。履歴に merge commit があれば赤(衝突のときは積み直して記録を取り直す) | 予防 |
 | 記録を動かすとき、実装に合わせて基準を動かしていない | **決まり**と review の観点(本文に理由を書く) | 決まり |
 | test が実装より先に書かれた | 基準の commit で赤だったことを確かめて PR に書く(evidence) | 決まり |

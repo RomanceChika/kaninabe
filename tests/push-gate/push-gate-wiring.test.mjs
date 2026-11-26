@@ -49,6 +49,8 @@ printf '%s\\n' "${name} $* #env:\${GITLEAKS_CONFIG-unset}:\${GITLEAKS_CONFIG_TOM
 [ -z "\${SHIM_OUT_${name}:-}" ] || printf '%s' "\${SHIM_OUT_${name}}"
 if [ "${name}" = gitleaks ]; then
   [ -z "\${SHIM_STDERR_gitleaks:-}" ] || printf '%b\\n' "\${SHIM_STDERR_gitleaks}" >&2
+  # the stdin of a run that has a report path (the batches of commit texts) is appended to a file for the test to read
+  if [ "$1" = stdin ] && [ -n "\${SHIM_STDIN_DUMP:-}" ]; then case "$*" in *--report-path*) cat >> "$SHIM_STDIN_DUMP" ;; esac; fi
   # a history run (gitleaks git) says how many commits it scanned, as the real tool does at info level; SHIM_SCANNED sets the
   # number ("none" prints no such line)
   if [ "$1" = git ] && [ "\${SHIM_SCANNED:-1}" != none ]; then printf '%s\\n' "6:02PM INF \${SHIM_SCANNED:-1} commits scanned." >&2; fi
@@ -537,24 +539,24 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
       assert.equal(stdinRuns().length, 3, `5 texts of 30000 bytes are 2 + 2 + 1: ${sb.calls().join('\n')}`);
     });
 
-    it('a batch exactly at the bound is one batch; one byte more starts another', () => {
+    it('a batch exactly at the bound (each text counted with its separator byte) is one batch; one byte more starts another', () => {
       const first = base();
-      commitOfSize(32768); commitOfSize(32768);
+      commitOfSize(32767); commitOfSize(32767);
       assert.equal(runGate(sb, ['--mode', 'words', '--base', first], words()).status, 0);
-      assert.equal(stdinRuns().length, 1, 'two texts of 32768 bytes are exactly 65536');
+      assert.equal(stdinRuns().length, 1, 'two texts of 32767 bytes and a separator each are exactly 65536');
       const second = base();
-      commitOfSize(32768); commitOfSize(32769);
+      commitOfSize(32767); commitOfSize(32768);
       const calls = stdinRuns().length;
       assert.equal(runGate(sb, ['--mode', 'words', '--base', second], words()).status, 0);
       assert.equal(stdinRuns().length - calls, 2, 'one byte more than the bound is two batches');
     });
 
-    it('a single text of exactly 64 KiB passes; one byte over stops (2) with a fixed reason, and nothing of it is printed', () => {
+    it('a single text that with its separator byte is exactly 64 KiB passes; one byte over stops (2) with a fixed reason, and nothing of it is printed', () => {
       const first = base();
-      commitOfSize(65536);
+      commitOfSize(65535);
       assert.equal(runGate(sb, ['--mode', 'words', '--base', first], words()).status, 0);
       const second = base();
-      commitOfSize(65537);
+      commitOfSize(65536);
       const r = runGate(sb, ['--mode', 'words', '--base', second], words());
       stops(r, 2, 'push-gate: step gitleaks could not run (the text of a commit is over 64 KiB)');
       assert.ok(!r.out.includes('mmmmmmmm'), 'the message is not printed');
@@ -567,6 +569,56 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
       assert.ok(/, (\d+) in commit messages,/.test(r.out) && Number(/, (\d+) in commit messages,/.exec(r.out)[1]) >= 6, r.out);
       assert.ok(!/commit message of/.test(r.out), r.out);
     });
+  });
+
+  describe('a grep that fails is "could not run", never "nothing found" (review round 17, V2)', () => {
+    const shimGrep = () => {
+      rmSync(path.join(sb.bin, 'grep'), { force: true });
+      writeFileSync(path.join(sb.bin, 'grep'), `#!/bin/sh\n. "$(dirname "$0")/shim.env"\ncase "$*" in *"\${SHIM_GREP_FAIL:-NEVER-MATCHES-ANYTHING}"*) exit 2 ;; esac\nexec ${which('grep')} "$@"\n`);
+      chmodSync(path.join(sb.bin, 'grep'), 0o755);
+    };
+    it('the word-list check on commit text: scan-public exits 2 (ERROR), and so does the gate', () => {
+      shimGrep(); writeWords(sb);
+      const r = spawnSync('/bin/sh', [path.join(scripts, 'scan-public.sh')], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ ...words(), SHIM_GREP_FAIL: '-qiE -f' }) });
+      assert.equal(r.status, 2, r.stdout + r.stderr);
+      assert.ok((r.stdout + r.stderr).includes('scan-public: ERROR'), r.stdout + r.stderr);
+      stops(runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_GREP_FAIL: '-qiE -f' }), 2, 'push-gate: step scan-public could not run (exit 2)');
+    });
+    it('the check of gitleaks\' log for an error line: the gate and the wrapper exit 2', () => {
+      shimGrep();
+      stops(runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_GREP_FAIL: '(ERR|FTL|PNC)' }), 2, 'push-gate: ');
+      const f = path.join(sb.dir, 'plain-gitleaks');
+      writeFileSync(f, '#!/bin/sh\n[ "$1" != git ] || echo "6:02PM INF 1 commits scanned." >&2\nexit 0\n');
+      chmodSync(f, 0o755);
+      for (const mode of ['git', 'dir']) {
+        const r = spawnSync('/bin/sh', [path.join(scripts, 'gitleaks-public.sh'), mode, sb.repo], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ GL_BIN: f, SHIM_GREP_FAIL: '(ERR|FTL|PNC)' }) });
+        assert.equal(r.status, 2, `${mode}: ${r.stdout + r.stderr}`);
+        assert.ok(!(r.stdout + r.stderr).includes(`gitleaks ${mode}: ok`), r.stdout + r.stderr);
+      }
+    });
+    it('the check of the workflow file names: the gate exits 2', () => {
+      shimGrep();
+      commit(sb, { '.github/workflows/ci.yml': 'name: x\n' });
+      stops(runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_GREP_FAIL: '[A-Za-z0-9._/-]+$' }), 2, 'push-gate: ');
+    });
+  });
+
+  it('the total time of the gate runs from the very start, not from after the range is fixed (review round 17, V3)', () => {
+    // a clock that counts the calls of git: the total must be the number of git calls of the whole run
+    const count = path.join(sb.dir, 'git-calls.txt');
+    const realGit = which('git');
+    rmSync(path.join(sb.bin, 'git'), { force: true });
+    writeFileSync(path.join(sb.bin, 'git'), `#!/bin/sh\n. "$(dirname "$0")/shim.env"\necho x >> "$SHIM_COUNT"\nexec ${realGit} "$@"\n`);
+    chmodSync(path.join(sb.bin, 'git'), 0o755);
+    rmSync(path.join(sb.bin, 'date'), { force: true });
+    writeFileSync(path.join(sb.bin, 'date'), '#!/bin/sh\n. "$(dirname "$0")/shim.env"\necho $((1000 + $(wc -l < "$SHIM_COUNT")))\n');
+    chmodSync(path.join(sb.bin, 'date'), 0o755);
+    writeFileSync(count, '');
+    const r = runGate(sb, ['--mode', 'general', '--all'], { SHIM_COUNT: count });
+    assert.equal(r.status, 0, r.out);
+    const total = Number(/^push-gate: passed .* in (\d+) s$/m.exec(r.out)?.[1]);
+    const calls = readFileSync(count, 'utf8').split('\n').filter(Boolean).length;
+    assert.equal(total, calls, `the total (${total}) is not start to end (${calls} git calls): ${r.out}`);
   });
 
   describe('the clock is checked once, in one helper (review round 13, Q3)', () => {
@@ -793,6 +845,16 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
         assert.ok(r.out.includes('email-like string in the message of'), r.out);
       });
     }
+    it('every text is followed by a separator line break, whatever it ends with: two records without a trailing newline stay on their own lines (review round 17, V1)', () => {
+      const first = git(sb, 'rev-parse', 'HEAD');
+      rawCommit({ message: 'no newline at the end' });
+      rawCommit({ message: 'another one' });
+      const dump = path.join(sb.dir, 'batches.txt');
+      const r = runGate(sb, ['--mode', 'general', '--base', first], { SHIM_STDIN_DUMP: dump });
+      assert.equal(r.status, 0, r.out);
+      const lines = readFileSync(dump, 'utf8').split('\n');
+      assert.equal(lines.filter((l) => /^tree [0-9a-f]{40}$/.test(l)).length, 2, `a record joined the line of the one before: ${lines.join('|')}`);
+    });
     it('an attribution trailer inside a header (a merged tag message) is found', () => {
       rawCommit({ extra: `mergetag object x\n type commit\n \n Co-Authored-By: Claude <${['noreply', 'anthropic.com'].join('@')}>\n` });
       const r = scan();

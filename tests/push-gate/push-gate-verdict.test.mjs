@@ -161,6 +161,17 @@ describe('push-gate.sh with the real tools', () => {
         stoppedOnKey(general('--base', first), key);
       });
     }
+    it('a key as the last bytes of a text without a trailing newline is found, whatever follows (review round 17, V1)', () => {
+      // an AWS access key id ends at a word boundary: joined to the next record's "tree ..." it would not be found
+      const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+      const key = `AKIA${Array.from(randomBytes(16), (b) => alphabet[b % 32]).join('')}`;
+      const first = base();
+      rawCommit({ message: `note ${key}` });
+      rawCommit({ message: 'next\n' });
+      const r = general('--base', first);
+      assert.equal(r.status, 1, r.out);
+      assert.ok(!r.out.includes(key), r.out);
+    });
     it('no false positive from the usual lines: tree, parent, and gpgsig blocks of random base64, in general and in words mode', () => {
       const first = base();
       for (let i = 0; i < 5; i += 1) {

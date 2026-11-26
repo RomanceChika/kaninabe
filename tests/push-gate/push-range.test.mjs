@@ -128,6 +128,17 @@ describe('push-range.sh', () => {
     assert.ok(r.all.includes('push-range: objects are missing here, so the history cannot be read to the end'), r.all);
   });
 
+  it('a grep that fails while looking for missing objects is exit 2, not "no object is missing" (review round 17, V2)', () => {
+    commit(repo, 'a.txt');
+    const shim = path.join(dir, 'shim-bin');
+    mkdirSync(shim);
+    const realGrep = spawnSync('/bin/sh', ['-c', 'command -v grep'], { encoding: 'utf8' }).stdout.trim();
+    writeFileSync(path.join(shim, 'grep'), `#!/bin/sh\ncase "$*" in "-q ^?"*) exit 2 ;; esac\nexec ${realGrep} "$@"\n`, { mode: 0o755 });
+    const r = run([bare], repo, { PATH: `${shim}:${process.env.PATH}` });
+    assert.equal(r.status, 2, r.all);
+    assert.equal(r.out.trim(), '', 'it printed a range');
+  });
+
   it('stops when the history cannot be read (a missing parent commit)', () => {
     const a = commit(repo, 'a.txt');
     commit(repo, 'b.txt');

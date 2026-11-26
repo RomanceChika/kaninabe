@@ -30,7 +30,14 @@ for c in $(git rev-list $range); do
     n=$(git grep -IlE "$re" "$c" -- "$prefix" 2>/dev/null | wc -l | tr -d ' ')
     if [ "$n" != "0" ]; then echo "scoped word list: $n file(s) under $prefix in $short"; git grep -InE "$re" "$c" -- "$prefix" 2>/dev/null | cut -d: -f2,3 | head -50 | sed "s|^|  at |"; fail=1; fi
   done < "$scoped"
-  if git log -1 --format='%an%n%ae%n%cn%n%ce%n%B' "$c" | grep -qiE 'Co-Authored|Claude-Session|Generated with'; then echo "attribution line in $short"; fail=1; fi
+  # AI attribution lines are refused. A co-author trailer is allowed only for a GitHub noreply address that names no AI
+  # (a squash merge adds `Co-authored-by: <owner> <...@users.noreply.github.com>` by itself; scan-pr-text.sh checks
+  # the rest of that commit's message before the merge).
+  if git log -1 --format='%an%n%ae%n%cn%n%ce%n%B' "$c" | grep -iE 'Co-Authored|Claude-Session|Generated with' \
+     | grep -viE '^co-authored-by: [^<]*<[A-Za-z0-9._+-]+@users\.noreply\.github\.com>$' | grep -q . \
+     || git log -1 --format='%B' "$c" | grep -iE '^co-authored-by:' | grep -qiE 'claude|anthropic'; then
+    echo "attribution line in $short"; fail=1
+  fi
   n=$(git grep -IlE "$generic" "$c" -- . ':!package-lock.json' ':!**/package-lock.json' 2>/dev/null | wc -l | tr -d ' ')
   if [ "$n" != "0" ]; then
     m=$(git grep -IhoE '/Users/[A-Za-z0-9_.-]+|/home/[a-z0-9_.-]+/|C:\\Users|BEGIN [A-Z ]*PRIVATE KEY' "$c" -- . ':!package-lock.json' ':!**/package-lock.json' | sed 's/^[^:]*://' | grep -vE '^/home/(u|a|user|x|me|app|runner|node)/$' | wc -l | tr -d ' ')

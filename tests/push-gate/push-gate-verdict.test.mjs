@@ -136,6 +136,46 @@ describe('push-gate.sh with the real tools', () => {
     }
   });
 
+  describe('the text of a commit is the whole raw object, with NUL as a line break (review round 14, R1)', () => {
+    const rawCommit = ({ extra = '', message = 'plain\n' } = {}) => {
+      const tree = git('rev-parse', 'HEAD^{tree}');
+      const parent = git('rev-parse', 'HEAD');
+      const who = 'Tester <tester@users.noreply.github.com> 1700000000 +0000';
+      const body = Buffer.concat([Buffer.from(`tree ${tree}\nparent ${parent}\nauthor ${who}\ncommitter ${who}\n${extra}\n`), Buffer.isBuffer(message) ? message : Buffer.from(message)]);
+      const r = spawnSync('git', ['hash-object', '-t', 'commit', '-w', '--literally', '--stdin'], { cwd: repo, input: body, env: { ...process.env, ...env(), PATH: process.env.PATH } });
+      assert.equal(r.status, 0, String(r.stderr));
+      git('update-ref', 'refs/heads/main', String(r.stdout).trim());
+    };
+    const base = () => { commit({ 'a.txt': 'one\n' }); return git('rev-parse', 'HEAD'); };
+    const cases = {
+      'a mergetag header': (k) => ({ extra: `mergetag object ${'0'.repeat(40)}\n type commit\n tag t1\n tagger T <t@users.noreply.github.com> 1 +0000\n \n token = ${k}\n` }),
+      'an arbitrary extra header': (k) => ({ extra: `x-extra: token = ${k}\n` }),
+      'a gpgsig-shaped continuation line': (k) => ({ extra: `gpgsig -----BEGIN PGP SIGNATURE-----\n \n token = ${k}\n -----END PGP SIGNATURE-----\n` }),
+      'the message after a NUL': (k) => ({ message: Buffer.concat([Buffer.from('subject\n'), Buffer.from([0]), Buffer.from(`hidden token = ${k}\n`)]) }),
+    };
+    for (const [label, build] of Object.entries(cases)) {
+      it(`a key in ${label} stops the gate`, () => {
+        const key = fakeKey();
+        const first = base();
+        rawCommit(build(key));
+        stoppedOnKey(general('--base', first), key);
+      });
+    }
+    it('no false positive from the usual lines: tree, parent, and gpgsig blocks of random base64, in general and in words mode', () => {
+      const first = base();
+      for (let i = 0; i < 5; i += 1) {
+        const sig = randomBytes(300).toString('base64').match(/.{1,64}/g).map((l) => ` ${l}`).join('\n');
+        rawCommit({ extra: `gpgsig -----BEGIN PGP SIGNATURE-----\n \n${sig}\n -----END PGP SIGNATURE-----\n` });
+      }
+      const g = general('--base', first);
+      assert.equal(g.status, 0, g.out);
+      const wordsFile = path.join(dir, 'words.txt');
+      writeFileSync(wordsFile, 'zzgatewordzz\n');
+      const w = gateRun(['--mode', 'words', '--base', first], { SCAN_WORDS_FILE: wordsFile });
+      assert.equal(w.status, 0, w.out);
+    });
+  });
+
   describe('texts are scanned in batches: no key is lost between batches (review round 13, B1)', () => {
     const body = (lines) => `${'lorem ipsum dolor sit amet\n'.repeat(lines)}`;
     it('K keys in K messages across several batches give exactly K findings, a key at the end of one message and at the start of the next', () => {

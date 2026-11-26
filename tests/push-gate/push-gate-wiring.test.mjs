@@ -19,6 +19,7 @@ import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -506,9 +507,8 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
   });
 
   describe('the text of each commit (names, emails, message) is scanned in batches of at most 64 KiB (review round 13, Q1, B1)', () => {
-    const TEXT_FORMAT = '%an%n%ae%n%cn%n%ce%n%B';
-    /** The bytes of the text of one commit as the gate reads it: names, emails and message, as git prints them. */
-    const textBytes = (rev = 'HEAD') => Buffer.byteLength(spawnSync('git', ['log', '-1', `--format=${TEXT_FORMAT}`, rev], { cwd: sb.repo, encoding: 'utf8', env: sb.env() }).stdout, 'utf8');
+        /** The bytes of the text of one commit as the gate reads it: the raw commit object. */
+    const textBytes = (rev = 'HEAD') => spawnSync('git', ['cat-file', 'commit', rev], { cwd: sb.repo, env: sb.env() }).stdout.length;
     /** An empty commit whose text is exactly `size` bytes (padding in the message). */
     const commitOfSize = (size) => {
       const f = path.join(sb.dir, 'msg.txt');
@@ -753,6 +753,69 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     assert.ok(quiet.out.includes('word list: 1 file(s)') && !quiet.out.includes('notes.txt'), quiet.out);
   });
 });
+
+  describe('the text of a commit is the raw object, with NUL as a line break (review round 14, R1)', () => {
+    const scanPublic = path.join(scripts, 'scan-public.sh');
+    const words = () => ({ SCAN_WORDS_FILE: sb.words });
+    /** A commit on top of HEAD built by hand: same tree, `extra` header lines, and a message (a Buffer may hold NUL). */
+    const rawCommit = ({ extra = '', message = 'plain\n', encoding = 'utf8' } = {}) => {
+      const tree = git(sb, 'rev-parse', 'HEAD^{tree}');
+      const parent = git(sb, 'rev-parse', 'HEAD');
+      const who = 'Tester <tester@users.noreply.github.com> 1700000000 +0000';
+      const body = Buffer.concat([Buffer.from(`tree ${tree}\nparent ${parent}\nauthor ${who}\ncommitter ${who}\n${extra}\n`, 'latin1'), Buffer.isBuffer(message) ? message : Buffer.from(message, encoding)]);
+      const r = spawnSync('git', ['hash-object', '-t', 'commit', '-w', '--literally', '--stdin'], { cwd: sb.repo, input: body, env: sb.env() });
+      assert.equal(r.status, 0, String(r.stderr));
+      git(sb, 'update-ref', 'refs/heads/main', String(r.stdout).trim());
+    };
+    const scan = (extra = {}) => {
+      const r = spawnSync('/bin/sh', [scanPublic, 'HEAD~1'], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ ...words(), ...extra }) });
+      return { status: r.status, out: r.stdout + r.stderr };
+    };
+    const MAIL = ['someone', 'mailhost.test'].join('@');
+    const cases = {
+      'a header of the commit (mergetag, with continuation lines)': (t) => ({ extra: `mergetag object ${ZERO}\n type commit\n tag t1\n tagger T <t@users.noreply.github.com> 1 +0000\n \n ${t}\n` }),
+      'an extra header': (t) => ({ extra: `x-extra: ${t}\n` }),
+      'a gpgsig-shaped continuation line': (t) => ({ extra: `gpgsig -----BEGIN PGP SIGNATURE-----\n \n ${t}\n -----END PGP SIGNATURE-----\n` }),
+      'the message after a NUL': (t) => ({ message: Buffer.concat([Buffer.from('subject\n'), Buffer.from([0]), Buffer.from(`hidden ${t}\n`)]) }),
+    };
+    beforeEach(() => { commit(sb, { 'b.txt': 'two\n' }); writeWords(sb); });
+    for (const [label, build] of Object.entries(cases)) {
+      it(`a word of the list in ${label} is found by scan-public`, () => {
+        rawCommit(build(WORD));
+        const r = scan();
+        assert.equal(r.status, 1, r.out);
+        assert.ok(r.out.includes('word list: commit message or author of'), r.out);
+      });
+      it(`an email-like string in ${label} is found by scan-public`, () => {
+        rawCommit(build(MAIL));
+        const r = scan();
+        assert.equal(r.status, 1, r.out);
+        assert.ok(r.out.includes('email-like string in the message of'), r.out);
+      });
+    }
+    it('an attribution trailer inside a header (a merged tag message) is found', () => {
+      rawCommit({ extra: `mergetag object x\n type commit\n \n Co-Authored-By: Claude <${['noreply', 'anthropic.com'].join('@')}>\n` });
+      const r = scan();
+      assert.equal(r.status, 1, r.out);
+      assert.ok(r.out.includes('attribution line in'), r.out);
+    });
+    it('no false positive from the usual lines: tree, parent, a GitHub web-flow committer, and a gpgsig block of random base64', () => {
+      const sig = randomBytes(300).toString('base64').match(/.{1,64}/g).map((l) => ` ${l}`).join('\n');
+      const tree = git(sb, 'rev-parse', 'HEAD^{tree}');
+      const parent = git(sb, 'rev-parse', 'HEAD');
+      const body = `tree ${tree}\nparent ${parent}\nauthor Tester <tester@users.noreply.github.com> 1700000000 +0000\ncommitter GitHub <${['noreply', 'github.com'].join('@')}> 1700000000 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n${sig}\n -----END PGP SIGNATURE-----\n\nplain\n`;
+      const r = spawnSync('git', ['hash-object', '-t', 'commit', '-w', '--literally', '--stdin'], { cwd: sb.repo, input: body, env: sb.env() });
+      git(sb, 'update-ref', 'refs/heads/main', String(r.stdout).trim());
+      const out = scan();
+      assert.equal(out.status, 0, out.out);
+    });
+    it('a commit with an encoding header carries non-UTF-8 bytes: a word in them is still found (raw bytes, both locales)', () => {
+      rawCommit({ extra: 'encoding ISO-8859-1\n', message: Buffer.concat([Buffer.from('caf'), Buffer.from([0xe9]), Buffer.from(` ${WORD}\n`)]) });
+      const r = scan();
+      assert.equal(r.status, 1, r.out);
+      assert.ok(r.out.includes('word list: commit message or author of'), r.out);
+    });
+  });
 }
 
 // ---- the hook ----

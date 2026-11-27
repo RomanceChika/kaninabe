@@ -87,8 +87,19 @@ if (gates.length === 0) stop(['認証フローの仕様の関門が 0 件です�
 
 // 実装の範囲(`implemented`): verify と同じ仕分けの関数を呼ぶ。範囲の外の画面の「実ルートが無い」だけが外れ、宣言していない実ルートや範囲の中の不在は赤のまま。
 // 持ち主の一覧はここで読めた仕様の分だけ(読めなかった種類の持ち主は載らない = 外さない側)。
-const inScopeOnly = (findings: readonly Finding[], catalogs: { readonly jobs: boolean; readonly auth: boolean; readonly external: boolean }): Finding[] => {
-  const owners = scopeOwners({ uses, actionIds: [], scanEvents: [], queryIds: [], screenIds: loaded.model.screens.map((screen) => screen.id), tableIds: [], usecaseIds: [], invariantIds: [], catalogs: { ...catalogs, guarantees: false, config: false, designTokens: false } });
+type EntryCatalogs = { readonly jobs: boolean; readonly auth: boolean; readonly external: boolean };
+const inScopeOnly = (findings: readonly Finding[], catalogs: EntryCatalogs): Finding[] => {
+  const owners = scopeOwners({
+    uses,
+    actionIds: [],
+    scanEvents: [],
+    queryIds: [],
+    screenIds: loaded.model.screens.map((screen) => screen.id),
+    tableIds: [],
+    usecaseIds: [],
+    invariantIds: [],
+    catalogs: { ...catalogs, guarantees: false, config: false, designTokens: false },
+  });
   return [...partitionByScope(findings, implemented, owners).kept];
 };
 const catalogsLoaded = { jobs: false, auth: auth.model.flow !== null, external: false };

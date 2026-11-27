@@ -272,7 +272,8 @@ function checkInvariant(
       const owner = { kind: 'invariant' as const, id: invariant.id };
       if (applicationResult !== undefined) findings.push(absentFor(owner, { ...applicationResult, grounding: 'implementation' }));
       const calledResult = checkApplicationRefCalled(invariant, enforcement, ctx);
-      if (calledResult !== undefined) findings.push(absentFor(owner, { ...calledResult, grounding: 'implementation' }));
+      // 呼ばれていない ref は「実在するが配線が無い」で、純粋な不在ではない(範囲では外さない。印を付けない)。
+      if (calledResult !== undefined) findings.push({ ...calledResult, grounding: 'implementation' });
       continue;
     }
     if (enforcement.kind !== 'guard') continue;

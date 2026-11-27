@@ -29,6 +29,8 @@ export interface NarrowingInput {
   readonly owners: readonly ScopeOwner[];
   /** head で error なく読めなかった種類。 */
   readonly unloaded: readonly SpecKind[];
+  /** 不変条件(ドメイン仕様)の読み込みに error があったか(省略は false)。不変条件の持ち主は種類を持たないので別の欄で受ける。 */
+  readonly invariantsUnloaded?: boolean;
 }
 
 /** P14 の結果。 */
@@ -71,13 +73,16 @@ export function verifyNarrowing(input: NarrowingInput): NarrowingResult {
   const headIds = new Set(input.head.ids);
   const known = new Set(input.owners.map((owner) => owner.id));
   const findings: Finding[] = [];
+  // 読めなかった種類(か不変条件)があるとき、持ち主に居ない id は、消えたのか読めないだけなのか分からない。
+  const unreadable = input.unloaded.length > 0 || input.invariantsUnloaded === true;
+  const unreadableNames = [...input.unloaded, ...(input.invariantsUnloaded === true ? ['invariants'] : [])];
   let gone = 0;
   let unresolved = 0;
   for (const id of base.scope.ids) {
     if (headIds.has(id)) continue;
     if (known.has(id)) {
       findings.push(narrowed(id, `base の実装の範囲にあった ${id} が範囲から消えています(仕様を廃止するときだけ消せます)`));
-    } else if (input.unloaded.length > 0) {
+    } else if (unreadable) {
       unresolved += 1;
       findings.push(narrowed(id, `base の実装の範囲にあった ${id} が範囲から消えています(仕様を読めなかった種類があり、仕様ごと廃止されたのか判定できません)`));
     } else {
@@ -87,7 +92,7 @@ export function verifyNarrowing(input: NarrowingInput): NarrowingResult {
   if (unresolved > 0) {
     findings.push(
       makeFinding(P14_VERIFIER_ID, {
-        message: `head で読めなかった仕様の種類(${input.unloaded.join(' / ')})があり、base の id ${String(unresolved)} 件が仕様ごと廃止されたのか判定できません`,
+        message: `head で読めなかった仕様の種類(${unreadableNames.join(' / ')})があり、base の id ${String(unresolved)} 件が仕様ごと廃止されたのか判定できません`,
         location: LOCATION,
         suggestion: '先に仕様の読み込みの error を直して、検証をやり直す(読めないまま「廃止された」と数えない)',
       }),

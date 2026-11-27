@@ -17,6 +17,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { isFile, PRODUCT_DECL_FILE, requireRepoRoot } from '../lib/io/paths.js';
 import { ROOT_MESSAGES, ROOT_OPTION } from '../lib/io/messages.js';
+import { valueOption, withoutValueOption } from './value-option.js';
 
 /**
  * 呼ばれた場所(相対の引数と相対の `--root` を解く基準・根の探索の起点)。
@@ -32,47 +33,9 @@ export function invocationDir(env: NodeJS.ProcessEnv = process.env, cwd: string 
   return initCwd === undefined || initCwd === '' ? cwd : path.resolve(initCwd);
 }
 
-/** `--root` の値の取り出し結果。 */
-type RootOptionValue =
-  | { readonly kind: 'absent' }
-  | { readonly kind: 'missing' }
-  | { readonly kind: 'value'; readonly value: string };
-
-/**
- * 引数から `--root` の値を取り出す。`--root <path>` と `--root=<path>` の両方を受け付ける
- * (どちらでもない綴りを黙って無視しない)。
- *
- * @param args CLI の引数
- * @returns 無い / 値が無い / 値
- */
-function rootOptionValue(args: readonly string[]): RootOptionValue {
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index] ?? '';
-    if (arg.startsWith(`${ROOT_OPTION}=`)) {
-      const value = arg.slice(ROOT_OPTION.length + 1);
-      return value === '' ? { kind: 'missing' } : { kind: 'value', value };
-    }
-    if (arg === ROOT_OPTION) {
-      const value = args[index + 1];
-      return value === undefined || value.startsWith('--') ? { kind: 'missing' } : { kind: 'value', value };
-    }
-  }
-  return { kind: 'absent' };
-}
-
 /** 引数から `--root` とその値(`--root <path>` / `--root=<path>`)を取り除いた残り(他の引数の解釈を邪魔しないため)。 */
 export function withoutRootOption(args: readonly string[]): string[] {
-  const kept: string[] = [];
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index] ?? '';
-    if (arg.startsWith(`${ROOT_OPTION}=`)) continue;
-    if (arg === ROOT_OPTION) {
-      index += 1;
-      continue;
-    }
-    kept.push(arg);
-  }
-  return kept;
+  return withoutValueOption(args, ROOT_OPTION, { skipOptionLikeValue: true });
 }
 
 /** 根を決めた結果(失敗は文言つきで返す)。 */
@@ -86,7 +49,7 @@ export type RootResolution = { readonly ok: true; readonly root: string } | { re
  * @returns 根の絶対パス。決められなければ人に見せる文言
  */
 export function resolveRepoRoot(args: readonly string[], cwd: string = invocationDir()): RootResolution {
-  const option = rootOptionValue(args);
+  const option = valueOption(args, ROOT_OPTION);
   if (option.kind === 'missing') return { ok: false, message: ROOT_MESSAGES.missingValue };
   if (option.kind === 'value') {
     const root = path.resolve(cwd, option.value);

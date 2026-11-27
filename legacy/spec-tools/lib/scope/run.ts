@@ -16,6 +16,8 @@ export interface ImplementedScopeInput {
   readonly uses: ProductUses;
   readonly owners: readonly ScopeOwner[];
   readonly unloaded: readonly SpecKind[];
+  /** 不変条件の読み込みに error があったか。 */
+  readonly invariantsUnloaded: boolean;
   /** 基準の `product.md`(`--implemented-base`)。無ければ P14 は走らない。 */
   readonly implementedBase?: string;
 }
@@ -36,7 +38,7 @@ export function runImplementedScope(input: ImplementedScopeInput): ImplementedSc
   const findings: Finding[] = [...verifyImplementedIds({ scope: input.scope, owners: input.owners, uses: input.uses })];
   const notes: string[] = [];
   if (input.implementedBase !== undefined) {
-    const narrowing = verifyNarrowing({ head: input.scope, base: readBaseScope(input.implementedBase), owners: input.owners, unloaded: input.unloaded });
+    const narrowing = verifyNarrowing({ head: input.scope, base: readBaseScope(input.implementedBase), owners: input.owners, unloaded: input.unloaded, invariantsUnloaded: input.invariantsUnloaded });
     findings.push(...narrowing.findings);
     if (narrowing.note !== null) notes.push(narrowing.note);
   }

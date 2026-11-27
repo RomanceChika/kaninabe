@@ -21,10 +21,10 @@
  *   H 群: docs/rules/process/backend/specification/standards/auth-spec-writing.md
  *   M 群: docs/rules/meta/standards/ の各ポリシー(M7〜M9 = 用語の台帳: term-ledger-writing.md)
  *   W 群: docs/rules/process/common/specification/playbooks/dsl-extension-triage.md §軸と語
- *         (W5 = 拡張候補の台帳 legacy/spec-tools/extension-candidates.md。他の全群の結果を見るので最後に実行する)
+ *         (W5 = 拡張候補の台帳 legacy/spec-tools/extension-candidates.md。他の全群の結果を見るので、群の中では最後に実行する。そのあとに実装の範囲の P13・P14 と仕分けを 1 回だけ行う)
  *
  * @oversize 全群の読み込みと実行を、1 本の流れ(P 群 → 仕様種の読み込み → 入力の状態の組み立て → V 群 → 各群 → W5)で上から下へ読み通せるようにする配線。
- *   順序が意味を持つ(P 群の宣言が読めなければ以降を飛ばす・A 群の入力の状態を T / J / S / Y / U 群へ同じ値で配る・W5 は最後)ので、`runAllVerifications` の
+ *   順序が意味を持つ(P 群の宣言が読めなければ以降を飛ばす・A 群の入力の状態を T / J / S / Y / U 群へ同じ値で配る・W5 は群の最後・実装の範囲の仕分けはそのあと)ので、`runAllVerifications` の
  *   1 関数の中に並べてある。
  * @split-review 割る案は 2 つ。(1) 読み込み(各仕様種のローダーの呼び出しと入力の状態の組み立て)と実行(各群の呼び出し)を 2 ファイルに割る案: 実行の側が
  *   読み込みの結果(入力の状態 10 本ほか・台帳・テストの走査結果)を全部引数で受ける形になり、1 つの流れを 2 枚の間で行き来して読むことになる。
@@ -96,7 +96,7 @@ import { bearerAcceptances } from '../risk/verifiers/r16-bearer.js';
 import { notBoundaryAcceptances } from '../verify/verifiers/tenant-not-boundary.js';
 import type { ExtensionLedgerModel } from '../model/extension/types.js';
 import type { ScopeOwner } from '../kernel/scope-owner.js';
-import { scopeOwners, unloadedKinds } from '../scope/owners.js';
+import { cleanLoad, scopeUniverseOf } from '../scope/universe.js';
 import { partitionByScope, type ScopeReport } from '../scope/partition.js';
 import { runImplementedScope } from '../scope/run.js';
 
@@ -460,54 +460,41 @@ export async function runAllVerifications(options: PipelineOptions): Promise<Pip
   findings.push(...runTerms(domainRoot, roots, log));
   // W5 は他の全群の結果を見るので最後。受け入れた危険の宣言(警告の acceptance の突合相手)は読めた仕様から集める
   findings.push(...runExtension(extension, findings, knownCheckIds(), [...mfaAcceptances(auth.flow), ...bearerAcceptances(model), ...logSinkAcceptances(config), ...notBoundaryAcceptances(model)], log));
-  // 実装の範囲: 持ち主の一覧(読めた全部の仕様から)→ P13・P14 → 仕分け(最後に 1 回)。宣言が無ければ何も外れず、報告も無い。
-  const owners = scopeOwners({
+  // 実装の範囲: 持ち主の一覧と読み込みの成否(読めた全部の仕様から)→ P13・P14 → 仕分け(最後に 1 回)。宣言が無ければ何も外れず、報告も無い。
+  const universe = scopeUniverseOf({
     uses,
-    actionIds: actions?.actions.map((action) => action.id) ?? [],
-    scanEvents: actions?.scans.map((scan) => scan.event) ?? [],
-    queryIds: queries.queries.map((query) => query.id),
-    screenIds: screens.screens.map((screen) => screen.id),
-    tableIds: dataTables.tables.map((table) => table.id),
-    usecaseIds: usecases.usecases.map((usecase) => usecase.id),
-    invariantIds: [...model.aggregates.values()].flatMap((specs) => (specs.invariants?.invariants ?? []).map((invariant) => invariant.id)),
-    catalogs: {
-      jobs: jobs.catalog !== null,
-      auth: auth.flow !== null,
-      guarantees: guarantees.catalog !== null,
-      external: external.catalog !== null,
-      config: config.catalog !== null,
-      designTokens: design.tokensLoaded,
+    domain: model,
+    actions,
+    queries,
+    screens,
+    dataTables,
+    usecases,
+    jobs,
+    auth,
+    guarantees,
+    external,
+    config,
+    designTokensLoaded: design.tokensLoaded,
+    domainClean: cleanLoad(true, loadFindings, 0),
+    clean: {
+      actions: cleanLoad(actions !== null, actionLoadFindings, actionsLoaded.dropped),
+      queries: cleanLoad(queries.available, queryLoadFindings, queriesLoaded.dropped),
+      screens: cleanLoad(screens.available, screenLoadFindings, screensLoaded.dropped),
+      data_tables: cleanLoad(dataTables.available, dataTableLoadFindings, dataTablesLoaded.dropped),
+      usecases: cleanLoad(usecases.available, usecaseLoadFindings, usecasesLoaded.dropped),
+      jobs: cleanLoad(jobs.available, jobLoadFindings, jobsLoaded.dropped),
+      auth: cleanLoad(auth.available, authLoadFindings, authLoaded.dropped),
+      guarantees: cleanLoad(guarantees.available, guaranteeLoadFindings, 0),
+      external: cleanLoad(external.available, externalLoadFindings, externalLoaded.dropped),
+      config: cleanLoad(config.available, configLoadFindings, configLoaded.dropped),
     },
   });
-  const unloaded = unloadedKinds(uses, {
-    actions: cleanLoad(actions !== null, actionLoadFindings, actionsLoaded.dropped),
-    queries: cleanLoad(queries.available, queryLoadFindings, queriesLoaded.dropped),
-    screens: cleanLoad(screens.available, screenLoadFindings, screensLoaded.dropped),
-    data_tables: cleanLoad(dataTables.available, dataTableLoadFindings, dataTablesLoaded.dropped),
-    usecases: cleanLoad(usecases.available, usecaseLoadFindings, usecasesLoaded.dropped),
-    jobs: cleanLoad(jobs.available, jobLoadFindings, jobsLoaded.dropped),
-    auth: cleanLoad(auth.available, authLoadFindings, authLoaded.dropped),
-    guarantees: cleanLoad(guarantees.available, guaranteeLoadFindings, 0),
-    external: cleanLoad(external.available, externalLoadFindings, externalLoaded.dropped),
-    config: cleanLoad(config.available, configLoadFindings, configLoaded.dropped),
-    design_tokens: design.tokensLoaded,
-  });
-  const scope = runImplementedScope({ scope: product.implemented, uses, owners, unloaded, ...(options.implementedBase === undefined ? {} : { implementedBase: options.implementedBase }) });
+  const owners = universe.owners;
+  const scope = runImplementedScope({ scope: product.implemented, uses, owners, unloaded: universe.unloaded, invariantsUnloaded: universe.invariantsUnloaded, ...(options.implementedBase === undefined ? {} : { implementedBase: options.implementedBase }) });
   findings.push(...scope.findings);
   for (const note of scope.notes) log(note);
   const partition = partitionByScope(findings, product.implemented, owners);
   return { findings: [...partition.kept], modelBuilt: true, skipNotes: collector.notes, extensionLedger, scopeOwners: owners, scopeReport: partition.report, relieved: partition.relieved };
-}
-
-/**
- * 種類の読み込みが error なく済んだか(読めた仕様があり、読み込みの error も落とした仕様も無い)。
- *
- * @param available 仕様を読めたか
- * @param loadFindings その種類の読み込みの指摘
- * @param dropped 読めずに落とした仕様の数
- */
-function cleanLoad(available: boolean, loadFindings: readonly Finding[], dropped: number): boolean {
-  return available && dropped === 0 && !loadFindings.some((finding) => finding.severity === 'error');
 }
 
 /**

@@ -60,6 +60,10 @@ async function main(): Promise<number> {
     console.error('verify: --implemented-base には基準の product.md のパスを続けて書いてください。');
     return 1;
   }
+  if (base.kind === 'duplicate') {
+    console.error('verify: --implemented-base は 1 回だけ書いてください(基準が 2 つあると、どちらと比べたのか分からなくなります)。');
+    return 1;
+  }
   const argPath = withoutImplementedBase(withoutRootOption(argv)).find((arg) => !arg.startsWith('--'));
   const domainRoot = argPath ? path.resolve(invocationDir(), argPath) : declaredDomainRoot(repoRootOrExit('verify', argv));
   const color = process.stdout.isTTY === true && process.env['NO_COLOR'] === undefined;

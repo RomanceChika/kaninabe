@@ -176,6 +176,15 @@ describe('不変条件(ドメイン仕様)の読み込みの失敗(invariantsUnl
     expect(result.gone).toBe(0);
   });
 
+  it('集約の error の文は、読めなかったものを「ドメイン仕様」と呼ぶ(不変条件に限らない読み込みの error なので、欄の名前を言わない)', () => {
+    const base = baseFile(['implemented:', '  - INV-ROOM-001']);
+
+    const messages = narrowing(base, { declared: true, ids: [] }, OWNERS, [], true).findings.map((finding) => finding.message);
+
+    expect(messages.some((message) => message.includes('ドメイン仕様'))).toBe(true);
+    expect(messages.some((message) => message.includes('invariants'))).toBe(false);
+  });
+
   it('読めていれば(false)、同じ id は「仕様から消えた」で通る', () => {
     const base = baseFile(['implemented:', '  - room-create-action', '  - INV-ROOM-001']);
 

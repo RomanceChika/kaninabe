@@ -347,3 +347,39 @@ describe('there is no way to skip a file except the list', () => {
     assert.deepEqual(offences, [], `${offences.length} way(s) to skip a file outside the list:\n${offences.join('\n')}`);
   });
 });
+
+// The named exception for the configuration of the old key-scan wrapper (the same exception, with the same reason, as the wrapper itself:
+// old check, removed in the follow-up after the first green run on dev). The old check keeps its old behaviour, so it keeps its old
+// configuration: `useDefault = true`, which brings in the tool's default allowlist. No other file may do that, and the gate never reads it.
+describe('the old key-scan wrapper keeps its old configuration, as a named exception (old check, removed in the follow-up after the first green run on dev)', () => {
+  const OLD_CONFIG = 'gitleaks-public.toml';
+  // How it is pinned: the sha256 of the text of scripts/push-gate.gitleaks.toml as it was on origin/dev (693 bytes), taken from `git show origin/dev:scripts/push-gate.gitleaks.toml`.
+  const OLD_SHA256 = 'c4e82dc4ad8ddb912e9b0a70365548ff6d4aadb71ea93d1f42b1e87bb2258cbf';
+  const text = () => readFileSync(path.join(scriptsDir, OLD_CONFIG), 'utf8');
+  const files = [
+    ...readdirSync(scriptsDir).map((n) => path.join(scriptsDir, n)),
+    ...readdirSync(path.join(root, '.githooks')).map((n) => path.join(root, '.githooks', n)),
+  ];
+  it('the file is the old configuration: its text, without a leading header comment line, is the pinned old text', () => {
+    const lines = text().split('\n');
+    const body = /^# .*old check/.test(lines[0]) && lines[0].startsWith('#') ? lines.slice(1).join('\n') : lines.join('\n');
+    assert.equal(createHash('sha256').update(body).digest('hex'), OLD_SHA256);
+    assert.ok(/^useDefault = true$/m.test(body) && /^\[extend\]$/m.test(body));
+  });
+  it('the wrapper reads that file and not the gate\'s', () => {
+    const w = readFileSync(path.join(scriptsDir, 'gitleaks-public.sh'), 'utf8').split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
+    assert.ok(w.includes(`cfg="$here/${OLD_CONFIG}"`), 'the wrapper must read scripts/gitleaks-public.toml');
+    assert.ok(!w.includes('push-gate.gitleaks.toml'), 'the wrapper must not name the gate\'s configuration in its code');
+  });
+  it('no other script, hook or configuration reads it: the gate and the scans name only push-gate.gitleaks.toml', () => {
+    const readers = files.filter((f) => path.basename(f) !== 'gitleaks-public.sh' && path.basename(f) !== OLD_CONFIG)
+      .filter((f) => !/\.toml$/.test(f))
+      .filter((f) => readFileSync(f, 'utf8').includes(OLD_CONFIG)).map((f) => path.relative(root, f));
+    assert.deepEqual(readers, []);
+  });
+  it('only that file in the scripts directory has `useDefault` or `[extend]`: the exception covers no other file', () => {
+    const offenders = readdirSync(scriptsDir).filter((n) => /\.toml$/.test(n) && n !== OLD_CONFIG)
+      .filter((n) => codeLines(path.join(scriptsDir, n)).some(([, l]) => /useDefault/.test(l) || /^\s*\[\s*extend\s*\]/.test(l)));
+    assert.deepEqual(offenders, []);
+  });
+});

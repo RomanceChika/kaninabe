@@ -712,7 +712,7 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     assert.equal(calls.length, 4, 'git x2 (the commits), git x1 (the tree of HEAD), stdin x1 (the texts)');
     assert.equal(calls.filter((l) => l.startsWith('gitleaks dir')).length, 0);
     for (const call of calls) {
-      assert.ok(call.includes('--config') && call.includes('push-gate.gitleaks.toml'), `no fixed config: ${call}`);
+      assert.ok(call.includes('--config') && call.includes('push-gate.gitleaks.toml') && !call.includes('gitleaks-public.toml'), `no fixed config, or the old check's: ${call}`);
       assert.ok(call.includes('--gitleaks-ignore-path'), `no ignore path: ${call}`);
       assert.ok(call.includes('--ignore-gitleaks-allow'), `inline allow honoured: ${call}`);
       assert.ok(call.endsWith('#env:unset:unset'), `the config environment variables reach gitleaks: ${call}`);
@@ -1903,7 +1903,7 @@ describe('gitleaks-public.sh (the old CI steps): counts only, and an unreadable 
     const log = readFileSync(logfile, 'utf8');
     assert.ok(!log.includes('IGNOREFILE'), `an ignore file was in the scanned source: ${log}`);
     for (const line of log.split('\n').filter(Boolean)) {
-      assert.ok(line.includes('push-gate.gitleaks.toml') && line.includes('--ignore-gitleaks-allow') && line.includes('--gitleaks-ignore-path'), line);
+      assert.ok(line.includes('gitleaks-public.toml') && !line.includes('push-gate.gitleaks.toml') && line.includes('--ignore-gitleaks-allow') && line.includes('--gitleaks-ignore-path'), line);
     }
     const gits = log.split('\n').filter((l) => l.startsWith('git '));
     assert.equal(gits.length, git(sb, 'rev-list', 'HEAD').split('\n').length, `one history run per commit: ${log}`);

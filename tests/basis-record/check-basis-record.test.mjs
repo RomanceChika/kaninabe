@@ -16,7 +16,7 @@
  *     basis and implementation paths; merge commits are allowed.
  *   with a record, F = basis-first (or basis), S = basis, P = the first-parent commits of head that the base does not hold:
  *     R2 every commit on P has one parent, and F, each basis-prev, S are on P;   R3 they are in strictly increasing order;
- *     R4 up to F no commit touches implementation, and at least one touches basis;   R5 from F to S no commit touches both;
+ *     R4 up to F no commit touches implementation, and F itself touches basis;   R5 from F to S no commit touches both;
  *     R6 S touches basis;   R7 after S no commit touches basis.
  */
 import assert from 'node:assert/strict';

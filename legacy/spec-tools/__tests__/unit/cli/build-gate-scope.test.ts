@@ -132,7 +132,7 @@ describe('ビルドの関所と実装の範囲', () => {
   it.each([
     ['null', ['implemented:']],
     ['scalar', ['implemented: room-create-action']],
-    ['duplicate', ['implemented:', '  - screen-item-list', 'implemented:', '  - screen-item-list']],
+    ['duplicate', ['implemented:', '  - screen-item-list', '  - screen-item-list']],
   ] as const)('全部の画面に実ルートがあっても、範囲の宣言が壊れていれば赤(%s。宣言のエラーは P0 として名指す)', (label, implementedRaw) => {
     const run = gate(caseTree(`broken-${label}`, { implementedRaw }));
 

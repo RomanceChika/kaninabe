@@ -313,6 +313,12 @@ describe('there is no way to skip a file except the list', () => {
     ['find -not/! -path or -name', /(-not|!)\s+-(i?path|i?name|i?regex)\b/, 'find . ! -name x'],
     ['a path list in the gitleaks configuration', /^\s*paths\s*=/, 'paths = ["x"]'],
   ];
+  it('(guard) the named exception is one line of one file, and the detector still catches that construct elsewhere', () => {
+    assert.equal(OLD_CHECK.reason, 'old check, removed in the follow-up after the first green run on dev');
+    const hits = codeLines(path.join(scriptsDir, 'gitleaks-public.sh')).filter(([, l]) => SKIPPERS.some(([, re]) => re.test(l)));
+    assert.ok(hits.length <= 1, `the old check holds more than its one tar --exclude: ${JSON.stringify(hits)}`);
+    assert.ok(SKIPPERS.find(([label]) => label === OLD_CHECK.label)[1].test('tar -C "$target" --exclude=.git -cf x .'), 'the detector must see the construct');
+  });
   it('(guard) the detector names each kind of skipper', () => {
     for (const [label, re, sample] of SKIPPERS) assert.ok(re.test(sample), `not seen: ${label}`);
     assert.ok(!SKIPPERS.some(([, re]) => re.test('echo "${x:-default}" && find . -name x')), 'a plain find -name is not a skipper');
@@ -323,11 +329,19 @@ describe('there is no way to skip a file except the list', () => {
     ...readdirSync(scriptsDir).filter((n) => /\.(sh|mjs|toml)$/.test(n)).map((n) => path.join(scriptsDir, n)),
     ...readdirSync(path.join(root, '.githooks')).map((n) => path.join(root, '.githooks', n)),
   ];
+  // The one named exception: the old check kept on purpose. scripts/gitleaks-public.sh (and its ci.yml step) is the pre-gate key scan; it
+  // stays until the follow-up that removes it after the first green run of the gate on dev (docs/rules development-flow.md, "検査を入れ替えるとき";
+  // known-gaps 15). Its `tar --exclude=.git` is the only construct excused, in that file only: the detector still catches it anywhere else.
+  const OLD_CHECK = { file: 'scripts/gitleaks-public.sh', label: '--exclude', reason: 'old check, removed in the follow-up after the first green run on dev' };
   it('no script, hook or scanner configuration has a pathspec, an --exclude or a glob that skips files', () => {
     const offences = [];
     for (const f of files) {
       for (const [n, l] of codeLines(f)) {
-        for (const [label, re] of SKIPPERS) if (re.test(l)) offences.push(`${path.relative(root, f)}:${n} ${label}`);
+        for (const [label, re] of SKIPPERS) {
+          if (!re.test(l)) continue;
+          if (path.relative(root, f) === OLD_CHECK.file && label === OLD_CHECK.label && /^\s*tar -C "\$target" --exclude=\.git -cf /.test(l)) continue;
+          offences.push(`${path.relative(root, f)}:${n} ${label}`);
+        }
       }
     }
     assert.deepEqual(offences, [], `${offences.length} way(s) to skip a file outside the list:\n${offences.join('\n')}`);

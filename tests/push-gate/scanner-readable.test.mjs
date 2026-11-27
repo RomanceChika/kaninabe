@@ -11,7 +11,7 @@ import { chmodSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, w
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { harness, realGate, reason, fakeKey, tab, sha256, blobId, rangeUnr, treeUnr, MAILMSG } from './harness.mjs';
+import { harness, realGate, reason, find, fakeKey, tab, sha256, blobId, rangeUnr, treeUnr, MAILMSG } from './harness.mjs';
 
 // The harness registers the beforeEach / afterEach of this file. The paths live in the variables below (a test may move into another
 // repository by assigning `repo`); the harness reads and sets them through these two functions.
@@ -407,6 +407,19 @@ describe('the mail-entry check uses sha256sum, and no awk dialect matters', () =
     const p = scanPublic([], entry(owner));
     assert.equal(p.status, 2, p.out);
     assert.ok(!p.out.includes('scan-public: clean'), p.out);
+  });
+
+  it('the inner loop over the distinct hit strings is counted like the outer one: a count that does not match the lines it read is exit 2, never a pass', () => {
+    commit({ 'docs/contact.txt': `contact ${owner}\n` });
+    // (a line count of the list of hit strings that claims more lines than the file has; the count of the list of paths stays real)
+    swapTool('awk', `#!/bin/sh\ncase "$*" in *'print NR'*ma.counts*) echo 99; exit 0 ;; esac\nexec ${find('awk', '/usr/bin:/bin')} "$@"\n`);
+    const p = scanPublic([], entry(owner));
+    assert.equal(p.status, 2, p.out);
+    assert.ok(p.out.includes('could not check the mail entries'), p.out);
+    assert.ok(!p.out.includes('scan-public: clean'), p.out);
+    const g = gateWith(entry(owner));
+    assert.equal(g.status, 2, g.out);
+    assert.ok(!g.out.includes('push-gate: passed'), g.out);
   });
 
   it('no script that decides holds a SHA implementation in awk', () => {

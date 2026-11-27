@@ -705,3 +705,107 @@ describe('push-gate.sh with the real tools: history is read by gitleaks git, one
     assert.ok(patches(r) >= 1, r.out);
   });
 });
+
+// ---- the old key-scan wrapper (scripts/gitleaks-public.sh), kept until the follow-up that removes it (known-gaps 15) ----
+
+describe('scripts/gitleaks-public.sh: what the old CI steps print, with the real gitleaks', () => {
+  const run = (args, cwd = repo) => {
+    const r = spawnSync('/bin/sh', [path.join(path.dirname(gate), 'gitleaks-public.sh'), ...args], { cwd, encoding: 'utf8', env: env() });
+    return { status: r.status, out: r.stdout + r.stderr };
+  };
+  const secretRepo = (key) => {
+    mkdirSync(path.join(repo, 'secret-dir'));
+    git('config', 'user.name', 'Some Author');
+    commit({ 'secret-dir/conf.txt': `note token = ${key} trailing words\n` }, 'a message');
+  };
+
+  it('a finding prints a count, and no rule name, path, commit id, author, line or key', () => {
+    const key = fakeKey();
+    secretRepo(key);
+    for (const mode of ['dir', 'git']) {
+      const r = run([mode, '.']);
+      assert.equal(r.status, 1, r.out);
+      assert.ok(r.out.includes(`gitleaks ${mode}: FAILED (1 finding(s))`), r.out);
+      assert.ok(!/rule /.test(r.out) && !r.out.includes('github-pat'), r.out);
+      for (const leak of ['secret-dir', 'conf.txt', 'Some Author', 'trailing words', key.slice(4, 20), git('rev-parse', 'HEAD').slice(0, 8)]) {
+        assert.ok(!r.out.includes(leak), `"${leak}" reached the output: ${r.out}`);
+      }
+    }
+  });
+
+  it('a clean tree prints ok; an error prints the exit code and no path', () => {
+    commit({ 'a.txt': 'one\n' });
+    assert.ok(run(['dir', '.']).out.includes('gitleaks dir: ok'));
+    const r = run(['dir', path.join(dir, 'secret-missing-dir')]);
+    assert.equal(r.status, 2, r.out);
+    assert.ok(/gitleaks dir: could not run \(exit \d+\)/.test(r.out), r.out);
+    assert.ok(!r.out.includes('secret-missing-dir'), r.out);
+    assert.equal(run(['nonsense']).status, 2);
+  });
+});
+
+describe('scripts/gitleaks-public.sh with the real gitleaks: nothing in the scanned tree can change what it reads or prints (review round 8)', () => {
+  const run = (args) => {
+    const r = spawnSync('/bin/sh', [path.join(path.dirname(gate), 'gitleaks-public.sh'), ...args], { cwd: repo, encoding: 'utf8', env: env() });
+    return { status: r.status, out: r.stdout + r.stderr };
+  };
+
+  it('an in-tree config that names its own rule does not get its rule id into the output (the config is not read)', () => {
+    const marker = 'attackerchosenword';
+    commit({
+      '.gitleaks.toml': `[[rules]]\nid = "zz-attacker-chosen-text"\ndescription = "x"\nregex = '''${marker}'''\n`,
+      'x.txt': `${marker}\n`,
+    });
+    for (const mode of ['dir', 'git']) {
+      const r = run([mode, '.']);
+      assert.equal(r.status, 0, `${mode}: ${r.out}`);
+      assert.ok(!r.out.includes('zz-attacker'), r.out);
+      assert.ok(r.out.includes(`gitleaks ${mode}: ok`), r.out);
+    }
+  });
+
+  it('an in-tree .gitleaksignore and an inline gitleaks:allow do not silence a key', () => {
+    const key = fakeKey();
+    commit({ 'conf.txt': `token = ${key}\n`, '.gitleaksignore': 'conf.txt:github-pat:1\n' });
+    let r = run(['dir', '.']);
+    assert.equal(r.status, 1, `.gitleaksignore: ${r.out}`);
+    assert.ok(r.out.includes('FAILED (1 finding(s))'), r.out);
+    commit({ 'conf.txt': `token = ${key} # gitleaks:allow\n` });
+    for (const mode of ['dir', 'git']) {
+      r = run([mode, '.']);
+      assert.equal(r.status, 1, `${mode} with inline allow: ${r.out}`);
+    }
+  });
+
+  it('state inside the repository (local config, info/attributes, a replace ref) does not silence the git scan either', () => {
+    const key = fakeKey();
+    commit({ 'a.txt': 'one\n' });
+    const c2 = commit({ 'conf.txt': `token = ${key}\n` });
+    git('rm', '-q', 'conf.txt');
+    git('commit', '-q', '-m', 'remove');
+    mkdirSync(path.join(repo, '.git', 'info'), { recursive: true });
+    writeFileSync(path.join(repo, '.git', 'info', 'attributes'), '* -diff\n');
+    git('config', 'color.diff', 'always');
+    git('replace', c2, git('rev-parse', 'HEAD~2'));
+    const r = run(['git', '.']);
+    assert.equal(r.status, 1, r.out);
+    assert.ok(r.out.includes('FAILED (1 finding(s))'), r.out);
+  });
+});
+
+describe('real gitleaks: the old-step wrapper reads a history with a merge and a root commit (review round 12, P1)', () => {
+  // (The gate's own run over merges, roots and every other kind of commit is the commit-kinds matrix below; a key in a merge
+  // resolution and in an octopus merge are the tests after it. What only this test holds is the wrapper's `git` mode on them.)
+  it('passes, and says ok', () => {
+    commit({ 'a.txt': 'one\n' });
+    git('checkout', '-q', '-b', 'side');
+    commit({ 'b.txt': 'two\n' });
+    git('checkout', '-q', 'main');
+    commit({ 'c.txt': 'three\n' });
+    git('merge', '-q', '--no-ff', 'side', '-m', 'merge');
+    commit({ 'd.txt': 'four\n' });
+    const w = spawnSync('/bin/sh', [path.join(path.dirname(gate), 'gitleaks-public.sh'), 'git', '.'], { cwd: repo, encoding: 'utf8', env: env() });
+    assert.equal(w.status, 0, w.stdout + w.stderr);
+    assert.ok((w.stdout + w.stderr).includes('gitleaks git: ok'), w.stdout + w.stderr);
+  });
+});

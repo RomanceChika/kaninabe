@@ -28,6 +28,7 @@ const FILES = [
   'scripts/push-range.sh',
   'scripts/range-id.sh',
   'scripts/neutral-git.sh',
+  'scripts/gitleaks-public.sh',
   'scripts/scan-public.sh',
   'scripts/scan-rules.sh',
   'scripts/scan-pr-text.sh',

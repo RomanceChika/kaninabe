@@ -1,18 +1,25 @@
 /**
  * The one exclusion list of the scans (scripts/scan-exclusions.tsv) and the rule that there is no other way to skip a file.
  *
- * The grammar: one entry per line, four fields separated by a tab, `kind<TAB>path<TAB>value<TAB>reason`.
- *   - path: literal. No `*`, `?`, `[` or `]`, no leading `/`, no `..` segment, no trailing `/`, no control character.
+ * The grammar: one entry per line, four fields separated by a tab, `kind<TAB>path<TAB>value<TAB>reason`. No blank line, no
+ * comment line, no carriage return.
+ *   - path: literal and relative. No `*`, `?`, `[` or `]`, no leading `/`, no trailing `/`, no empty, `.` or `..` segment
+ *     (so no `./x` and no `a//b`), no control character (a name with a tab, a line feed or a byte that is not UTF-8 cannot be
+ *     written here, so it is exit 2 as a file name). The path need not exist any more: history still holds the file.
  *   - kind `binary`: value is the blob id (40 lowercase hex digits); content that changed is red again.
+ *   - kind `keys`: value is the blob id too; the key scan skips that one content at that one path (a changed file is scanned
+ *     again). It silences nothing else: a mail string, a word of the list or an unreadable file at that path stays red.
  *   - kind `mail`: value is `sha256:<64 lowercase hex digits>` of the exact string (the list holds no address).
- *   - kind `keys`: value is `-`; the key scan skips exactly that path.
  *   - reason: not empty.
- * A line that does not fit, or an unknown kind, stops the gate with exit 2. The list is read from the gate's own scripts
- * directory (next to push-gate.sh), never from the scanned tree and never from the environment: a test that needs a list runs
- * a copy of the scripts directory with the list written into the copy.
+ * Only an EXACT duplicate line (same kind, path and value) is refused. Several `mail` lines for one path and several `binary`
+ * lines for one path (one per blob over the history) are valid.
+ * A line that does not fit, an unknown kind, an exact duplicate and a missing list file stop the gate with exit 2. An empty
+ * file is a valid empty list. The list is read from the gate's own scripts directory (next to push-gate.sh), never from the
+ * scanned tree and never from the environment: a test that needs a list runs a copy of the scripts directory with the list
+ * written into the copy.
  *
- * "No other mechanism" is checked two ways: the gitleaks configuration holds no global allowlist (the tool's built-in one comes
- * with `useDefault = true`), and no script contains a pathspec, an `--exclude` or a glob that skips files.
+ * "No other mechanism" is checked two ways: the vendored gitleaks configuration holds no global allowlist and its rules are the
+ * pinned version's default rules, and no script contains a pathspec, an `--exclude` or a glob that skips files.
  *
  * Fake keys are assembled at run time and written only into throwaway repositories.
  */
@@ -20,7 +27,7 @@ import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,6 +40,7 @@ const LIST = path.join(scriptsDir, 'scan-exclusions.tsv');
 
 /** The problems of one line of the list (an empty array = a valid line). */
 export function problems(line) {
+  if (line.includes('\r')) return ['carriage return'];
   const f = line.split('\t');
   if (f.length !== 4) return [`${f.length} fields, not 4`];
   const [kind, p, value, reason] = f;
@@ -42,13 +50,25 @@ export function problems(line) {
   if (/[*?[\]]/.test(p)) out.push('glob character in the path');
   if (p.startsWith('/')) out.push('leading slash');
   if (p.endsWith('/')) out.push('trailing slash');
-  if (p.split('/').includes('..')) out.push('.. in the path');
+  if (p !== '' && p.split('/').some((seg) => seg === '' || seg === '.' || seg === '..')) out.push('empty, . or .. segment in the path');
   // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f]/.test(p)) out.push('control character in the path');
-  if (kind === 'binary' && !/^[0-9a-f]{40}$/.test(value)) out.push('binary value is not a blob id');
+  if ((kind === 'binary' || kind === 'keys') && !/^[0-9a-f]{40}$/.test(value)) out.push(`${kind} value is not a blob id`);
   if (kind === 'mail' && !/^sha256:[0-9a-f]{64}$/.test(value)) out.push('mail value is not sha256:<hex>');
-  if (kind === 'keys' && value !== '-') out.push('keys value is not -');
   if (reason.trim() === '') out.push('empty reason');
+  return out;
+}
+/** The problems of a whole list: each line, and exact duplicates (kind, path and value). */
+export function listProblems(text) {
+  if (text === '') return [];
+  const lines = text.endsWith('\n') ? text.slice(0, -1).split('\n') : text.split('\n');
+  const out = lines.flatMap((l, i) => problems(l).map((m) => `line ${i + 1}: ${m}`));
+  const seen = new Set();
+  lines.forEach((l, i) => {
+    const key = l.split('\t').slice(0, 3).join('\t');
+    if (seen.has(key)) out.push(`line ${i + 1}: exact duplicate`);
+    seen.add(key);
+  });
   return out;
 }
 
@@ -57,24 +77,36 @@ const H64 = 'b'.repeat(64);
 const VALID = [
   `binary\tassets/blob.bin\t${H40}\ta made-up binary fixture`,
   `mail\tdocs/contact.txt\tsha256:${H64}\ta made-up address in a made-up fixture`,
-  'keys\tfixtures/sample.txt\t-\ta made-up key in a made-up fixture',
+  `keys\tfixtures/sample.txt\t${H40}\ta made-up key in a made-up fixture`,
+  `binary\tassets/blob.bin\t${'c'.repeat(40)}\tthe next blob at the same path`,
+  `mail\tdocs/contact.txt\tsha256:${'d'.repeat(64)}\ta second string in the same file`,
 ];
+const K = `\t${H40}\treason`;
 const MALFORMED = {
-  'too few fields': 'keys\tfixtures/sample.txt\t-',
-  'too many fields': 'keys\tfixtures/sample.txt\t-\treason\textra',
-  'unknown kind': 'other\tfixtures/sample.txt\t-\treason',
-  'a glob (*)': 'keys\tfixtures/*.txt\t-\treason',
-  'a glob (?)': 'keys\tfixtures/sample?.txt\t-\treason',
-  'a glob ([)': 'keys\tfixtures/sample[1].txt\t-\treason',
-  'a leading slash': 'keys\t/fixtures/sample.txt\t-\treason',
-  'a .. segment': 'keys\tfixtures/../sample.txt\t-\treason',
-  'a trailing slash': 'keys\tfixtures/\t-\treason',
-  'an empty path': 'keys\t\t-\treason',
+  'too few fields': 'keys\tfixtures/sample.txt',
+  'too many fields': `keys\tfixtures/sample.txt${K}\textra`,
+  'a tab inside the path': `keys\tfixtures/sam\tple.txt${K}`,
+  'a tab inside the reason': `keys\tfixtures/sample.txt\t${H40}\tre\tason`,
+  'unknown kind': `other\tfixtures/sample.txt${K}`,
+  'a glob (*)': `keys\tfixtures/*.txt${K}`,
+  'a glob (?)': `keys\tfixtures/sample?.txt${K}`,
+  'a glob ([)': `keys\tfixtures/sample[1].txt${K}`,
+  'a leading slash': `keys\t/fixtures/sample.txt${K}`,
+  'a .. segment': `keys\tfixtures/../sample.txt${K}`,
+  'a . segment (./x)': `keys\t./x${K}`,
+  'an empty segment (a//b)': `keys\ta//b${K}`,
+  'a trailing slash': `keys\tfixtures/${K}`,
+  'an empty path': `keys\t${K}`,
+  'a blank line': '',
+  'a comment line': '# a comment',
+  'a carriage return at the end of the line': `keys\tfixtures/sample.txt${K}\r`,
   'a binary value that is not a blob id': 'binary\tassets/blob.bin\tnot-a-blob-id\treason',
+  'a binary value in uppercase hex': `binary\tassets/blob.bin\t${'A'.repeat(40)}\treason`,
+  'a keys value that is not a blob id (-)': 'keys\tfixtures/sample.txt\t-\treason',
   'a mail value without the sha256: prefix': `mail\tdocs/contact.txt\t${H64}\treason`,
   'a mail value of the wrong length': 'mail\tdocs/contact.txt\tsha256:abc\treason',
-  'a keys value that is not -': 'keys\tfixtures/sample.txt\tfixtures\treason',
-  'an empty reason': 'keys\tfixtures/sample.txt\t-\t',
+  'a mail value in uppercase hex': `mail\tdocs/contact.txt\tsha256:${'B'.repeat(64)}\treason`,
+  'an empty reason': `keys\tfixtures/sample.txt\t${H40}\t`,
 };
 
 describe('the grammar of scripts/scan-exclusions.tsv', () => {
@@ -82,19 +114,15 @@ describe('the grammar of scripts/scan-exclusions.tsv', () => {
     for (const l of VALID) assert.deepEqual(problems(l), [], l);
     for (const [label, l] of Object.entries(MALFORMED)) assert.ok(problems(l).length > 0, `not refused: ${label}`);
   });
+  it('(guard) only an exact duplicate is refused: several mail lines or several binary lines for one path are valid', () => {
+    assert.deepEqual(listProblems(`${VALID.join('\n')}\n`), []);
+    assert.deepEqual(listProblems(''), []);
+    assert.deepEqual(listProblems(`${VALID[0]}\n${VALID[0]}\n`), ['line 2: exact duplicate']);
+  });
 
-  it('every line of the list is a valid entry', () => {
+  it('every line of the list is a valid entry, with no exact duplicate', () => {
     assert.ok(existsSync(LIST), 'scripts/scan-exclusions.tsv does not exist: the gate reads its one exclusion list from there');
-    const text = readFileSync(LIST, 'utf8');
-    const lines = text === '' ? [] : text.replace(/\n$/, '').split('\n');
-    const bad = lines.map((l, i) => [i + 1, problems(l)]).filter(([, p]) => p.length);
-    assert.deepEqual(bad, [], `invalid line(s) of the list (number, problems): ${JSON.stringify(bad)}`);
-    const seen = new Set();
-    for (const l of lines) {
-      const key = l.split('\t').slice(0, 2).join('\t');
-      assert.ok(!seen.has(key), `the same kind and path twice: ${key.split('\t')[1]}`);
-      seen.add(key);
-    }
+    assert.deepEqual(listProblems(readFileSync(LIST, 'utf8')), []);
   });
 });
 
@@ -132,12 +160,13 @@ describe('the gate and the list', () => {
     }
     git('commit', '-q', '-m', message);
   };
-  /** The gate from a copy of the scripts directory with `list` as its scan-exclusions.tsv (no list written when `list` is null). */
+  /** The gate from a copy of the scripts directory with `list` as its scan-exclusions.tsv (the file is removed when `list` is null). */
   const gateWith = (list) => {
     const copy = path.join(dir, 'gate-scripts');
     rmSync(copy, { recursive: true, force: true });
     cpSync(scriptsDir, copy, { recursive: true });
-    if (list !== null) writeFileSync(path.join(copy, 'scan-exclusions.tsv'), list);
+    if (list === null) rmSync(path.join(copy, 'scan-exclusions.tsv'), { force: true });
+    else writeFileSync(path.join(copy, 'scan-exclusions.tsv'), list);
     const r = spawnSync('/bin/sh', [path.join(copy, 'push-gate.sh'), '--mode', 'general', '--all'], { cwd: repo, encoding: 'utf8', env: env() });
     return { status: r.status, out: r.stdout + r.stderr };
   };
@@ -160,19 +189,23 @@ describe('the gate and the list', () => {
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  it('(guard) a list with one valid entry of each kind is accepted', () => {
+  it('(guard) an empty list, and a list with one valid entry of each kind (and a second entry for the same path), are accepted', () => {
+    assert.equal(gateWith('').status, 0);
     const r = gateWith(`${VALID.join('\n')}\n`);
     assert.equal(r.status, 0, r.out);
   });
 
+  const stopsWith = (list) => {
+    const r = gateWith(list);
+    assert.equal(r.status, 2, r.out);
+    assert.ok(r.out.includes('scan-exclusions'), `the reason does not name the list: ${r.out}`);
+    assert.ok(!r.out.includes('push-gate: passed'), r.out);
+  };
   for (const [label, line] of Object.entries(MALFORMED)) {
-    it(`a list with ${label} stops the gate with exit 2 and names the list`, () => {
-      const r = gateWith(`${VALID[2]}\n${line}\n`);
-      assert.equal(r.status, 2, r.out);
-      assert.ok(r.out.includes('scan-exclusions'), `the reason does not name the list: ${r.out}`);
-      assert.ok(!r.out.includes('push-gate: passed'), r.out);
-    });
+    it(`a list with ${label} stops the gate with exit 2 and names the list`, () => stopsWith(`${VALID[2]}\n${line}\n`));
   }
+  it('a list with an exact duplicate line stops the gate with exit 2 and names the list', () => stopsWith(`${VALID[0]}\n${VALID[0]}\n`));
+  it('a list that is missing stops the gate with exit 2 and names the list', () => stopsWith(null));
 
   it('(guard) a list inside the scanned tree is not the list: a malformed one there changes nothing', () => {
     commit({ 'scripts/scan-exclusions.tsv': 'this line is not an entry\n' });
@@ -180,8 +213,9 @@ describe('the gate and the list', () => {
     assert.equal(r.status, 0, r.out);
   });
 
-  it('(guard) a `keys` entry written into the scanned tree does not silence a key', () => {
-    commit({ 'scripts/scan-exclusions.tsv': 'keys\tconf.txt\t-\ta made-up reason\n', 'conf.txt': `token = ${fakeKey()}\n` });
+  it('(guard) a `keys` entry (with the right blob id) written into the scanned tree does not silence a key', () => {
+    const conf = `token = ${fakeKey()}\n`;
+    commit({ 'scripts/scan-exclusions.tsv': `keys\tconf.txt\t${createHash('sha1').update(`blob ${conf.length}\0${conf}`).digest('hex')}\ta made-up reason\n`, 'conf.txt': conf });
     const r = gateReal();
     assert.equal(r.status, 1, r.out);
     assert.ok(r.out.includes('push-gate: step gitleaks: FAILED'), r.out);
@@ -194,10 +228,54 @@ describe('the gate and the list', () => {
 const codeLines = (file) => readFileSync(file, 'utf8').split('\n').map((l, i) => [i + 1, l]).filter(([, l]) => !/^\s*#/.test(l));
 
 describe('there is no way to skip a file except the list', () => {
-  it('the gitleaks configuration of the gate holds no global allowlist and does not bring in the tool\'s own', () => {
-    const lines = codeLines(path.join(scriptsDir, 'push-gate.gitleaks.toml'));
-    const hits = lines.filter(([, l]) => /useDefault\s*=\s*true/.test(l) || /allowlist/i.test(l) || /^\s*paths\s*=/.test(l));
-    assert.deepEqual(hits, [], 'useDefault = true brings in the default global allowlist (paths and file kinds skipped by name)');
+  const CONFIG = path.join(scriptsDir, 'push-gate.gitleaks.toml');
+  it('the vendored gitleaks configuration does not extend the default, has no global allowlist and no `paths =`', () => {
+    const lines = codeLines(CONFIG);
+    const hits = lines.filter(([, l]) => /useDefault/.test(l) || /^\s*\[allowlist\]/.test(l) || /^\s*\[\[allowlists\]\]/.test(l) || /^\s*paths\s*=/.test(l));
+    assert.deepEqual(hits, [], 'useDefault brings in the default global allowlist; paths = would skip files by name (a [[rules.allowlists]] without paths is fine)');
+  });
+
+  /** The default configuration that the pinned gitleaks carries inside its binary, found offline in the binary's own bytes. */
+  const embeddedDefault = () => {
+    const bin = spawnSync('/bin/sh', ['-c', 'command -v gitleaks'], { encoding: 'utf8' }).stdout.trim();
+    assert.ok(bin.startsWith('/'), 'gitleaks is not installed: run "sh scripts/setup-dev-env.sh --bin-dir <dir on PATH>" first');
+    const pinned = /^GITLEAKS_VERSION=(\S+)/m.exec(readFileSync(path.join(scriptsDir, 'setup-dev-env.sh'), 'utf8'))?.[1];
+    const have = spawnSync(bin, ['version'], { encoding: 'utf8' }).stdout.trim();
+    assert.equal(have, pinned, `the installed gitleaks (${have}) is not the pinned one (${pinned})`);
+    const data = readFileSync(bin);
+    const start = data.indexOf('# This file has been auto-generated');
+    assert.ok(start >= 0, 'the default configuration was not found in the binary');
+    let end = start;
+    while (end < data.length && (data[end] === 9 || data[end] === 10 || data[end] === 13 || data[end] >= 32) && data[end] !== 127) end += 1;
+    return data.subarray(start, end).toString('utf8');
+  };
+  /**
+   * The rules of a configuration, compared without the one thing the gate must not keep: a `paths = [...]` list. (The pinned
+   * default has three of them inside rule-level allowlists: .bb files for generic-api-key, and @octokit/auth-token/README.md
+   * for two GitHub rules. They skip files by name, so the vendored copy drops them; a rule-level allowlist left with nothing
+   * but a description is dropped as well.)
+   */
+  const rulesOf = (text) => {
+    const i = text.indexOf('[[rules]]');
+    if (i < 0) return '';
+    const kept = [];
+    let skipping = false;
+    for (const l of text.slice(i).split('\n').map((x) => x.replace(/\s+$/, ''))) {
+      if (skipping) { if (/^\s*\]$/.test(l)) skipping = false; continue; }
+      if (/^\s*paths\s*=\s*\[\s*$/.test(l)) { skipping = true; continue; }
+      if (/^\s*paths\s*=\s*\[.*\]$/.test(l)) continue;
+      kept.push(l);
+    }
+    const tables = kept.join('\n').split(/^(?=\[)/m).filter((t) => !(/^\[\[rules\.allowlists\]\]/.test(t) && t.split('\n').slice(1).every((l) => l === '' || /^\s*description\s*=/.test(l))));
+    return tables.join('').replace(/\n{2,}/g, '\n').trim();
+  };
+  it('the vendored rules are exactly the pinned gitleaks\' default rules (its global allowlist is the only part left out)', () => {
+    const want = rulesOf(embeddedDefault());
+    assert.ok(want.length > 10000, 'could not read the default rules out of the pinned binary');
+    assert.ok(!/^\s*paths\s*=/m.test(want), 'the comparison text must hold no paths list');
+    const have = rulesOf(readFileSync(CONFIG, 'utf8'));
+    assert.ok(have.length > 0, 'the vendored configuration has no rules');
+    assert.equal(have === want, true, 'the vendored rules differ from the default rules of the pinned gitleaks (take them from its default configuration, without [allowlist])');
   });
 
   const SKIPPERS = [
@@ -206,7 +284,7 @@ describe('there is no way to skip a file except the list', () => {
     ['a `:^` pathspec', /:\^/, "git grep x -- ':^b'"],
     ['--exclude', /--exclude/, 'tar --exclude=.git'],
     ['find -not/! -path or -name', /(-not|!)\s+-(i?path|i?name|i?regex)\b/, 'find . ! -name x'],
-    ['a path allowlist for gitleaks', /^\s*(paths|regexes)\s*=/, 'paths = ["x"]'],
+    ['a path list in the gitleaks configuration', /^\s*paths\s*=/, 'paths = ["x"]'],
   ];
   it('(guard) the detector names each kind of skipper', () => {
     for (const [label, re, sample] of SKIPPERS) assert.ok(re.test(sample), `not seen: ${label}`);

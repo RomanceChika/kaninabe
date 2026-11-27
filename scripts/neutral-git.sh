@@ -90,6 +90,14 @@ wc_num() {
   while :; do case $wc_v in ' '*) wc_v=${wc_v# } ;; *) break ;; esac; done
   case $wc_v in '' | *[!0-9]*) return 1 ;; esac
 }
+# wc_lines <file>: sets $wc_v to the number of lines of a LIST, counting an unterminated last line too (`wc -l` counts line breaks, and
+# `read` drops an unterminated last line, so counting with wc would make a loop and its expected count agree on a skipped entry).
+# A list loop compares the lines it processed with this count: a list whose last line has no line break is a difference (exit 2).
+# One checked awk, digits only; returns 1 otherwise.
+wc_lines() {
+  wc_v=$(LC_ALL=C awk 'END { print NR }' "$1" 2>/dev/null) || return 1
+  case $wc_v in '' | *[!0-9]*) return 1 ;; esac
+}
 now_secs() { now_t=$(date +%s 2>/dev/null) || return 1; case $now_t in '' | *[!0-9]*) return 1 ;; esac; }
 # grep_q <grep arguments...>: grep for a condition: 0 = found, 1 = not found, and any other status (a bad pattern, an unreadable
 # input, an I/O error) calls grep_failed, which the caller defines and which does not return: a search that failed is never
@@ -153,9 +161,9 @@ scan_history() {
   hist_n=0; hist_err=
   # This function is called under `||`, where set -e is off: a list that cannot be opened would make the loop below not run and
   # the function return 0 ("no findings"). So the list is checked first, and the lines the loop processed are counted against
-  # the lines of the list (a read that fails midway, or a last line without a line break, is a difference).
+  # the lines of the list, an unterminated last line counted (wc_lines): a read that fails midway, or a last line without a line break, is a difference.
   [ -f "$1" ] && [ -r "$1" ] || { hist_err="could not run (the list of commits cannot be read)"; return 2; }
-  wc_num -l "$1" || { hist_err="could not run (could not count the list of commits)"; return 2; }
+  wc_lines "$1" || { hist_err="could not run (could not count the list of commits)"; return 2; }
   sh_expect=$wc_v; sh_seen=0
   while IFS= read -r sh_c; do
     sh_seen=$((sh_seen + 1))

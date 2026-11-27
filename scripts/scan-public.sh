@@ -43,7 +43,7 @@ if [ -n "${SCAN_WORDS_FILE:-}" ]; then
   word_list_read "$SCAN_WORDS_FILE" "$pat" "$scoped" || { echo "scan: the word list $wl_err"; echo "scan-public: ERROR"; exit 2; }
 fi
 scan_check_patterns "$pat"
-wc_num -l "$scoped" || scan_io_failed
+wc_lines "$scoped" || scan_io_failed
 scoped_n=$wc_v; sc_seen=0
 while IFS= read -r line; do sc_seen=$((sc_seen + 1)); printf '%s\n' "${line#* }" > "$pat.one"; scan_check_patterns "$pat.one"; done < "$scoped"
 [ "$sc_seen" = "$scoped_n" ] || scan_io_failed
@@ -82,7 +82,7 @@ show_at() {
 }
 text=$ng_work/text; text_mail=$ng_work/text-mail
 commit_ids=$(cat "$commits") || { echo "scan: could not read the list of commits"; echo "scan-public: ERROR"; exit 2; }
-wc_num -l "$commits" || scan_io_failed
+wc_lines "$commits" || scan_io_failed
 commits_n=$wc_v; commits_seen=0
 for c in $commit_ids; do
   commits_seen=$((commits_seen + 1))

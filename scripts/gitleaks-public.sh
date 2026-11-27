@@ -62,7 +62,7 @@ else
   head_rc=0; ng_real git rev-parse -q --verify 'HEAD^{commit}' >> "$tmp/tips" 2>/dev/null || head_rc=$?
   case $head_rc in 0 | 1) ;; *) could_not_run 2 ;; esac
   sort -u "$tmp/tips" > "$tmp/tips.u"
-  wc_num -l "$tmp/tips.u" || could_not_run 2
+  wc_lines "$tmp/tips.u" || could_not_run 2
   tips_n=$wc_v; tips_seen=0
   : > "$tmp/commit-tips"
   while IFS= read -r t; do

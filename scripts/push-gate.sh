@@ -118,7 +118,7 @@ esac
 
 # The list is written to a file and the status checked: a failing rev-list is not an empty range.
 neutral_git rev-list $revs > "$tmp/commits" 2>/dev/null || die "could not list the commits"
-wc_num -l "$tmp/commits" || die "could not count the commits"; count=$wc_v
+wc_lines "$tmp/commits" || die "could not count the commits"; count=$wc_v
 # The list that the range id was computed from (push-range.sh) is the list scanned here, or nothing is scanned.
 if [ -n "$want_list" ] && [ "$(range_list_id "$head_sha" "$tmp/commits")" != "$want_list" ]; then
   die "the commits to scan are not the list the range id was computed from"

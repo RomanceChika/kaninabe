@@ -86,7 +86,7 @@ done
 # Only what is here as a commit counts; an advertised commit that we do not have is simply not subtracted.
 : > "$tmp/confirmed"
 sort -u "$tmp/shas" > "$tmp/shas.u" || die "could not sort the advertised commits"
-wc_num -l "$tmp/shas.u" || die "could not count the advertised commits"
+wc_lines "$tmp/shas.u" || die "could not count the advertised commits"
 shas_n=$wc_v; shas_seen=0
 while IFS= read -r s; do
   shas_seen=$((shas_seen + 1))

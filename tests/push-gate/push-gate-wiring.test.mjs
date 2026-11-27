@@ -1101,11 +1101,11 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     describe('a loop over a list is complete: every line is processed, or the run stops (review round 22, AC1)', () => {
       const neutral = path.join(scripts, 'neutral-git.sh');
       const scanRules = path.join(scripts, 'scan-rules.sh');
-      /** A `wc -l` that claims more lines than the file has: the list was not read to the end. */
+      /** A line count (the awk of wc_lines) that claims more lines than the file has: the list was not read to the end. */
       const wcLies = () => {
-        rmSync(path.join(sb.bin, 'wc'), { force: true });
-        writeFileSync(path.join(sb.bin, 'wc'), `#!/bin/sh\ncase "$*" in *-l*) echo 99; exit 0 ;; esac\nexec ${which('wc')} "$@"\n`);
-        chmodSync(path.join(sb.bin, 'wc'), 0o755);
+        rmSync(path.join(sb.bin, 'awk'), { force: true });
+        writeFileSync(path.join(sb.bin, 'awk'), `#!/bin/sh\ncase "$*" in *'print NR'*) echo 99; exit 0 ;; esac\nexec ${which('awk')} "$@"\n`);
+        chmodSync(path.join(sb.bin, 'awk'), 0o755);
       };
       const stub = "gl() { echo '6:02PM INF 1 commits scanned.' >&2; return 0; }";
       const history = (listArg, pre = '') => {
@@ -1121,7 +1121,7 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
         const list = path.join(sb.dir, 'one-commit');
         writeFileSync(list, 'a'.repeat(40) + '\n');
         // the list is checked, then the loop's own redirect fails: simulated by a function that removes the file after the check
-        const out = history(`"${list}"`, `wc_num() { wc_v=1; rm -f "${list}"; }\nneutral_adds_text() { return 1; }\n${stub}`);
+        const out = history(`"${list}"`, `wc_lines() { wc_v=1; rm -f "${list}"; }\nneutral_adds_text() { return 1; }\n${stub}`);
         assert.match(out, /rc=2/, out);
       });
       it('scan_history: a list whose last line has no line break is rc=2 (the unread last entry is counted), never rc=0', () => {
@@ -1141,7 +1141,7 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
       it('scan_history: a list whose line count differs from the lines processed is rc=2', () => {
         const list = path.join(sb.dir, 'two-commits');
         writeFileSync(list, 'a'.repeat(40) + '\nb'.repeat(1) + '\n');
-        const out = history(`"${list}"`, `wc_num() { wc_v=5; }\nneutral_adds_text() { return 1; }\n${stub}`);
+        const out = history(`"${list}"`, `wc_lines() { wc_v=5; }\nneutral_adds_text() { return 1; }\n${stub}`);
         assert.match(out, /rc=2/, out);
       });
       it('the gate: a count of lines that does not match what scan_history processed is exit 2, not a clean scan', () => {

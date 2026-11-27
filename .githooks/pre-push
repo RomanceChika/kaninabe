@@ -28,7 +28,8 @@ refuse() { echo "pre-push: $*" >&2; exit 1; }
 
 pushing=0
 remote_shas=
-while read -r local_ref local_sha remote_ref remote_sha; do
+# (`|| [ -n "$local_ref" ]`: git's last line is processed even when it has no line break)
+while read -r local_ref local_sha remote_ref remote_sha || [ -n "$local_ref" ]; do
   [ -n "${local_sha:-}" ] || continue
   case "$local_ref $remote_ref" in
     *refs/tags/*) refuse "refusing to push a tag ($remote_ref): tags are created and deleted only by the tag workflow, and a tag message is not scanned" ;;

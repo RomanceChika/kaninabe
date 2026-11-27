@@ -666,6 +666,14 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
       }
     });
 
+    it('D2: the tree of HEAD is read as one commit and must be reported as 1 scanned when it has text: 0 stops the gate (2) even when the range adds no text', () => {
+      const before = git(sb, 'rev-parse', 'HEAD');
+      git(sb, 'commit', '-q', '--allow-empty', '-m', 'empty');
+      const r = runGate(sb, ['--mode', 'words', '--base', before], { ...words(), SHIM_SCANNED: '0' });
+      stops(r, 2, 'push-gate: step gitleaks could not confirm what it scanned');
+      assert.ok(!r.out.includes('push-gate: passed'), r.out);
+    });
+
     it('a deletion-only commit and a commit that adds an empty file add no text; a blank line and a symlink do', () => {
       const before = git(sb, 'rev-parse', 'HEAD');
       git(sb, 'rm', '-q', 'a.txt');
@@ -698,7 +706,7 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     const calls = sb.calls().filter((l) => l.startsWith('gitleaks '));
     assert.equal(calls.length, 4, 'git x2, stdin x1 for the texts, dir');
     for (const call of calls) {
-      assert.ok(call.includes('--config') && call.includes('gitleaks-gate.toml'), `no fixed config: ${call}`);
+      assert.ok(call.includes('--config') && call.includes('push-gate.gitleaks.toml'), `no fixed config: ${call}`);
       assert.ok(call.includes('--gitleaks-ignore-path'), `no ignore path: ${call}`);
       assert.ok(call.includes('--ignore-gitleaks-allow'), `inline allow honoured: ${call}`);
       assert.ok(call.endsWith('#env:unset:unset'), `the config environment variables reach gitleaks: ${call}`);
@@ -1844,7 +1852,7 @@ describe('gitleaks-public.sh (the old CI steps): counts only, and an unreadable 
     const log = readFileSync(logfile, 'utf8');
     assert.ok(!log.includes('IGNOREFILE'), `an ignore file was in the scanned source: ${log}`);
     for (const line of log.split('\n').filter(Boolean)) {
-      assert.ok(line.includes('gitleaks-gate.toml') && line.includes('--ignore-gitleaks-allow') && line.includes('--gitleaks-ignore-path'), line);
+      assert.ok(line.includes('push-gate.gitleaks.toml') && line.includes('--ignore-gitleaks-allow') && line.includes('--gitleaks-ignore-path'), line);
     }
     const gits = log.split('\n').filter((l) => l.startsWith('git '));
     assert.equal(gits.length, git(sb, 'rev-list', 'HEAD').split('\n').length, `one history run per commit: ${log}`);
@@ -2110,3 +2118,33 @@ describe('setup-dev-env.sh', { skip: !supported && 'the pinned tools are for lin
   });
 });
 }
+
+// ---- the CI definition and the scripts directory after the scanner change (E1) ----
+
+describe('ci.yml no longer calls the old key-scan wrapper or scans the pull request text (E1)', () => {
+  const read = (rel) => readFileSync(fileURLToPath(new URL(`../../${rel}`, import.meta.url)), 'utf8');
+  /** The lines of a workflow that are not comments. */
+  const code = (text) => text.split('\n').filter((l) => !/^\s*#/.test(l));
+  const ci = code(read('.github/workflows/ci.yml'));
+
+  it('does not call scripts/gitleaks-public.sh', () => {
+    assert.deepEqual(ci.filter((l) => l.includes('gitleaks-public.sh')), []);
+  });
+  it('does not call scripts/scan-pr-text.sh (pr-gate.yml scans the title and body)', () => {
+    assert.deepEqual(ci.filter((l) => l.includes('scan-pr-text.sh')), []);
+    assert.ok(code(read('.github/workflows/pr-gate.yml')).some((l) => l.includes('scan-pr-text.sh')), 'pr-gate.yml must keep scanning the title and body');
+  });
+  it('the pull_request trigger has no `edited` type', () => {
+    const start = ci.findIndex((l) => /^ {2}pull_request:\s*$/.test(l));
+    assert.ok(start >= 0, 'ci.yml has a pull_request trigger');
+    const block = [];
+    for (let i = start + 1; i < ci.length && /^ {4}/.test(ci[i]); i += 1) block.push(ci[i]);
+    assert.deepEqual(block.filter((l) => /\bedited\b/.test(l)), []);
+  });
+  it('scripts/gitleaks-public.sh does not exist', () => {
+    assert.equal(existsSync(path.join(scripts, 'gitleaks-public.sh')), false);
+  });
+  it('(guard) the word-scan step with scripts/scan-public.sh stays', () => {
+    assert.ok(ci.some((l) => l.includes('scripts/scan-public.sh')), 'the old word step must stay');
+  });
+});

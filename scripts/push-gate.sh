@@ -140,8 +140,8 @@ failed=
 # honoured; no baseline is given. The environment is not the caller's (see clean above), so no GITLEAKS_* variable gets in.
 # gitleaks also reads <source>/.gitleaksignore whatever --gitleaks-ignore-path says, so the history is scanned with the neutral
 # git directory as the source (it holds no such file) and the exported tree has every .gitleaksignore taken out before the scan.
-gl_config="$here/gitleaks-gate.toml"
-[ -f "$gl_config" ] && [ -r "$gl_config" ] || die "gitleaks-gate.toml is missing next to the gate"
+gl_config="$here/push-gate.gitleaks.toml"
+[ -f "$gl_config" ] && [ -r "$gl_config" ] || die "push-gate.gitleaks.toml is missing next to the gate"
 # gl <subcommand> <arguments...>: gitleaks with the fixed flags; every path is one quoted argument (spaces are fine).
 gl() {
   gl_sub=$1; shift

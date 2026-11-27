@@ -6,8 +6,17 @@
  *      directly in an argument of echo / printf, where its status is lost);
  *   3. behaviour: the `run:` blocks are executed the way Actions runs them (`bash -e`), in order, in a temp dir, against a fake
  *      event file and a private PATH, and each tool that can fail is made to fail.
- * The YAML is read by a small purpose-built parser (the repository has no YAML dependency at its root): it covers the shapes this
- * workflow uses and throws on anything else, so a new shape in the workflow stops the test instead of being skipped.
+ * Division of roles. The syntax of the real file is checked by actionlint (with its shellcheck and pyflakes integrations off): CI
+ * installs it pinned and runs scripts/push-gate.sh, whose first step runs actionlint over every workflow file of HEAD
+ * (ci.yml, job with `push-gate.sh --mode general --all`); the pre-push hook runs the same script. This test does not check the
+ * syntax with a standard YAML library: the repository has no YAML dependency at its root, so the workflow is read by a small
+ * purpose-built reader that is the only guard of what it reads here, and it is strict on purpose: block maps and sequences,
+ * `|` literal blocks, flow sequences of plain words, and plain scalars of a closed form (a small character set, no indicator
+ * at the start, no `:` or ` #`, no tab); a word or number that YAML would type (true, no, null, 5 ...) is accepted only where
+ * this workflow has exactly that (`persist-credentials: false`, `cancel-in-progress: true`, `timeout-minutes: 5`, the key `on`);
+ * an expression is accepted only if it is one of the known four; a quoted scalar, an anchor, a tag, a folded block or a flow map
+ * is refused. Anything else throws, so a new shape stops the test instead of being skipped. What this test checks: the key sets
+ * of the file, its wiring, the class rule on its shell, and the behaviour of the extracted shell.
  */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -45,23 +54,37 @@ export function parseYaml(text) {
   let i = 0;
   const indentOf = (l) => l.length - l.trimStart().length;
   const skip = () => { while (i < lines.length && (lines[i].trim() === '' || lines[i].trim().startsWith('#'))) i++; };
-  const scalar = (raw) => {
-    let s = raw.trim();
-    if (/^[&*!>{|?%@`]/.test(s) || s.startsWith('- ')) throw new Error(`yaml: unsupported value: ${raw}`);
-    if (s.startsWith('"') || s.startsWith("'")) {
-      const q = s[0];
-      const end = s.lastIndexOf(q);
-      if (end < 1 || s.slice(end + 1).replace(/\s*#.*$/, '') !== '' || s.slice(1, end).includes(q) || s.includes('\\')) throw new Error(`yaml: unsupported quoted value: ${raw}`);
-      return s.slice(1, end);
-    }
-    s = s.replace(/\s+#.*$/, '');
-    if (s.startsWith('[')) {
-      if (!s.endsWith(']')) throw new Error(`yaml: unsupported flow sequence: ${raw}`);
-      const inner = s.slice(1, -1).trim();
-      return inner === '' ? [] : inner.split(',').map((x) => scalar(x));
-    }
-    return s;
+  const KNOWN_EXPRESSIONS = ['github.sha', 'github.event.pull_request.number', 'github.event.pull_request.head.sha', 'secrets.SCAN_WORDS'];
+  // the values YAML would type that this workflow has, pinned by key: nothing else of that kind is accepted
+  const PINNED = { 'persist-credentials': 'false', 'cancel-in-progress': 'true', 'timeout-minutes': '5' };
+  const TYPED = /^(true|false|yes|no|on|off|y|n|null|~)$/i;
+  const NUMBERISH = /^[-+.]?[0-9]/;
+  const scalar = (raw, key = null) => {
+    const bad = (why) => new Error(`yaml: ${why}: ${JSON.stringify(raw)}`);
+    if (raw !== raw.trim()) throw bad('blanks around a value');
+    if (raw === '') throw bad('an empty value');
+    if (!/^[A-Za-z0-9$_]/.test(raw)) throw bad('a value that starts with an indicator, a quote or a bracket (quoted scalars are not accepted)');
+    if (raw.includes(' #') || raw.includes(': ') || raw.endsWith(':')) throw bad('a comment or a colon inside a plain value');
+    if (!/^[A-Za-z0-9 _.,()/@${}-]+$/.test(raw)) throw bad('a character outside the accepted set');
+    let rest = raw;
+    for (const e of KNOWN_EXPRESSIONS) rest = rest.split('${{ ' + e + ' }}').join('');
+    if (/[${}]/.test(rest)) throw bad('an expression that is not one of the known four');
+    if (key in PINNED) {
+      if (raw !== PINNED[key]) throw bad(`only ${PINNED[key]} is accepted for ${key}`);
+    } else if (TYPED.test(raw) || NUMBERISH.test(raw)) throw bad('a word or number that YAML types differently');
+    return raw;
   };
+  const flow = (raw) => {
+    if (!raw.startsWith('[') || !raw.endsWith(']')) throw new Error(`yaml: unsupported flow sequence: ${raw}`);
+    const inner = raw.slice(1, -1);
+    if (inner.trim() === '') return [];
+    return inner.split(',').map((x) => {
+      const t = x.trim();
+      if (!/^[a-z_]+$/.test(t)) throw new Error(`yaml: unsupported flow item: ${JSON.stringify(x)}`);
+      return t;
+    });
+  };
+  const value = (raw, key) => (raw.startsWith('[') ? flow(raw) : scalar(raw, key));
   const literal = (parentIndent) => {
     const body = [];
     let blockIndent = -1;
@@ -97,12 +120,13 @@ export function parseYaml(text) {
       const [, key, v] = m;
       if (key in o) throw new Error(`yaml: duplicate key ${key}`);
       i++;
-      if (v === undefined || v.replace(/\s+#.*$/, '') === '') {
+      if (key !== 'on' && (TYPED.test(key) || NUMBERISH.test(key))) throw new Error(`yaml: a key that YAML types differently: ${key}`);
+      if (v === undefined) {
         skip();
         if (i < lines.length && indentOf(lines[i]) > ind) o[key] = block();
         else o[key] = null;
       } else if (v === '|') o[key] = literal(ind);
-      else o[key] = scalar(v);
+      else o[key] = value(v, key);
     }
     return o;
   };
@@ -112,7 +136,7 @@ export function parseYaml(text) {
       skip();
       if (i >= lines.length || indentOf(lines[i]) !== indent || !lines[i].trimStart().startsWith('- ')) break;
       const rest = lines[i].slice(indent + 2);
-      if (/^[A-Za-z0-9_.-]+:( |$)/.test(rest)) { lines[i] = ' '.repeat(indent + 2) + rest; a.push(map(indent + 2)); } else { i++; a.push(scalar(rest)); }
+      if (/^[A-Za-z0-9_.-]+:( |$)/.test(rest)) { lines[i] = ' '.repeat(indent + 2) + rest; a.push(map(indent + 2)); } else { i++; a.push(value(rest, null)); }
     }
     return a;
   };
@@ -129,13 +153,42 @@ const runs = steps.filter((s) => s.run !== undefined);
 
 describe('the YAML subset parser fails loudly on what it does not understand', () => {
   it('reads the shapes it supports', () => {
-    const d = parseYaml('a: 1\nb:\n  c: [x, y]\n  d:\n    - n: 1\n      run: |\n        echo "a"\n\n        echo b\n    - uses: u\n# c\ne: "q"\n');
-    assert.deepEqual(d, { a: '1', b: { c: ['x', 'y'], d: [{ n: '1', run: 'echo "a"\n\necho b\n' }, { uses: 'u' }] }, e: 'q' });
+    const d = parseYaml('on:\n  x: [a, b_c]\njobs:\n  g:\n    timeout-minutes: 5\n    steps:\n      - name: N (one, two)\n        run: |\n          echo "a"\n\n          echo b\n      - uses: actions/checkout@v4\n        with:\n          persist-credentials: false\n          ref: ${{ github.sha }}\n# c\n');
+    assert.deepEqual(d, { on: { x: ['a', 'b_c'] }, jobs: { g: { 'timeout-minutes': '5', steps: [{ name: 'N (one, two)', run: 'echo "a"\n\necho b\n' }, { uses: 'actions/checkout@v4', with: { 'persist-credentials': 'false', ref: '${{ github.sha }}' } }] } } });
   });
   it('throws on anchors, folded blocks, flow maps, tabs and stray indent', () => {
-    for (const bad of ['a: &x 1\n', 'a: >\n  x\n', 'a: {b: 1}\n', 'a:\n\tb: 1\n', 'a: 1\n  b: 2\n', 'a: 1\na: 2\n', 'just text\n']) {
+    for (const bad of ['a: &x b\n', 'a: >\n  x\n', 'a: {b: c}\n', 'a:\n\tb: c\n', 'a: b\n  c: d\n', 'a: b\na: c\n', 'just text\n', 'a: |-\n  x\n', 'a: |2\n  x\n']) {
       assert.throws(() => parseYaml(bad), /yaml:/, JSON.stringify(bad));
     }
+  });
+  describe('refuses a plain value that YAML would reject or read differently', () => {
+    const refused = [
+      ['a trailing comment', 'a: b # c\n'], ['a comment as the whole value', 'a: # c\n'], ['a colon and a blank inside', 'a: b: c\n'], ['a trailing colon', 'a: b:\n'],
+      ['an alias', 'a: *x\n'], ['an anchor', 'a: &x b\n'], ['a tag', 'a: !!str b\n'], ['a block indicator', 'a: |\n'.replace('|', '>')],
+      ['a percent', 'a: %b\n'], ['an at sign', 'a: @b\n'], ['a backtick', 'a: `b\n'], ['a question mark', 'a: ?b\n'], ['a dash and a blank', 'a: - b\n'], ['a dash', 'a: -b\n'],
+      ['a single-quoted value', "a: 'b'\n"], ['a double-quoted value', 'a: "b"\n'], ['a double-quoted value with an escape', 'a: "b\\n"\n'], ['a quoted value and a comment', 'a: "b" # c\n'],
+      ['a flow map', 'a: {b: c}\n'], ['a flow sequence with a quote', 'a: ["b"]\n'], ['an unclosed flow sequence', 'a: [b\n'], ['a flow sequence with a nested one', 'a: [[b]]\n'],
+      ['true', 'a: true\n'], ['yes', 'a: yes\n'], ['no', 'a: no\n'], ['off', 'a: off\n'], ['null', 'a: null\n'], ['a tilde', 'a: ~\n'], ['False', 'a: False\n'], ['a number', 'a: 1\n'], ['a float', 'a: 1.5\n'], ['a hex number', 'a: 0x1f\n'],
+      ['a character outside the set', 'a: b;c\n'], ['a pipe inside', 'a: b|c\n'], ['a backslash inside', 'a: b\\c\n'], ['an unknown expression', 'a: ${{ github.token }}\n'], ['an unbalanced expression', 'a: ${{ github.sha\n'], ['a bare dollar brace', 'a: x}\n'],
+      ['an expression with other spacing', 'a: ${{github.sha}}\n'], ['a trailing blank', 'a: b \n'],
+      ['the wrong value for a pinned key', 'timeout-minutes: 6\n'], ['the right word in another case for a pinned key', 'persist-credentials: False\n'], ['yes for a pinned key', 'persist-credentials: no\n'], ['quoted for a pinned key', 'cancel-in-progress: "true"\n'],
+      ['a key YAML types', 'yes: b\n'], ['a numeric key', '1: b\n'], ['a null key', 'null: b\n'],
+      ['a literal block header with a comment', 'a: | # c\n  x\n'],
+    ];
+    for (const [what, text] of refused) {
+      it(`${what}`, () => { assert.throws(() => parseYaml(text), /yaml:/, JSON.stringify(text)); });
+    }
+    it('accepts the pinned values and the key on', () => {
+      assert.deepEqual(parseYaml('on: x\ntimeout-minutes: 5\npersist-credentials: false\ncancel-in-progress: true\n'), { on: 'x', 'timeout-minutes': '5', 'persist-credentials': 'false', 'cancel-in-progress': 'true' });
+    });
+    it('refuses the same shapes when they are put into the real workflow text', () => {
+      for (const [from, to] of [['timeout-minutes: 5', 'timeout-minutes: 6'], ['runs-on: ubuntu-latest', 'runs-on: ubuntu-latest # c'], ['runs-on: ubuntu-latest', 'runs-on: "ubuntu-latest"'],
+        ['persist-credentials: false', 'persist-credentials: no'], ['ref: ${{ github.sha }}', 'ref: ${{ github.event.pull_request.head.ref }}'], ['runs-on: ubuntu-latest', 'runs-on: ubuntu: latest']]) {
+        assert.ok(workflowText.includes(from), from);
+        assert.throws(() => parseYaml(workflowText.replace(from, to)), /yaml:/, to);
+      }
+      assert.throws(() => parseYaml(workflowText.replace('runs-on: ubuntu-latest', 'runs-on:\tubuntu-latest')), /yaml:/);
+    });
   });
 });
 
@@ -177,17 +230,17 @@ describe('pr-gate.yml: the shape is closed (only allowed keys)', () => {
 
   /** Each mutation edits the text of the workflow in the test (never the file) and must be seen. */
   const mutations = [
-    ['continue-on-error on the job', '    timeout-minutes: 5\n', '    timeout-minutes: 5\n    continue-on-error: true\n'],
-    ['continue-on-error on the scan step', '        env:\n          SCAN_WORDS:', '        continue-on-error: true\n        env:\n          SCAN_WORDS:'],
+    ['continue-on-error on the job', '    timeout-minutes: 5\n', '    timeout-minutes: 5\n    continue-on-error: later\n'],
+    ['continue-on-error on the scan step', '        env:\n          SCAN_WORDS:', '        continue-on-error: later\n        env:\n          SCAN_WORDS:'],
     ['if: always() on the last step', '      - name: Tie the result to what was checked\n', "      - name: Tie the result to what was checked\n        if: always()\n"],
-    ['if on the first step', '      - name: Name the pull request', "      - if: false\n        name: Name the pull request"],
+    ['if on the first step', '      - name: Name the pull request', "      - if: later\n        name: Name the pull request"],
     ['shell on a step', '      - name: The review record names the head commit\n', '      - name: The review record names the head commit\n        shell: sh\n'],
-    ['working-directory on a step', '      - name: The review record names the head commit\n', '      - name: The review record names the head commit\n        working-directory: /tmp\n'],
+    ['working-directory on a step', '      - name: The review record names the head commit\n', '      - name: The review record names the head commit\n        working-directory: tmp\n'],
     ['defaults at the top', 'permissions:\n  contents: read\n', 'permissions:\n  contents: read\ndefaults:\n  run:\n    shell: sh\n'],
-    ['env at the top', 'permissions:\n  contents: read\n', 'permissions:\n  contents: read\nenv:\n  X: y\n'],
-    ['a key nobody listed on the job', '    timeout-minutes: 5\n', '    timeout-minutes: 5\n    outputs:\n      x: y\n'],
+    ['env at the top', 'permissions:\n  contents: read\n', 'permissions:\n  contents: read\nenv:\n  X: val\n'],
+    ['a key nobody listed on the job', '    timeout-minutes: 5\n', '    timeout-minutes: 5\n    outputs:\n      x: val\n'],
     ['an env name that is not allowed', '          HEAD_SHA: ${{ github.event.pull_request.head.sha }}\n', '          HEAD_SHA: ${{ github.event.pull_request.head.sha }}\n          TITLE: x\n'],
-    ['a with key that is not allowed', '          persist-credentials: false\n', '          persist-credentials: false\n          fetch-depth: 0\n'],
+    ['a with key that is not allowed', '          persist-credentials: false\n', '          persist-credentials: false\n          fetch-depth: val\n'],
     ['a second job', 'jobs:\n', 'jobs:\n  other:\n    runs-on: ubuntu-latest\n    steps:\n      - name: x\n        run: |\n          true\n'],
   ];
   for (const [what, from, to] of mutations) {
@@ -450,6 +503,16 @@ describe('pr-gate.yml: the run blocks, executed', () => {
       ['prints something that is not a hash', 'echo "nothex  file"'],
       ['prints a hash and fails', `echo "${'0'.repeat(64)}  file"; exit 1`],
       ['prints a short hash', `echo "${'0'.repeat(63)}  file"`],
+      // a valid 64-hex first field is not enough: the whole record must be exactly `<hash>`, two blanks and `-` on one line
+      ['prints a valid hash and a second field that is not -', `printf '%s\\n' "${'0'.repeat(64)}  file"`],
+      ['prints a valid hash and no second field', `printf '%s\\n' "${'0'.repeat(64)}"`],
+      ['prints a valid hash and one blank before -', `printf '%s\\n' "${'0'.repeat(64)} -"`],
+      ['prints three fields', `printf '%s\\n' "${'0'.repeat(64)}  - extra"`],
+      ['prints two lines', `printf '%s\\n%s\\n' "${'0'.repeat(64)}  -" "${'0'.repeat(64)}  -"`],
+      ['prints a leading backslash', `printf '%s\\n' "\\\\${'0'.repeat(64)}  -"`],
+      ['prints a leading blank', `printf '%s\\n' " ${'0'.repeat(64)}  -"`],
+      ['prints no final line feed', `printf '%s' "${'0'.repeat(64)}  -"`],
+      ['prints an empty line first', `printf '\\n%s\\n' "${'0'.repeat(64)}  -"`],
     ];
     for (const [what, body] of cases) {
       it(`${what}: exit 2, could not run, no passed line`, () => {

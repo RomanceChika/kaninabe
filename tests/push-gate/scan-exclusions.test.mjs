@@ -377,6 +377,15 @@ describe('the old key-scan wrapper keeps its old configuration, as a named excep
       .filter((f) => readFileSync(f, 'utf8').includes(OLD_CONFIG)).map((f) => path.relative(root, f));
     assert.deepEqual(readers, []);
   });
+  it('the gate\'s configuration file name contains `gitleaks.toml`: the old check\'s default allowlist skips such a path (unanchored pattern), and the vendored rule shaped like a key would otherwise be red there; the gate itself does not rely on it, it uses the `keys` entry (dropped with the old check in the follow-up)', () => {
+    const gate = readFileSync(path.join(scriptsDir, 'push-gate.sh'), 'utf8');
+    const m = /^gl_config="\$here\/([^"]+)"/m.exec(gate);
+    assert.ok(m, 'push-gate.sh names its configuration file');
+    assert.ok(m[1].includes('gitleaks.toml'), `${m[1]} must contain gitleaks.toml`);
+    assert.ok(existsSync(path.join(scriptsDir, m[1])));
+    const list = readFileSync(path.join(scriptsDir, 'scan-exclusions.tsv'), 'utf8').split('\n');
+    assert.ok(list.some((l) => l.startsWith(`keys\tscripts/${m[1]}\t`)), 'the gate does not rely on the name: its own keys entry names the file');
+  });
   it('only that file in the scripts directory has `useDefault` or `[extend]`: the exception covers no other file', () => {
     const offenders = readdirSync(scriptsDir).filter((n) => /\.toml$/.test(n) && n !== OLD_CONFIG)
       .filter((n) => codeLines(path.join(scriptsDir, n)).some(([, l]) => /useDefault/.test(l) || /^\s*\[\s*extend\s*\]/.test(l)));

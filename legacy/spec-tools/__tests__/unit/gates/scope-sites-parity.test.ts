@@ -122,8 +122,8 @@ function strayAbsentFor(text: string, relative: string): readonly string[] {
     const before = rest.slice(0, index);
     const after = rest.slice(index + match[0].length);
     const isCall = /^\(/u.test(after) && !/(?:function\s+|\.\s*)$/u.test(before);
-    const isRead = /\.\s*$/u.test(before.replace(/\?$/u, '.')) && !/^\s*=(?!=)/u.test(after);
-    const isDeclaration = relative === 'kernel/finding.ts' && /^\?\s*:/u.test(after) && /readonly\s*$/u.test(before);
+    const isRead = /\.\s*$/u.test(before.replace(/\?$/u, '.')) && !/^\s*(?:[-+*/%&|^]|\*\*|<<|>>>?|&&|\|\||\?\?)?=(?!=)/u.test(after) && !/^\s*[,}\]]?\s*(?:\]|\})\s*=(?!=)/u.test(after);
+    const isDeclaration = relative === 'kernel/finding.ts' && /^\?\s*:/u.test(after) && /(?<!-)readonly\s*$/u.test(before);
     if (!isCall && !isRead && !isDeclaration) stray.push(rest.slice(Math.max(0, index - 20), index + 30).replace(/\s+/gu, ' '));
   }
   return stray;
@@ -196,6 +196,7 @@ describe('実装の範囲で外せる検査の閉じた一覧 ⇔ ソースで�
       `${imported}return [...items.map((item) => absentFor(owner, item))];`,
       "import { absentFor, type ScopeOwner } from '../kernel/scope-owner.js';\nabsentFor(o, f);",
       'const owner = finding.absentFor?.id;',
+      'const same = finding.absentFor === other.absentFor;',
       '// absentFor の説明だけ\n/* absentFor */',
     ];
     const forbidden: readonly (readonly [string, string])[] = [
@@ -211,6 +212,13 @@ describe('実装の範囲で外せる検査の閉じた一覧 ⇔ ソースで�
       ['値の受け渡し', `${imported}items.map(absentFor);`],
       ['別の値に束ねる', `${imported}const tag = absentFor;`],
       ['分割代入', 'const { absentFor } = scopeOwner;'],
+      ['代入(??=)', 'finding.absentFor ??= owner;'],
+      ['代入(||=)', 'finding.absentFor ||= owner;'],
+      ['代入(&&=)', 'finding.absentFor &&= owner;'],
+      ['代入(+=)', 'finding.absentFor += owner;'],
+      ['分割代入の宛先(メンバー)', '({ a: finding.absentFor } = source);'],
+      ['配列の分割代入の宛先', '[finding.absentFor] = [owner];'],
+      ['readonly を外す写像(kernel/finding.ts でも)', 'type Writable = { -readonly [K in keyof Finding]: Finding[K] } & { -readonly absentFor?: ScopeOwner };'],
     ];
 
     it.each(allowed.map((text, index) => [index, text] as const))('許す形 %s', (_index, text) => {
@@ -227,6 +235,13 @@ describe('実装の範囲で外せる検査の閉じた一覧 ⇔ ソースで�
       expect(strayAbsentFor(declaration, 'kernel/finding.ts')).toEqual([]);
       expect(strayAbsentFor(declaration, 'x/y.ts')).not.toEqual([]);
     });
+  });
+
+  it('kernel/scope-owner.ts の値の export は `absentFor` だけ(型は自由)。印を書く 2 つ目の入口がそこに生えない', () => {
+    const exported = [...withoutComments(read('kernel/scope-owner.ts')).matchAll(/^export\s+(?!type\b|interface\b)(?:async\s+)?(?:const|let|var|function\*?|class|enum)\s+(\w+)/gmu)].map((match) => match[1]);
+    const lists = [...withoutComments(read('kernel/scope-owner.ts')).matchAll(/^export\s+(?!type\b)\{([^}]*)\}/gmu)].flatMap((match) => (match[1] ?? '').split(',').map((item) => item.trim()).filter((item) => item !== '' && !item.startsWith('type ')));
+
+    expect([...exported, ...lists]).toEqual(['absentFor']);
   });
 
   it('`checkTestCaseTrace` の呼び出しは全部、持ち主を明示する(5 つ目の引数が必須。省略して印を外さない)', () => {

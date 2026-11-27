@@ -1098,6 +1098,54 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
       shimFail('sha256sum', '', 1);
       stops(runGate(sb, ['--mode', 'general', '--all', '--list-id', 'a'.repeat(64)]), 2, 'push-gate: the commits to scan are not the list');
     });
+    describe('a loop over a list is complete: every line is processed, or the run stops (review round 22, AC1)', () => {
+      const neutral = path.join(scripts, 'neutral-git.sh');
+      const scanRules = path.join(scripts, 'scan-rules.sh');
+      /** A `wc -l` that claims more lines than the file has: the list was not read to the end. */
+      const wcLies = () => {
+        rmSync(path.join(sb.bin, 'wc'), { force: true });
+        writeFileSync(path.join(sb.bin, 'wc'), `#!/bin/sh\ncase "$*" in *-l*) echo 99; exit 0 ;; esac\nexec ${which('wc')} "$@"\n`);
+        chmodSync(path.join(sb.bin, 'wc'), 0o755);
+      };
+      const stub = "gl() { echo '6:02PM INF 1 commits scanned.' >&2; return 0; }";
+      const history = (listArg, pre = '') => {
+        const script = `. "${neutral}"\n${pre}\nhist_n=0\nscan_history ${listArg} tpl "${sb.dir}" || echo "rc=$?"\necho "n=$hist_n err=$hist_err"\n`;
+        const r = spawnSync('/bin/sh', ['-c', script, neutral], { cwd: sb.repo, encoding: 'utf8', env: sb.env() });
+        return r.stdout + r.stderr;
+      };
+      it('scan_history: a list that is missing, or is not a file, is rc=2 with a reason, never "no findings"', () => {
+        assert.match(history('/nonexistent/list'), /rc=2/);
+        assert.match(history(`"${sb.dir}"`), /rc=2/);
+      });
+      it('scan_history: a list that cannot be opened by the loop is rc=2 (the check and the loop can disagree)', () => {
+        const list = path.join(sb.dir, 'one-commit');
+        writeFileSync(list, 'a'.repeat(40) + '\n');
+        // the list is checked, then the loop's own redirect fails: simulated by a function that removes the file after the check
+        const out = history(`"${list}"`, `wc_num() { wc_v=1; rm -f "${list}"; }\nneutral_adds_text() { return 1; }\n${stub}`);
+        assert.match(out, /rc=2/, out);
+      });
+      it('scan_history: a list whose line count differs from the lines processed is rc=2', () => {
+        const list = path.join(sb.dir, 'two-commits');
+        writeFileSync(list, 'a'.repeat(40) + '\nb'.repeat(1) + '\n');
+        const out = history(`"${list}"`, `wc_num() { wc_v=5; }\nneutral_adds_text() { return 1; }\n${stub}`);
+        assert.match(out, /rc=2/, out);
+      });
+      it('the gate: a count of lines that does not match what scan_history processed is exit 2, not a clean scan', () => {
+        wcLies();
+        stops(runGate(sb, ['--mode', 'general', '--all']), 2, 'push-gate: ');
+      });
+      it('the old-step wrapper: the same is exit 2', () => {
+        wcLies();
+        const w = wrap('git');
+        assert.equal(w.status, 2, w.out);
+      });
+      it('scan_attribution: a first stage whose redirect fails is exit 2, not "no attribution line"', () => {
+        const script = `scan_name=t\n. "${scanRules}"\nmkdir "$scan_dir/attr.1"\nprintf 'Co-Authored-By: someone\\n' > "$scan_dir/in"\nscan_attribution < "$scan_dir/in"\necho "rc=$?"\n`;
+        const r = spawnSync('/bin/sh', ['-c', script, scanRules], { cwd: sb.repo, encoding: 'utf8', env: sb.env() });
+        assert.equal(r.status, 2, r.stdout + r.stderr);
+        assert.ok(!r.stdout.includes('rc=1'), r.stdout);
+      });
+    });
     describe('one trap per script, holding the cleanup and the exit guard (review round 19, X2)', () => {
       it('scan-public: a command that fails with exit 1 late in the run (sed) is exit 2, and so is the gate that runs it', () => {
         writeWords(sb);

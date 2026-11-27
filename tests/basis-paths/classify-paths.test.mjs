@@ -6,6 +6,7 @@
  * file (--paths) or from `git diff --no-renames --name-only -z` between two commits (--range). Exit 0 passes, 1 means the
  * --require rule is violated, 2 means the script could not do its work (never 1, never a class line, never the summary line).
  *
+ * --range runs git in a clean environment of its own (no GIT_* from the caller, no user or system configuration, no replace refs).
  * The script is spec/test-first: this file is written before it. The sections follow the plan:
  *   1 list format        2 matching        3 ranges on a temporary git repository        4 --require
  *   5 a step that cannot run (and the cut-short sweep)        6 completeness        7 this repository's own list
@@ -31,7 +32,7 @@ const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => 
 const envOf = () => ({ ...cleanEnv, ...(toolPath ? { PATH: toolPath } : {}), ...(tmpOverride !== null ? { TMPDIR: tmpOverride } : {}) });
 const SYSTEM = ['/usr/bin', '/bin', '/usr/local/bin'];
 const which = (name) => SYSTEM.map((d) => path.join(d, name)).find((p) => spawnSync('/bin/sh', ['-c', `test -x ${p}`]).status === 0) ?? null;
-const TOOLS = ['git', 'mktemp', 'rm', 'tr', 'wc', 'cat', 'cmp'];
+const TOOLS = ['git', 'env', 'mktemp', 'rm', 'mv', 'tr', 'wc', 'cat', 'cmp'];
 /** A directory holding only the tools the script may call. `omit` leaves tools out; `shim` maps a tool to a shell body. */
 function makeBin(root, { omit = [], shim = {} } = {}) {
   const bin = path.join(root, `bin-${Math.random().toString(36).slice(2)}`);
@@ -51,8 +52,9 @@ let seq = 0;
 const fresh = (name) => { const d = path.join(scratch, `${name}-${seq++}`); mkdirSync(d); return d; };
 
 /** Runs the script (by `/bin/sh`, as the callers do). */
-function run(args, { cwd } = {}) {
-  const r = spawnSync('/bin/sh', [script, ...args], { encoding: 'utf8', env: envOf(), cwd: cwd ?? scratch });
+function run(args, { cwd, env, shell } = {}) {
+  const [cmd, ...pre] = shell ?? ['/bin/sh'];
+  const r = spawnSync(cmd, [...pre, script, ...args], { encoding: 'utf8', env: { ...envOf(), ...(env ?? {}) }, cwd: cwd ?? scratch });
   return { status: r.status, out: r.stdout, err: r.stderr, all: r.stdout + r.stderr };
 }
 const writeList = (lines, dir = scratch) => { const f = path.join(dir, `list-${seq++}.tsv`); writeFileSync(f, lines.length ? `${lines.join('\n')}\n` : ''); return f; };
@@ -276,7 +278,7 @@ function requireCases() {
 describe('classify-paths.sh: the list format (1)', listCases);
 describe('classify-paths.sh: matching (2)', matchCases);
 describe('classify-paths.sh: --require, --quiet and the arguments (4)', requireCases);
-describe('classify-paths.sh with a private PATH holding only git, mktemp, rm, tr, wc, cat and cmp (no awk, sed, sort or grep)', () => {
+describe('classify-paths.sh with a private PATH holding only git, env, mktemp, rm, mv, tr, wc, cat and cmp (no awk, sed, sort or grep)', () => {
   let root;
   before(() => { root = mkdtempSync(path.join(tmpdir(), 'classify-paths-bin-')); toolPath = makeBin(root); });
   after(() => { toolPath = null; rmSync(root, { recursive: true, force: true }); });
@@ -304,10 +306,10 @@ function newRepo(files) {
 function commit(dir, msg = 'next', stage = true) { if (stage) git(dir, 'add', '-A'); git(dir, 'commit', '-q', '-m', msg); return git(dir, 'rev-parse', 'HEAD'); }
 const RANGE_LIST = [L('implementation', 'impl/*', 'r'), L('generated', 'gen/*', 'r'), L('implementation', 'vendor/sub', 'r')];
 /** Classifies the paths between two commits of `dir`; returns the status, the sorted rows and the output. */
-function range(dir, a, b, { extra = [], list = RANGE_LIST, cwd } = {}) {
+function range(dir, a, b, { extra = [], list = RANGE_LIST, cwd, env } = {}) {
   const out = path.join(scratch, `rout-${seq++}`);
-  const r = run(['--list', writeList(list), '--range', a, b, '--out', out, ...extra], { cwd: cwd ?? dir });
-  const rows = r.status === 0 ? rowsOf(out) : null;
+  const r = run(['--list', writeList(list), '--range', a, b, '--out', out, ...extra], { cwd: cwd ?? dir, env });
+  const rows = existsSync(out) ? rowsOf(out) : null;
   return { ...r, rows, sorted: rows && [...rows].sort((x, y) => (x[1] < y[1] ? -1 : x[1] > y[1] ? 1 : 0)) };
 }
 const GITLINK = (n) => `${n.repeat(40)}`.slice(0, 40);
@@ -413,6 +415,66 @@ describe('classify-paths.sh: --range on a temporary git repository (3)', () => {
     assert.deepEqual(range(d, a, b).sorted, [['basis', 'docs/n.md']]);
     assert.deepEqual(range(d, b, a).sorted, [['basis', 'docs/n.md']], 'the same path set backwards');
   });
+  /** A repository with a commit a, then b (changes impl and docs), then c (changes only docs). */
+  function threeCommits() {
+    const d = newRepo({ 'impl/x.sh': 'a\n', 'docs/a.md': 'a\n' });
+    const a = git(d, 'rev-parse', 'HEAD');
+    put(d, 'impl/x.sh', 'b\n'); put(d, 'docs/b.md'); const b = commit(d, 'b');
+    put(d, 'docs/c.md'); const c = commit(d, 'c');
+    return { d, a, b, c };
+  }
+  it('a replace ref does not change the path set: git replace B C leaves --range A B on the real B', () => {
+    const { d, a, b, c } = threeCommits();
+    const before = range(d, a, b);
+    assert.deepEqual(before.sorted, [['basis', 'docs/b.md'], ['implementation', 'impl/x.sh']]);
+    git(d, 'replace', b, c);
+    const after = range(d, a, b, { extra: ['--require', 'basis-only'] });
+    assert.equal(after.status, 1, `the implementation path of the real B must still be counted: ${after.all}`);
+    assert.deepEqual(after.sorted, before.sorted);
+    const flipped = range(d, a, b, { env: { GIT_NO_REPLACE_OBJECTS: '0' } });
+    assert.deepEqual(flipped.sorted, before.sorted, 'GIT_NO_REPLACE_OBJECTS=0 in the environment does not bring the replacement back');
+  });
+  it('git environment variables of the caller do not change the result: it is the same as without them, or exit 2', () => {
+    const { d, a, b } = threeCommits();
+    git(d, 'replace', b, a); // a replace ref is present while the hostile environments are tried
+    const other = newRepo({ 'elsewhere/f': 'x\n' });
+    const base = range(d, a, b);
+    assert.deepEqual(base.sorted, [['basis', 'docs/b.md'], ['implementation', 'impl/x.sh']]);
+    const objects = path.join(fresh('alt'), 'objects'); mkdirSync(objects);
+    const HOSTILE = [
+      ['GIT_DIR at another repository', { GIT_DIR: path.join(other, '.git') }],
+      ['GIT_WORK_TREE and GIT_INDEX_FILE that do not exist', { GIT_WORK_TREE: '/nonexistent/wt', GIT_INDEX_FILE: '/nonexistent/index' }],
+      ['GIT_CONFIG_COUNT setting diff options', { GIT_CONFIG_COUNT: '3', GIT_CONFIG_KEY_0: 'diff.relative', GIT_CONFIG_VALUE_0: 'true', GIT_CONFIG_KEY_1: 'diff.ignoreSubmodules', GIT_CONFIG_VALUE_1: 'all', GIT_CONFIG_KEY_2: 'diff.renames', GIT_CONFIG_VALUE_2: 'copies' }],
+      ['GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM files', { GIT_CONFIG_GLOBAL: path.join(fresh('cfg'), 'nope'), GIT_CONFIG_SYSTEM: '/nonexistent/sys' }],
+      ['GIT_ALTERNATE_OBJECT_DIRECTORIES', { GIT_ALTERNATE_OBJECT_DIRECTORIES: objects }],
+      ['GIT_OBJECT_DIRECTORY at an empty directory', { GIT_OBJECT_DIRECTORY: objects }],
+      ['GIT_NO_REPLACE_OBJECTS=0 and GIT_REPLACE_REF_BASE', { GIT_NO_REPLACE_OBJECTS: '0', GIT_REPLACE_REF_BASE: 'refs/replace/' }],
+      ['GIT_EXTERNAL_DIFF and GIT_DIFF_OPTS', { GIT_EXTERNAL_DIFF: '/bin/false', GIT_DIFF_OPTS: '--unified=0' }],
+      ['GIT_CEILING_DIRECTORIES and GIT_DISCOVERY_ACROSS_FILESYSTEM', { GIT_CEILING_DIRECTORIES: d, GIT_DISCOVERY_ACROSS_FILESYSTEM: '0' }],
+      ['GIT_COMMON_DIR and GIT_NAMESPACE', { GIT_COMMON_DIR: path.join(other, '.git'), GIT_NAMESPACE: 'x' }],
+    ];
+    for (const [name, env] of HOSTILE) {
+      const r = range(d, a, b, { env, cwd: path.join(d, 'docs') });
+      if (r.status === 2) { couldNotRun(r, null); continue; }
+      assert.equal(r.status, 0, `${name}: ${r.all}`);
+      assert.deepEqual(r.sorted, base.sorted, `${name} changed the result`);
+    }
+  });
+  it('--range takes only what resolves to one commit: a commit, a branch, a tag (peeled), an abbreviated sha, HEAD~1 and refs/heads/x pass; a tree, a blob and a range are exit 2', () => {
+    const { d, a, b } = threeCommits();
+    git(d, 'tag', 'light', b); git(d, 'tag', '-a', '-m', 'annotated', 'noted', b); git(d, 'branch', 'side', b);
+    const want = [['basis', 'docs/b.md'], ['implementation', 'impl/x.sh']];
+    for (const x of [b, b.slice(0, 10), 'light', 'noted', 'side', 'refs/heads/side', 'refs/tags/noted', 'HEAD~1', `${b}^{commit}`, `${b}^0`]) {
+      const r = range(d, a, x);
+      assert.equal(r.status, 0, `${x}: ${r.all}`);
+      assert.deepEqual(r.sorted, want, x);
+    }
+    git(d, 'tag', 'treetag', `${b}^{tree}`);
+    for (const x of [`${b}:impl`, `${b}^{tree}`, `${b}:docs/b.md`, 'treetag', `${a}..${b}`, `^${a}`, `${b}:`, 'HEAD:docs']) {
+      couldNotRun(range(d, a, x), null);
+      couldNotRun(range(d, x, b), null);
+    }
+  });
 });
 
 // ---- 5 a step that cannot run -------------------------------------------------------------------------------------------
@@ -432,12 +494,15 @@ describe('classify-paths.sh: a step that cannot run is exit 2, never 1, never a 
   let n = 0;
   const outFile = () => path.join(root, `o-${n++}`);
   /** The scenarios: what the script is run with, the status of the untouched run, and the tools it must call. */
+  const ALL = ['mktemp', 'rm', 'tr', 'wc', 'cmp'];
   const SCENARIOS = [
-    { name: 'paths with --out', args: () => ['--list', fx.list, '--paths', fx.paths, '--out', outFile()], truth: 0, tools: ['mktemp', 'rm', 'tr', 'wc', 'cat', 'cmp'] },
-    { name: 'a violated rule', args: () => ['--list', fx.list, '--paths', fx.paths, '--out', outFile(), '--require', 'basis-only'], truth: 1, tools: ['mktemp', 'rm', 'tr', 'wc', 'cat', 'cmp'] },
-    { name: 'quiet', args: () => ['--list', fx.list, '--paths', fx.paths, '--quiet'], truth: 0, tools: ['mktemp', 'rm', 'tr', 'wc', 'cmp'] },
-    { name: 'range with --out', args: () => ['--list', fx.list, '--range', fx.a, fx.b, '--out', outFile()], truth: 0, cwd: () => fx.repo, tools: ['git', 'mktemp', 'rm', 'tr', 'wc', 'cat', 'cmp'] },
-    { name: 'a violated rule on a range', args: () => ['--list', fx.list, '--range', fx.a, fx.b, '--out', outFile(), '--require', 'no-basis'], truth: 1, cwd: () => fx.repo, tools: ['git', 'mktemp', 'rm', 'tr', 'wc', 'cat', 'cmp'] },
+    { name: 'paths with --out', args: () => ['--list', fx.list, '--paths', fx.paths, '--out', outFile()], truth: 0, tools: [...ALL, 'cat', 'mv'] },
+    { name: 'a violated rule', args: () => ['--list', fx.list, '--paths', fx.paths, '--out', outFile(), '--require', 'basis-only'], truth: 1, tools: [...ALL, 'cat', 'mv'] },
+    { name: 'quiet', args: () => ['--list', fx.list, '--paths', fx.paths, '--quiet'], truth: 0, tools: ALL },
+    { name: 'rows on standard output', args: () => ['--list', fx.list, '--paths', fx.paths], truth: 0, tools: ALL },
+    { name: 'range with --out', args: () => ['--list', fx.list, '--range', fx.a, fx.b, '--out', outFile()], truth: 0, cwd: () => fx.repo, tools: [...ALL, 'git', 'env', 'cat', 'mv'] },
+    { name: 'a violated rule on a range', args: () => ['--list', fx.list, '--range', fx.a, fx.b, '--out', outFile(), '--require', 'no-basis'], truth: 1, cwd: () => fx.repo, tools: [...ALL, 'git', 'env', 'cat', 'mv'] },
+    { name: 'range with rows on standard output', args: () => ['--list', fx.list, '--range', fx.a, fx.b], truth: 0, cwd: () => fx.repo, tools: [...ALL, 'git', 'env'] },
   ];
   const go = (s) => run(s.args(), { cwd: s.cwd ? s.cwd() : undefined });
   it('(guard) the private PATH itself works: the scenarios give their own status, with the summary line', () => {
@@ -479,6 +544,44 @@ describe('classify-paths.sh: a step that cannot run is exit 2, never 1, never a 
     couldNotRun(run(['--list', fx.list, '--paths', fx.paths, '--out', path.join(root, 'no-dir', 'o')]), null);
     couldNotRun(run(['--list', fx.list, '--paths', fx.paths, '--out', root]), null);
   });
+  /** Runs a scenario into a directory of its own, with a stale result already at --out; returns the run and the directory's names. */
+  const withOut = (extraArgs, { shim, stale = true } = {}) => {
+    const dir = path.join(root, `od-${n++}`); mkdirSync(dir);
+    const out = path.join(dir, 'result');
+    if (stale) writeFileSync(out, 'STALE\n');
+    toolPath = makeBin(root, shim ? { shim } : {}); tmpOverride = path.join(root, 'tmp');
+    const r = run(['--paths', fx.paths, '--out', out, ...extraArgs]);
+    return { r, out, names: readdirSyncOf(dir) };
+  };
+  it('--out holds a result only after exit 0 or 1: a stale file is gone after exit 2, and a partial file is never left', () => {
+    const bad = withOut(['--list', writeRaw('basis\tx/*\n')]);
+    couldNotRun(bad.r, 'list: line 1: not three tab-separated fields');
+    assert.deepEqual(bad.names, [], 'a stale result must not survive an exit 2, and nothing else is left in the directory');
+    const catFails = withOut(['--list', fx.list], { shim: { cat: 'echo partial-line; exit 1' } });
+    couldNotRun(catFails.r, null);
+    assert.deepEqual(catFails.names, [], 'a failed copy leaves no partial file and no temporary file');
+    const mvFails = withOut(['--list', fx.list], { shim: { mv: 'exit 1' } });
+    couldNotRun(mvFails.r, null);
+    assert.deepEqual(mvFails.names, [], 'a failed move leaves no result and no temporary file');
+    const rmFails = withOut(['--list', fx.list], { shim: { rm: 'exit 1' } });
+    couldNotRun(rmFails.r, null);
+    assert.ok(!existsSync(rmFails.out), 'a cleanup that fails is exit 2 and leaves no result');
+    const ok = withOut(['--list', fx.list]);
+    assert.equal(ok.r.status, 0, ok.r.all);
+    assert.deepEqual(ok.names, ['result']);
+    assert.equal(readFileSync(ok.out, 'utf8').split('\n').length, 7, 'the stale content is replaced by the 6 rows');
+    const violated = withOut(['--list', fx.list, '--require', 'basis-only']);
+    assert.equal(violated.r.status, 1, violated.r.all);
+    assert.deepEqual(violated.names, ['result']);
+    assert.ok(!readFileSync(violated.out, 'utf8').includes('STALE'));
+  });
+  it('--out may not be the list or the paths file (they would be removed first)', () => {
+    const list = writeList([L('basis', 'x/*', 'r')]); const paths = writePaths(['a']);
+    toolPath = makeBin(root); tmpOverride = path.join(root, 'tmp');
+    couldNotRun(run(['--list', list, '--paths', paths, '--out', list]), null);
+    couldNotRun(run(['--list', list, '--paths', paths, '--out', paths]), null);
+    assert.ok(existsSync(list) && existsSync(paths));
+  });
   it('an unreadable --paths or --list is exit 2, and a PATH without awk, sed, sort and grep is fine', () => {
     toolPath = makeBin(root); tmpOverride = path.join(root, 'tmp');
     couldNotRun(run(['--list', fx.list, '--paths', path.join(root, 'nope')]), 'paths: cannot read');
@@ -514,13 +617,17 @@ describe('classify-paths.sh: a stage output that is cut short is exit 2, whateve
     fx = { repo, a, b, list: writeList([...RANGE_LIST, L('basis', 'docs/*', 'a reason')], root), paths: writePaths(['docs/a', 'impl/x', 'gen/y', 'docs/b', 'impl/z', 'a b'], root) };
   });
   after(() => { toolPath = null; tmpOverride = null; rmSync(root, { recursive: true, force: true }); });
-  const SWEPT = ['git', 'tr', 'wc', 'cat', 'mktemp'];
+  const SWEPT = ['git', 'env', 'tr', 'wc', 'cat', 'mktemp'];
+  const BASE = ['tr', 'wc', 'mktemp'];
   const SCENARIOS = [
-    { name: 'paths with --out', args: (o) => ['--list', fx.list, '--paths', fx.paths, '--out', o], truth: 0, tools: ['tr', 'wc', 'cat', 'mktemp'] },
-    { name: 'a violated rule', args: (o) => ['--list', fx.list, '--paths', fx.paths, '--out', o, '--require', 'basis-only'], truth: 1, tools: ['tr', 'wc', 'cat', 'mktemp'] },
-    { name: 'quiet', args: () => ['--list', fx.list, '--paths', fx.paths, '--quiet'], truth: 0, tools: ['tr', 'wc', 'mktemp'] },
-    { name: 'range with --out', args: (o) => ['--list', fx.list, '--range', fx.a, fx.b, '--out', o], truth: 0, cwd: () => fx.repo, tools: ['git', 'tr', 'wc', 'cat', 'mktemp'] },
-    { name: 'a violated rule on a range', args: (o) => ['--list', fx.list, '--range', fx.a, fx.b, '--out', o, '--require', 'basis-only'], truth: 1, tools: ['git', 'tr', 'wc', 'cat', 'mktemp'], cwd: () => fx.repo },
+    { name: 'paths with --out', args: (o) => ['--list', fx.list, '--paths', fx.paths, '--out', o], truth: 0, withOut: true, tools: [...BASE, 'cat'] },
+    { name: 'a violated rule', args: (o) => ['--list', fx.list, '--paths', fx.paths, '--out', o, '--require', 'basis-only'], truth: 1, withOut: true, tools: [...BASE, 'cat'] },
+    { name: 'quiet', args: () => ['--list', fx.list, '--paths', fx.paths, '--quiet'], truth: 0, tools: BASE },
+    { name: 'rows on standard output', args: () => ['--list', fx.list, '--paths', fx.paths], truth: 0, tools: BASE },
+    { name: 'a violated rule with rows on standard output', args: () => ['--list', fx.list, '--paths', fx.paths, '--require', 'no-basis'], truth: 1, tools: BASE },
+    { name: 'range with --out', args: (o) => ['--list', fx.list, '--range', fx.a, fx.b, '--out', o], truth: 0, withOut: true, cwd: () => fx.repo, tools: [...BASE, 'git', 'env', 'cat'] },
+    { name: 'a violated rule on a range', args: (o) => ['--list', fx.list, '--range', fx.a, fx.b, '--out', o, '--require', 'basis-only'], truth: 1, withOut: true, tools: [...BASE, 'git', 'env', 'cat'], cwd: () => fx.repo },
+    { name: 'range with rows on standard output', args: () => ['--list', fx.list, '--range', fx.a, fx.b], truth: 0, cwd: () => fx.repo, tools: [...BASE, 'git', 'env'] },
   ];
   let counter = 0;
   /** Runs a scenario with `tool` shimmed: its call number `n` loses its last `k` lines (n = 0: no cut, only counted). */
@@ -534,11 +641,12 @@ describe('classify-paths.sh: a stage output that is cut short is exit 2, whateve
       + `if [ "$c" = ${n} ]; then\n  T=$(${which('mktemp')}) || bad mktemp\n  U=$(${which('mktemp')}) || bad mktemp\n  ${real} "$@" > "$T" || bad real-tool\n  ${cut} || bad cut\n  rc=0; ${which('cmp')} -s "$T" "$U" || rc=$?\n  case $rc in 0 | 1) ;; *) bad cmp ;; esac\n  ${which('cat')} "$U" || bad hand-on\n  ${which('rm')} -f "$T" "$U" || bad rm\n  if [ "$rc" = 1 ]; then echo changed > ${cnt}.chg || bad mark; fi\n  exit 0\nfi\nexec ${real} "$@"`;
     toolPath = makeBin(root, { shim: { [tool]: shim } }); tmpOverride = path.join(root, 'tmp');
     const o = path.join(root, `sweep-out-${counter}`);
+    writeFileSync(o, 'STALE\n'); // a stale result is in place: after an exit 2 it must be gone
     const r = run(s.args(o), { cwd: s.cwd ? s.cwd() : undefined });
     let calls = 0;
     try { calls = Number(readFileSync(cnt, 'utf8').trim()); } catch { /* the tool was not called */ }
     assert.ok(!existsSync(`${cnt}.err`), `the shim's own command failed (${tool} call ${n}, k=${k}): ${existsSync(`${cnt}.err`) ? readFileSync(`${cnt}.err`, 'utf8') : ''}`);
-    return { ...r, calls, changed: existsSync(`${cnt}.chg`) };
+    return { ...r, calls, changed: existsSync(`${cnt}.chg`), outExists: existsSync(o) };
   };
   let runs = 0;
   const cutCalls = Object.fromEntries(SWEPT.map((t) => [t, new Set()]));
@@ -563,9 +671,11 @@ describe('classify-paths.sh: a stage output that is cut short is exit 2, whateve
               assert.equal(r.status, 2, `${label}: the output of the call was cut, and the result is not exit 2: ${r.all}`);
               assert.ok(r.all.includes('classify-paths: could not run ('), `${label}: ${r.all}`);
               assert.ok(!SUMMARY.test(r.all) && !CLASS_LINE.test(r.all) && !r.all.includes('FAILED'), `${label}: a verdict was printed: ${r.all}`);
+              assert.equal(r.outExists, false, `${label}: --out holds a stale or partial result after exit 2`);
             } else {
               assert.equal(r.status, s.truth, `${label}: nothing was cut, and the verdict changed: ${r.all}`);
               assert.equal(r.out, baseOut, `${label}: nothing was cut, and the output changed`);
+              if (s.withOut) assert.equal(r.outExists, true, `${label}: nothing was cut, and --out is missing`);
             }
           }
         }
@@ -635,8 +745,9 @@ describe('classify-paths.sh: the output is complete, and agrees with an independ
  * basis-paths.tsv (implementation, generated) or a group here (basis on purpose). A stale group fails too.
  */
 const UNMATCHED_FILES = ['basis-paths.tsv', '.gitignore', '.gitleaksignore', '.nvmrc', 'AGENTS.md', 'CLAUDE.md', 'LICENSE', 'README.md', 'package-lock.json', 'package.json', 'product.md', 'vitest.config.mts',
-  'framework/guarantees.md', 'scripts/push-gate.gitleaks.toml', 'scripts/scan-exclusions.tsv'];
-const UNMATCHED_DIRS = ['.claude/', 'docs/', 'tests/', 'legacy/', 'framework/adapters/', 'framework/lint-config/', 'framework/runtime/'];
+  'framework/guarantees.md', 'scripts/push-gate.gitleaks.toml', 'scripts/scan-exclusions.tsv', '.github/pull_request_template.md'];
+// supabase/migrations/ is here on purpose: a directory is trusted as generated only once CI proves its files fresh (known-gaps)
+const UNMATCHED_DIRS = ['.claude/', 'docs/', 'tests/', 'legacy/', 'framework/adapters/', 'framework/lint-config/', 'framework/runtime/', 'supabase/migrations/'];
 describe('classify-paths.sh: this repository (7)', () => {
   const listFile = path.join(repoRoot, 'basis-paths.tsv');
   const tracked = () => {
@@ -657,7 +768,9 @@ describe('classify-paths.sh: this repository (7)', () => {
     const wrong = rows.filter(([cls, p]) => cls !== oracle(rules, p).cls).map(([, p]) => p);
     assert.deepEqual(wrong, []);
     const count = (c) => rows.filter((x) => x[0] === c).length;
-    assert.ok(count('generated') > 0 && count('implementation') > 0 && count('basis') > 0, 'every class is in use');
+    assert.ok(count('implementation') > 0 && count('basis') > 0, 'basis and implementation are in use');
+    assert.equal(count('generated'), 0, 'no path of this repository is generated until CI proves a directory fresh (known-gaps): the class stays in the script and its tests');
+    assert.ok(!rules.some((x) => x.cls === 'generated'), 'the list has no generated line');
     assert.equal(r.out, `classify-paths: ${paths.length} path(s): ${count('basis')} basis, ${count('generated')} generated, ${count('implementation')} implementation\n`);
   });
   it('the paths that fall to "unmatched = basis" are exactly the groups named in this test', () => {
@@ -669,7 +782,7 @@ describe('classify-paths.sh: this repository (7)', () => {
     const staleDirs = UNMATCHED_DIRS.filter((d) => !unmatched.some((p) => p.startsWith(d)));
     assert.deepEqual([...staleFiles, ...staleDirs], [], 'a group that holds no unmatched path any more');
     // source never falls through silently: nothing unmatched sits in a source directory or is a script that runs
-    const sourceLike = unmatched.filter((p) => /(^|\/)src\//.test(p) || /^legacy\/spec-tools\/(lib|cli)\//.test(p) || /^(bin|scripts)\/.*\.(sh|mjs)$/.test(p) || /^\.github\//.test(p) || /^supabase\/migrations\//.test(p));
+    const sourceLike = unmatched.filter((p) => /(^|\/)src\//.test(p) || /^legacy\/spec-tools\/(lib|cli)\//.test(p) || /^(bin|scripts)\/.*\.(sh|mjs)$/.test(p) || /^\.github\/workflows\//.test(p));
     assert.deepEqual(sourceLike, []);
   });
   it('the lines that carry the design: tests inside an implementation tree stay basis, and the list, docs and configs are basis', () => {
@@ -685,11 +798,72 @@ describe('classify-paths.sh: this repository (7)', () => {
     assert.equal(cls('scripts/scan-exclusions.tsv'), 'basis');
     assert.equal(cls('bin/kaninabe.mjs'), 'implementation');
     assert.equal(cls('.github/workflows/pr-gate.yml'), 'implementation');
-    assert.equal(cls('supabase/migrations/20260912120201_ddl_items.sql'), 'generated');
+    assert.equal(cls('supabase/migrations/20260912120201_ddl_items.sql'), 'basis', 'migrations are basis until CI proves them fresh');
+    assert.equal(cls('.github/pull_request_template.md'), 'basis', 'prose, not code');
+    assert.equal(cls('framework/runtime/scripts/check-node.mjs'), 'implementation');
+    assert.equal(cls('framework/runtime/scripts/check-node.d.mts'), 'implementation');
+    assert.equal(cls('framework/runtime/scripts/freshness-entries.json'), 'basis', 'a data table that a check reads');
     assert.equal(cls('basis-paths.tsv'), 'basis');
     assert.equal(cls('docs/rules/process/common/development-flow.md'), 'basis');
     assert.equal(cls('tests/basis-paths/classify-paths.test.mjs'), 'basis');
     assert.equal(cls('product.md'), 'basis');
     assert.equal(cls('package.json'), 'basis');
   });
+});
+
+describe('classify-paths.sh: nothing that looks like a test or data drifts into implementation or generated (7, the reverse guard)', () => {
+  // a path in a class that the rule keeps apart from basis must not look like a test or like data. An exception is named here with
+  // its reason, and a stale exception fails.
+  const LOOKS_LIKE = /(\.test\.|\.spec\.|\/fixtures\/|\/__tests__\/|\.json$|\.md$|\.tsv$|\.ya?ml$|\.toml$|\.txt$)/;
+  const EXCEPTIONS = [
+    [/^\.github\/workflows\/[^/]+\.ya?ml$/, 'a workflow is code: it runs, and a test-first change edits it after its tests'],
+  ];
+  it('every implementation and generated path at HEAD is code, or an excepted workflow', () => {
+    const r = spawnSync('git', ['ls-tree', '-r', '-z', '--name-only', 'HEAD'], { cwd: repoRoot, env: cleanEnv, encoding: 'utf8', maxBuffer: 1 << 28 });
+    assert.equal(r.status, 0, r.stderr);
+    const rules = readList(path.join(repoRoot, 'basis-paths.tsv'));
+    const guarded = r.stdout.split('\0').filter(Boolean).filter((p) => oracle(rules, p).cls !== 'basis');
+    assert.ok(guarded.length > 100, `${guarded.length} guarded paths`);
+    const surprising = guarded.filter((p) => LOOKS_LIKE.test(p) && !EXCEPTIONS.some(([re]) => re.test(p)));
+    assert.deepEqual(surprising, [], 'a path that looks like a test or data sits in a class that is not basis: narrow the list line, or name the exception with its reason');
+    const stale = EXCEPTIONS.filter(([re]) => !guarded.some((p) => re.test(p))).map(([re]) => String(re));
+    assert.deepEqual(stale, [], 'an exception that matches no guarded path any more');
+  });
+});
+
+// ---- the shell that runs it: the same output under sh (dash here), bash, bash --posix and busybox sh ----------------------------
+const SHELLS = [['bash', which('bash') ? [which('bash')] : null], ['bash --posix', which('bash') ? [which('bash'), '--posix'] : null], ['busybox sh', which('busybox') ? [which('busybox'), 'sh'] : null]];
+describe('classify-paths.sh: the same bytes under other shells', () => {
+  let root; let d; let a; let b;
+  before(() => {
+    root = fresh('shells');
+    d = path.join(root, 'repo'); mkdirSync(d);
+    git(d, 'init', '-q', '-b', 'main'); put(d, 'docs/a.md'); put(d, 'impl/o.sh'); git(d, 'add', '-A'); git(d, 'commit', '-q', '-m', 'a');
+    a = git(d, 'rev-parse', 'HEAD');
+    put(d, 'impl/n.sh'); put(d, 'gen/g.sql'); put(d, 'docs/a b.md', 'y\n'); put(d, '日本語.txt'); git(d, 'add', '-A'); git(d, 'commit', '-q', '-m', 'b');
+    b = git(d, 'rev-parse', 'HEAD');
+  });
+  const scenario = (shell, tag) => {
+    const list = writeList([...RANGE_LIST, L('basis', 'docs/*', 'a reason')], root);
+    const paths = writePaths(['docs/a', 'impl/x', 'gen/y', 'a b', '日本語', '-x'], root);
+    const o1 = path.join(root, `o1-${tag}`); const o2 = path.join(root, `o2-${tag}`);
+    const rows = run(['--list', list, '--paths', paths], { shell });
+    const viaOut = run(['--list', list, '--paths', paths, '--out', o1, '--require', 'basis-only'], { shell });
+    const rng = run(['--list', list, '--range', a, b, '--out', o2], { cwd: d, shell });
+    const bad = run(['--list', writeRaw('basis\tx\n', root), '--paths', paths], { shell });
+    const own = run(['--list', path.join(repoRoot, 'basis-paths.tsv'), '--range', 'HEAD~1', 'HEAD', '--quiet'], { cwd: repoRoot, shell });
+    return JSON.stringify([rows, viaOut, readFileSync(o1, 'utf8'), rng, readFileSync(o2, 'utf8'), bad, own].map((x) => (typeof x === 'string' ? x : [x.status, x.out, x.err])));
+  };
+  const baseline = () => scenario(undefined, 'sh');
+  it('(guard) the scenario itself behaves: statuses 0, 1, 0, 2 and rows in order', () => {
+    const [rows, viaOut, , rng, , bad] = JSON.parse(baseline());
+    assert.equal(rows[0], 0); assert.equal(viaOut[0], 1); assert.equal(rng[0], 0); assert.equal(bad[0], 2);
+    assert.match(rows[1], /^basis\tdocs\/a\n/);
+  });
+  for (const [name, shell] of SHELLS) {
+    it(`under ${name}: byte-identical to /bin/sh${shell ? '' : ' (SKIPPED: not installed here)'}`, (t) => {
+      if (!shell) { console.log(`classify-paths shell test: ${name} is not installed, skipped`); t.skip(`${name} not installed`); return; }
+      assert.equal(scenario(shell, name.replace(/\W/g, '')), baseline());
+    });
+  }
 });

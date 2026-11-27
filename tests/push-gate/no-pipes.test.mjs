@@ -32,6 +32,7 @@ const FILES = [
   'scripts/scan-rules.sh',
   'scripts/scan-pr-text.sh',
   'scripts/repo-context.sh',
+  'scripts/check-review-record.sh',
   '.githooks/pre-push',
 ];
 const MARKER = '# GATE-EXCEPTION:';

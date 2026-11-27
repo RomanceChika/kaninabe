@@ -44,7 +44,7 @@ function matchAnnotations(input: QueryInput): Finding[] {
   const testFiles = new Set(input.tests.testFiles);
   return input.registry
     .ofKind('query_spec')
-    .flatMap((entry) => checkTestCaseTrace(entry, byTcId.get(entry.tcId) ?? [], testFiles, 'Q6'));
+    .flatMap((entry) => checkTestCaseTrace(entry, byTcId.get(entry.tcId) ?? [], testFiles, 'Q6', { kind: 'query', id: entry.specId }));
 }
 
 /** RLS を通る経路のテストが 1 つ以上あるか。 */

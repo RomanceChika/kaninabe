@@ -58,8 +58,11 @@ export function verifyGuaranteeTestTrace(
   return [
     ...findings,
     ...entries.flatMap((entry) => {
-      const view = isUnderFrameworkTestRoots(entry.implementation.file) ? framework : product;
-      return view === null ? [] : checkTestCaseTrace(entry, view.byTcId.get(entry.tcId) ?? [], view.files, VERIFIER_ID);
+      const underFramework = isUnderFrameworkTestRoots(entry.implementation.file);
+      const view = underFramework ? framework : product;
+      // 仕組みの見張りテストの置き場の下を指す台帳の行は、仕組み自身の台帳と同じで、範囲では外れない(持ち主 null)。
+      const owner = underFramework ? null : { kind: 'catalog' as const, id: GUARANTEE_CATALOG_ID };
+      return view === null ? [] : checkTestCaseTrace(entry, view.byTcId.get(entry.tcId) ?? [], view.files, VERIFIER_ID, owner);
     }),
   ];
 }

@@ -34,7 +34,7 @@ function testTraceRun(input: TraceInput): PartialRun {
   const testFiles = new Set(input.tests.testFiles);
   const findings = input.registry
     .ofKind('action_spec')
-    .flatMap((entry) => checkTestCaseTrace(entry, byTcId.get(entry.tcId) ?? [], testFiles, 'A6'));
+    .flatMap((entry) => checkTestCaseTrace(entry, byTcId.get(entry.tcId) ?? [], testFiles, 'A6', { kind: 'action', id: entry.specId }));
   const side = checkTestSide(input, byTcId);
   const gap =
     side.unseen.length === 0

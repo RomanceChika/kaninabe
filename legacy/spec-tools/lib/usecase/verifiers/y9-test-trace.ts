@@ -45,7 +45,7 @@ export const testTraceVerifier: UsecaseVerifier = {
     const testFiles = new Set(tests.testFiles);
     return [
       ...findings,
-      ...entries.flatMap((entry) => checkTestCaseTrace(entry, byTcId.get(entry.tcId) ?? [], testFiles, VERIFIER_ID)),
+      ...entries.flatMap((entry) => checkTestCaseTrace(entry, byTcId.get(entry.tcId) ?? [], testFiles, VERIFIER_ID, { kind: 'usecase', id: entry.specId })),
     ];
   },
 };

@@ -48,7 +48,7 @@ function matchAnnotations(input: ScreenInput): Finding[] {
   const testFiles = new Set(input.tests.testFiles);
   return input.registry
     .ofKind('screen_spec')
-    .flatMap((entry) => checkTestCaseTrace(entry, byTcId.get(entry.tcId) ?? [], testFiles, 'S8'));
+    .flatMap((entry) => checkTestCaseTrace(entry, byTcId.get(entry.tcId) ?? [], testFiles, 'S8', { kind: 'screen', id: entry.specId }));
 }
 
 /** spec_ids が実在する仕様を指しているか。 */

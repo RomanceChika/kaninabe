@@ -119,7 +119,7 @@ function scanTestCaseFindings(input: TraceInput): Finding[] {
   for (const scan of input.actions.scans) {
     for (const testCase of scan.testCases ?? []) {
       const entry = toRegistryEntry(scan, testCase);
-      findings.push(...checkTestCaseTrace(entry, byTcId.get(entry.tcId) ?? [], testFiles, 'A10'));
+      findings.push(...checkTestCaseTrace(entry, byTcId.get(entry.tcId) ?? [], testFiles, 'A10', { kind: 'scan', id: scan.event }));
     }
   }
   return findings;

@@ -75,7 +75,7 @@ export function verifyNarrowing(input: NarrowingInput): NarrowingResult {
   const findings: Finding[] = [];
   // 読めなかった種類(か不変条件)があるとき、持ち主に居ない id は、消えたのか読めないだけなのか分からない。
   const unreadable = input.unloaded.length > 0 || input.invariantsUnloaded === true;
-  const unreadableNames = [...input.unloaded, ...(input.invariantsUnloaded === true ? ['invariants'] : [])];
+  const unreadableNames = [...input.unloaded, ...(input.invariantsUnloaded === true ? ['ドメイン仕様'] : [])];
   let gone = 0;
   let unresolved = 0;
   for (const id of base.scope.ids) {

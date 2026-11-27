@@ -97,6 +97,7 @@ import { notBoundaryAcceptances } from '../verify/verifiers/tenant-not-boundary.
 import type { ExtensionLedgerModel } from '../model/extension/types.js';
 import type { ScopeOwner } from '../kernel/scope-owner.js';
 import { cleanLoad, scopeUniverseOf } from '../scope/universe.js';
+import { scopeOwnerInputOf } from './scope-owner-input.js';
 import { partitionByScope, type ScopeReport } from '../scope/partition.js';
 import { runImplementedScope } from '../scope/run.js';
 
@@ -462,19 +463,7 @@ export async function runAllVerifications(options: PipelineOptions): Promise<Pip
   findings.push(...runExtension(extension, findings, knownCheckIds(), [...mfaAcceptances(auth.flow), ...bearerAcceptances(model), ...logSinkAcceptances(config), ...notBoundaryAcceptances(model)], log));
   // 実装の範囲: 持ち主の一覧と読み込みの成否(読めた全部の仕様から)→ P13・P14 → 仕分け(最後に 1 回)。宣言が無ければ何も外れず、報告も無い。
   const universe = scopeUniverseOf({
-    uses,
-    domain: model,
-    actions,
-    queries,
-    screens,
-    dataTables,
-    usecases,
-    jobs,
-    auth,
-    guarantees,
-    external,
-    config,
-    designTokensLoaded: design.tokensLoaded,
+    ...scopeOwnerInputOf(uses, model, actions, queries, screens, dataTables, usecases, jobs, auth, guarantees, external, config, design.tokensLoaded),
     domainClean: cleanLoad(true, loadFindings, 0),
     clean: {
       actions: cleanLoad(actions !== null, actionLoadFindings, actionsLoaded.dropped),

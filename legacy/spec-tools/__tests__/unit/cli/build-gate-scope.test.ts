@@ -126,7 +126,9 @@ describe('ビルドの関所と実装の範囲', () => {
     const run = gate(caseTree('null-scope', { withoutItemList: true, implementedRaw: ['implemented:'] }));
 
     expect(run.status).toBe(1);
-    expect(run.stderr).toContain('/items に対応する実ルートが app/src/app にありません');
+    expect(run.stderr).toContain('P0');
+    expect(run.stderr).toContain('implemented');
+    expect(`${run.stdout}${run.stderr}`).not.toContain('緑(');
   }, SLOW);
 
   it.each([

@@ -24,21 +24,30 @@
 # it does not count, and the record that counts is the last section.
 # Output never quotes the body: it names the rule and, at most, the first 8 characters of a well-formed sha.
 # Usage: check-review-record.sh <body-file> <head-sha>
+# Exit codes: 0 the record matches the head; 1 it does not match, or the body is malformed; 2 something could not be done (the
+# arguments, a tool, the temporary directory): never 1 and never "matches", and a fixed message, never the body. Like the scripts
+# that scan, there is no pipeline and no `|| true`: each stage writes a private temporary file and its status is checked.
 set -eu
+tmp=
+# one EXIT trap: the cleanup, and the guard that turns a status that nobody chose (a command that failed under `set -e`) into 2
+trap 'rc=$?; if [ -n "$tmp" ]; then rm -rf "$tmp" || rm_failed=1; fi; if [ "$rc" != 0 ] && [ "$rc" != 2 ] && [ -z "${verdict_exit:-}" ]; then exit 2; fi' EXIT
+could_not() { echo "review record: could not run ($1)"; exit 2; }
 f=${1:?usage: check-review-record.sh <body-file> <head-sha>}
 head=${2:?usage: check-review-record.sh <body-file> <head-sha>}
 [ -f "$f" ] && [ -r "$f" ] || { echo "review record: cannot read the pull request body"; exit 2; }
 case $head in *[!0-9a-f]*) bad=1 ;; *) bad=0 ;; esac
 [ "$bad" -eq 0 ] && [ "${#head}" -eq 40 ] || { echo "review record: the head is not a full commit sha"; exit 2; }
+tmp=$(mktemp -d) || could_not "no temporary directory"
+[ -n "$tmp" ] && [ -d "$tmp" ] || could_not "no temporary directory"
 # One line per finding: "E <rule>" for a broken rule, "V <who> <value>" for a record value (never printed as is).
-out=$(LC_ALL=C awk '
+LC_ALL=C awk '
   function run(s, c,   n) { n = 0; while (substr(s, n + 1, 1) == c) n++; return n }
   BEGIN { fence = 0; seen = 0; o = 0; c = 0 }
   {
     line = $0; sub(/\r$/, "", line); low = tolower(line)
     if (index(line, "\r")) { print "E the body has a carriage return that does not end a line"; stop = 1; exit }
     if (low ~ /<[a-z!?\/]/) print "E the body has an HTML tag or comment (write it without one)"
-    if (line ~ /\342\200[\213-\217\252-\256]|\342\201[\240-\244\246-\251]|\357\273\277/) print "E the body has an invisible character"
+    if (line ~ /\342\200[\213-\217\252-\256]/ || line ~ /\342\201[\240-\244\246-\251]/ || line ~ /\357\273\277/) print "E the body has an invisible character"
     if (seen) {
       if (line ~ /^[ \t]*$/) next
       if (line ~ /^- opus:/) { o++; v = line; sub(/^- opus:[ \t]*/, "", v); sub(/[ \t]*$/, "", v); print "V opus " v; next }
@@ -49,9 +58,9 @@ out=$(LC_ALL=C awk '
       if (fence) { print "E a ## Review line is inside fenced code"; stop = 1; exit }
       seen = 1; next }
     t = low; gsub(/[^a-z:]/, "", t)
-    if (t ~ /^(opus|codex):/) { print "E a record line appears before ## Review"; stop = 1; exit }
+    if (t ~ /^opus:/ || t ~ /^codex:/) { print "E a record line appears before ## Review"; stop = 1; exit }
     if (index(line, "[^")) { print "E the body has a footnote or [^ (a footnote is shown after the record)"; stop = 1; exit }
-    if ((index(line, "```") || index(line, "~~~")) && line !~ /^(```|~~~)/) {
+    if ((index(line, "```") || index(line, "~~~")) && substr(line, 1, 3) != "```" && substr(line, 1, 3) != "~~~") {
       print "E a fence or a run of three backticks or tildes that does not start the line"; stop = 1; exit }
     ch = substr(line, 1, 1)
     if ((ch == "`" || ch == "~") && run(line, ch) >= 3) {
@@ -64,16 +73,22 @@ out=$(LC_ALL=C awk '
     if (stop) exit
     if (!seen) print "E need one ## Review section (found none outside fenced code)"
     else { if (o != 1) print "E need exactly one - opus: line under ## Review"; if (c != 1) print "E need exactly one - codex: line under ## Review" }
-  }' < "$f")
+  }' "$f" > "$tmp/out" || could_not "the body could not be read"
+sed -n 's/^E //p' "$tmp/out" > "$tmp/e1" || could_not "the findings could not be read"
+sort -u "$tmp/e1" > "$tmp/e2" || could_not "the findings could not be read"
 fail=0
-errs=$(printf '%s\n' "$out" | sed -n 's/^E //p' | sort -u)
-if [ -n "$errs" ]; then printf '%s\n' "$errs" | sed 's/^/review record: /'; fail=1
+if [ -s "$tmp/e2" ]; then
+  sed 's/^/review record: /' "$tmp/e2" > "$tmp/e3" || could_not "the findings could not be written"
+  cat "$tmp/e3" || could_not "the findings could not be written"
+  fail=1
 else
   for who in opus codex; do
-    v=$(printf '%s\n' "$out" | sed -n "s/^V $who //p")
+    sed -n "s/^V $who //p" "$tmp/out" > "$tmp/v.$who" || could_not "the record could not be read"
+    v=$(cat "$tmp/v.$who") || could_not "the record could not be read"
     case $v in *[!0-9a-f]*|'') ok=0 ;; *) ok=1 ;; esac
     if [ "$ok" -eq 0 ] || [ "${#v}" -ne 40 ]; then echo "review record: '- $who:' is not a full commit sha"; fail=1
     elif [ "$v" != "$head" ]; then echo "review record: $who reviewed $(printf '%.8s' "$v"), the head is $(printf '%.8s' "$head") (review the new diff, then update the record)"; fail=1; fi
   done
 fi
-[ "$fail" -eq 0 ] && echo "review record: matches the head" || { echo "review record: FAILED"; exit 1; }
+if [ "$fail" -eq 0 ]; then echo "review record: matches the head"; exit 0; fi
+echo "review record: FAILED"; verdict_exit=1; exit 1

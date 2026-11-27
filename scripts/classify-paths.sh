@@ -17,7 +17,8 @@
 #   --range   `git diff --no-renames --name-only -z <a> <b>` in the repository of the current directory: a rename is the delete of the
 #             old path and the add of the new one, and both are classified; a delete, a mode change, a type change and a submodule
 #             gitlink are one path each. Nothing is classified by its content. Each of <a> and <b> must resolve to ONE COMMIT
-#             (`rev-parse --verify <x>^{commit}`, resolved once, to a full sha of 40 hex digits, or 64 in a SHA-256 repository; a branch, a tag that peels to a commit, an abbreviated
+#             (`rev-parse --verify <x>^{commit}`, resolved once, to a full sha of 40 hex digits, or 64 in a SHA-256 repository, the whole answer being exactly
+#             the sha and a line feed, and then `cat-file -t <sha>` answering exactly `commit` and a line feed; a branch, a tag that peels to a commit, an abbreviated
 #             sha and HEAD~1 do; a tree, a blob, a range and `B:path` are exit 2), and the two shas are what is diffed.
 #             git runs under `env -i` with only PATH, a HOME and XDG_CONFIG_HOME that do not exist, GIT_CONFIG_NOSYSTEM,
 #             GIT_CONFIG_GLOBAL=/dev/null, GIT_ATTR_NOSYSTEM and GIT_NO_REPLACE_OBJECTS=1, and with `--no-replace-objects`. That
@@ -38,11 +39,14 @@
 # Exit codes: 0 the rule holds; 1 it is violated; 2 something could not be done (the arguments, the list, the paths, a tool, the temporary
 # directory): never 1, never a verdict and never a row, and a fixed message `classify-paths: could not run (<reason>)`.
 #
+# The list and the paths file are each COPIED ONCE into the private directory (cat), the copy is proven byte-identical to the source (cmp),
+# and only the copies are read from then on: a file that changes while the script runs is judged and used in one version or the run is
+# exit 2, never a mix. The --out copy is likewise compared byte for byte with the result (cmp) before the directory is removed.
 # The rule of the scripts that decide: no pipeline and no `|| true` (no awk, sed, sort or grep is needed, so no awk is supported or
 # unsupported: there is none), every status is checked, every stage writes a private temporary file, and what is read from a stage is
 # proven complete first (a count taken by another command, or the frame of the data), so a cut-short output of any tool is exit 2.
 # NUL-separated input is turned into lines by `tr` (POSIX: `\000`), and a line feed inside a name is found by comparing the number of
-# NUL bytes with the number of lines. The tools used: env and git (--range only), mktemp, rm, tr, wc, cmp, and cat and mv (--out only).
+# NUL bytes with the number of lines. The tools used: env and git (--range only), mktemp, rm, tr, wc, cmp, cat, and mv (--out only).
 set -eu
 LC_ALL=C
 export LC_ALL
@@ -141,11 +145,37 @@ resolve_commit() {
   gitc rev-parse --verify --quiet --end-of-options "$1^{commit}" > "$2" 2> "$tmp/git.err" || return 1
   read -r r_sha < "$2" || return 1
   case $r_sha in '' | *[!0-9a-f]*) return 1 ;; esac
-  [ "${#r_sha}" = 40 ] || [ "${#r_sha}" = 64 ]
+  [ "${#r_sha}" = 40 ] || [ "${#r_sha}" = 64 ] || return 1
+  # the whole answer is exactly the sha and one line feed (`read` took only the first line and trimmed it): compared with the record expected
+  printf '%s\n' "$r_sha" > "$2.exp" || return 1
+  rc_rc=0
+  cmp -s "$2" "$2.exp" || rc_rc=$?
+  [ "$rc_rc" = 0 ] || return 1
+  # and a second question confirms the type of the object, whose whole answer is exactly `commit` and a line feed
+  gitc cat-file -t "$r_sha" > "$2.type" 2> "$tmp/git.err2" || return 1
+  printf 'commit\n' > "$2.type.exp" || return 1
+  rc_rc=0
+  cmp -s "$2.type" "$2.type.exp" || rc_rc=$?
+  [ "$rc_rc" = 0 ]
 }
 
-# ---- the list: read whole, every line judged, then proven complete ----
+# ---- the inputs, taken ONCE: each is copied into the private directory and the copy is proven byte-identical to the source; the
+# copies are all that is read afterwards (a file that changes while the script runs can then never be judged in one version and used in another) ----
 [ -f "$list" ] && [ -r "$list" ] || could_not "list: cannot read"
+if [ "$paths_set" = 1 ]; then [ -f "$paths" ] && [ -r "$paths" ] || could_not "paths: cannot read"; fi
+cat "$list" > "$tmp/list.copy" || could_not "list: could not be copied"
+if [ "$paths_set" = 1 ]; then cat "$paths" > "$tmp/paths.copy" || could_not "paths: could not be copied"; fi
+copy_rc=0
+cmp -s "$list" "$tmp/list.copy" || copy_rc=$?
+case $copy_rc in 0) ;; 1) could_not "list: changed while it was copied" ;; *) could_not "list: could not be compared with its copy" ;; esac
+if [ "$paths_set" = 1 ]; then
+  copy_rc=0
+  cmp -s "$paths" "$tmp/paths.copy" || copy_rc=$?
+  case $copy_rc in 0) ;; 1) could_not "paths: changed while it was copied" ;; *) could_not "paths: could not be compared with its copy" ;; esac
+fi
+list=$tmp/list.copy
+
+# ---- the list: read whole, every line judged, then proven complete ----
 tr -d '\000' < "$list" > "$tmp/list.nonul" || could_not "list: could not be read"
 nul_rc=0
 cmp -s "$list" "$tmp/list.nonul" || nul_rc=$?
@@ -197,8 +227,7 @@ fi
 # ---- the paths: one record per line in $tmp/recs, proven complete ----
 if [ "$paths_set" = 1 ]; then
   src=paths
-  [ -f "$paths" ] && [ -r "$paths" ] || could_not "paths: cannot read"
-  rec_in=$paths
+  rec_in=$tmp/paths.copy
 else
   src=range
   # git runs in a clean environment (see the header). Each argument is resolved once, to the sha of ONE commit, and the shas are diffed.
@@ -266,6 +295,10 @@ if [ "$out_set" = 1 ]; then
   cat "$tmp/res" > "$outtmp" || could_not "the output file could not be written"
   lines_of "$outtmp" || could_not "the output file could not be counted"
   [ "$nl_n" = "$nrec" ] || could_not "the output file is incomplete"
+  # and byte for byte (same lines with other bytes would pass the count); before the temporary directory goes
+  out_rc=0
+  cmp -s "$tmp/res" "$outtmp" || out_rc=$?
+  [ "$out_rc" = 0 ] || could_not "the output file differs from the result"
 fi
 
 viol=

@@ -511,14 +511,14 @@ describe('classify-paths.sh: a step that cannot run is exit 2, never 1, never a 
   let n = 0;
   const outFile = () => path.join(root, `o-${n++}`);
   /** The scenarios: what the script is run with, the status of the untouched run, and the tools it must call. */
-  const ALL = ['mktemp', 'rm', 'tr', 'wc', 'cmp'];
+  const ALL = ['mktemp', 'rm', 'tr', 'wc', 'cmp', 'cat'];
   const SCENARIOS = [
-    { name: 'paths with --out', args: () => ['--list', fx.list, '--paths', fx.paths, '--out', outFile()], truth: 0, tools: [...ALL, 'cat', 'mv'] },
-    { name: 'a violated rule', args: () => ['--list', fx.list, '--paths', fx.paths, '--out', outFile(), '--require', 'basis-only'], truth: 1, tools: [...ALL, 'cat', 'mv'] },
+    { name: 'paths with --out', args: () => ['--list', fx.list, '--paths', fx.paths, '--out', outFile()], truth: 0, tools: [...ALL, 'mv'] },
+    { name: 'a violated rule', args: () => ['--list', fx.list, '--paths', fx.paths, '--out', outFile(), '--require', 'basis-only'], truth: 1, tools: [...ALL, 'mv'] },
     { name: 'quiet', args: () => ['--list', fx.list, '--paths', fx.paths, '--quiet'], truth: 0, tools: ALL },
     { name: 'rows on standard output', args: () => ['--list', fx.list, '--paths', fx.paths], truth: 0, tools: ALL },
-    { name: 'range with --out', args: () => ['--list', fx.list, '--range', fx.a, fx.b, '--out', outFile()], truth: 0, cwd: () => fx.repo, tools: [...ALL, 'git', 'env', 'cat', 'mv'] },
-    { name: 'a violated rule on a range', args: () => ['--list', fx.list, '--range', fx.a, fx.b, '--out', outFile(), '--require', 'no-basis'], truth: 1, cwd: () => fx.repo, tools: [...ALL, 'git', 'env', 'cat', 'mv'] },
+    { name: 'range with --out', args: () => ['--list', fx.list, '--range', fx.a, fx.b, '--out', outFile()], truth: 0, cwd: () => fx.repo, tools: [...ALL, 'git', 'env', 'mv'] },
+    { name: 'a violated rule on a range', args: () => ['--list', fx.list, '--range', fx.a, fx.b, '--out', outFile(), '--require', 'no-basis'], truth: 1, cwd: () => fx.repo, tools: [...ALL, 'git', 'env', 'mv'] },
     { name: 'range with rows on standard output', args: () => ['--list', fx.list, '--range', fx.a, fx.b], truth: 0, cwd: () => fx.repo, tools: [...ALL, 'git', 'env'] },
   ];
   const go = (s) => run(s.args(), { cwd: s.cwd ? s.cwd() : undefined });
@@ -670,15 +670,15 @@ describe('classify-paths.sh: a stage output that is cut short is exit 2, whateve
   });
   after(() => { toolPath = null; tmpOverride = null; rmSync(root, { recursive: true, force: true }); });
   const SWEPT = ['git', 'env', 'tr', 'wc', 'cat', 'mktemp'];
-  const BASE = ['tr', 'wc', 'mktemp'];
+  const BASE = ['tr', 'wc', 'mktemp', 'cat'];
   const SCENARIOS = [
-    { name: 'paths with --out', args: (o) => ['--list', fx.list, '--paths', fx.paths, '--out', o], truth: 0, withOut: true, tools: [...BASE, 'cat'] },
-    { name: 'a violated rule', args: (o) => ['--list', fx.list, '--paths', fx.paths, '--out', o, '--require', 'basis-only'], truth: 1, withOut: true, tools: [...BASE, 'cat'] },
+    { name: 'paths with --out', args: (o) => ['--list', fx.list, '--paths', fx.paths, '--out', o], truth: 0, withOut: true, tools: BASE },
+    { name: 'a violated rule', args: (o) => ['--list', fx.list, '--paths', fx.paths, '--out', o, '--require', 'basis-only'], truth: 1, withOut: true, tools: BASE },
     { name: 'quiet', args: () => ['--list', fx.list, '--paths', fx.paths, '--quiet'], truth: 0, tools: BASE },
     { name: 'rows on standard output', args: () => ['--list', fx.list, '--paths', fx.paths], truth: 0, tools: BASE },
     { name: 'a violated rule with rows on standard output', args: () => ['--list', fx.list, '--paths', fx.paths, '--require', 'no-basis'], truth: 1, tools: BASE },
-    { name: 'range with --out', args: (o) => ['--list', fx.list, '--range', fx.a, fx.b, '--out', o], truth: 0, withOut: true, cwd: () => fx.repo, tools: [...BASE, 'git', 'env', 'cat'] },
-    { name: 'a violated rule on a range', args: (o) => ['--list', fx.list, '--range', fx.a, fx.b, '--out', o, '--require', 'basis-only'], truth: 1, withOut: true, tools: [...BASE, 'git', 'env', 'cat'], cwd: () => fx.repo },
+    { name: 'range with --out', args: (o) => ['--list', fx.list, '--range', fx.a, fx.b, '--out', o], truth: 0, withOut: true, cwd: () => fx.repo, tools: [...BASE, 'git', 'env'] },
+    { name: 'a violated rule on a range', args: (o) => ['--list', fx.list, '--range', fx.a, fx.b, '--out', o, '--require', 'basis-only'], truth: 1, withOut: true, tools: [...BASE, 'git', 'env'], cwd: () => fx.repo },
     { name: 'range with rows on standard output', args: () => ['--list', fx.list, '--range', fx.a, fx.b], truth: 0, cwd: () => fx.repo, tools: [...BASE, 'git', 'env'] },
   ];
   let counter = 0;
@@ -742,6 +742,162 @@ describe('classify-paths.sh: a stage output that is cut short is exit 2, whateve
       assert.ok(cutCalls[tool].size >= 1, `${tool}: no call was cut`);
     }
     console.log(`sweep: ${runs} shimmed runs in ${Date.now() - started} ms, calls cut ${JSON.stringify(Object.fromEntries(SWEPT.map((t) => [t, cutCalls[t].size])))}`);
+  });
+});
+
+// ---- what is judged is what is used, what is delivered is what was computed, what is diffed is a commit -------------------------
+describe('classify-paths.sh: inputs are taken once, the delivered file is compared byte for byte, a resolved commit is checked twice', () => {
+  let root; let fx;
+  before(() => {
+    root = mkdtempSync(path.join(tmpdir(), 'classify-paths-once-'));
+    mkdirSync(path.join(root, 'tmp'));
+    const repo = path.join(root, 'repo'); mkdirSync(repo);
+    git(repo, 'init', '-q', '-b', 'main'); put(repo, 'docs/a.md'); git(repo, 'add', '-A'); git(repo, 'commit', '-q', '-m', 'a');
+    const a = git(repo, 'rev-parse', 'HEAD');
+    put(repo, 'impl/n.sh'); put(repo, 'gen/g.sql'); put(repo, 'docs/b.md', 'y\n'); git(repo, 'add', '-A'); git(repo, 'commit', '-q', '-m', 'b');
+    fx = { repo, a, b: git(repo, 'rev-parse', 'HEAD') };
+  });
+  after(() => { toolPath = null; tmpOverride = null; rmSync(root, { recursive: true, force: true }); });
+  let n = 0;
+  const ORIGINAL_LIST = [L('basis', 'src/keep/*', 'r'), L('implementation', 'src/*', 'r'), L('generated', 'gen/*', 'r')];
+  const REWRITTEN_LIST = 'basis\\t*\\trewritten\\n'; // a printf format
+  const ORIGINAL_PATHS = ['src/a', 'gen/b', 'doc/c', 'src/keep/d'];
+  const REWRITTEN_PATHS = ['zzz/1', 'zzz/2', 'zzz/3', 'zzz/4'];
+  /** A fresh set of inputs; returns the files. */
+  const inputs = () => {
+    const dir = path.join(root, `in-${n++}`); mkdirSync(dir);
+    const list = writeList(ORIGINAL_LIST, dir); const paths = writePaths(ORIGINAL_PATHS, dir);
+    return { dir, list, paths };
+  };
+  /** A shim of `tool` that, from its call number `from` on, rewrites `file` with `content` (a printf format; then runs the real tool). */
+  const rewriter = (tool, from, file, content, mark) => {
+    const cnt = `${mark}.cnt`;
+    return `c=0\nif [ -f ${cnt} ]; then read c < ${cnt}; fi\nc=$((c+1))\necho $c > ${cnt}\nif [ "$c" -ge ${from} ]; then printf '${content}' > ${file} && echo fired > ${mark}.fired; fi\nexec ${which(tool)} "$@"`;
+  };
+  const shimmed = (shim, args, opts) => { toolPath = makeBin(root, { shim }); tmpOverride = path.join(root, 'tmp'); const r = run(args, opts); return r; };
+  const plain = (args, opts) => shimmed({}, args, opts);
+  /** The calls the script makes of `tool` for these arguments. */
+  const callsOf = (tool, args, opts) => {
+    const cnt = path.join(root, `calls-${n++}`);
+    shimmed({ [tool]: `c=0\nif [ -f ${cnt} ]; then read c < ${cnt}; fi\necho $((c+1)) > ${cnt}\nexec ${which(tool)} "$@"` }, args, opts);
+    return existsSync(cnt) ? Number(readFileSync(cnt, 'utf8')) : 0;
+  };
+  const ok = (r, base, label) => {
+    if (r.status === 2) { couldNotRun(r, null); return; }
+    assert.equal(r.status, base.status, `${label}: ${r.all}`);
+    assert.equal(r.out, base.out, `${label}: the result is not the one for the original input`);
+  };
+
+  it('the list is judged and used as one copy: a list rewritten while the script runs gives the result for the original list, or exit 2', () => {
+    const f = inputs();
+    const args = ['--list', f.list, '--paths', f.paths];
+    const base = plain(args);
+    assert.equal(base.status, 0, base.all);
+    assert.ok(base.out.includes('implementation\tsrc/a\n') && base.out.includes('generated\tgen/b\n') && base.out.includes('basis\tsrc/keep/d\n'), base.out);
+    for (const tool of ['tr', 'wc', 'cmp']) {
+      const calls = callsOf(tool, args);
+      assert.ok(calls >= 1, `${tool} is not called`);
+      for (let from = 1; from <= calls; from += 1) {
+        const g = inputs();
+        const mark = path.join(g.dir, `m-${tool}-${from}`);
+        const r = shimmed({ [tool]: rewriter(tool, from, g.list, REWRITTEN_LIST, mark) }, ['--list', g.list, '--paths', g.paths]);
+        assert.ok(existsSync(`${mark}.fired`), `the shim of ${tool} (from call ${from}) never rewrote the list`);
+        ok(r, base, `${tool} from call ${from}`);
+      }
+    }
+  });
+  it('--paths is taken once as well: a paths file rewritten while the script runs gives the result for the original, or exit 2', () => {
+    const f = inputs();
+    const base = plain(['--list', f.list, '--paths', f.paths]);
+    for (const tool of ['tr', 'wc', 'cmp']) {
+      const calls = callsOf(tool, ['--list', f.list, '--paths', f.paths]);
+      for (let from = 1; from <= calls; from += 1) {
+        const g = inputs();
+        const mark = path.join(g.dir, `p-${tool}-${from}`);
+        const rewritten = REWRITTEN_PATHS.map((x) => `${x}\\0`).join('');
+        const r = shimmed({ [tool]: rewriter(tool, from, g.paths, rewritten, mark) }, ['--list', g.list, '--paths', g.paths]);
+        assert.ok(existsSync(`${mark}.fired`), `the shim of ${tool} (from call ${from}) never rewrote the paths`);
+        ok(r, base, `${tool} from call ${from}`);
+      }
+    }
+  });
+  it('an input that is a different file by the time it is compared is exit 2: a list that no longer equals its copy is never used', () => {
+    const f = inputs();
+    // cmp is the proof that the copy equals the source: a cmp that reports a difference (status 1) or cannot compare (status 2) stops the run
+    for (const body of ['exit 1', 'exit 2']) {
+      couldNotRun(shimmed({ cmp: body }, ['--list', f.list, '--paths', f.paths]), null);
+    }
+  });
+
+  /** A shim of `cat` that corrupts what it writes when it is given the result file (a path ending in /res): same lines, other bytes. */
+  const corruptRes = `real=${which('cat')}\nfor a in "$@"; do case $a in */res) T=$(${which('mktemp')}) || exit 3; $real "$@" > "$T" || exit 3; ${which('tr')} 'a-z' 'A-Z' < "$T"; ${which('rm')} -f "$T"; exit 0 ;; esac; done\nexec $real "$@"`;
+  const outCase = (shim, extra = []) => {
+    const f = inputs();
+    const dir = path.join(root, `out-${n++}`); mkdirSync(dir);
+    const out = path.join(dir, 'result');
+    const r = shimmed(shim, ['--list', f.list, '--paths', f.paths, '--out', out, ...extra]);
+    return { r, out, names: readdirSyncOf(dir) };
+  };
+  it('the --out copy is compared with the result byte for byte: same lines, other bytes is exit 2 and nothing is left at --out', () => {
+    const bad = outCase({ cat: corruptRes });
+    couldNotRun(bad.r, null);
+    assert.deepEqual(bad.names, [], 'no result and no temporary file after a corrupted copy');
+    const good = outCase({});
+    assert.equal(good.r.status, 0, good.r.all);
+    assert.deepEqual(good.names, ['result']);
+  });
+  it('the comparison of the --out copy that cannot be made, or that says "different", is exit 2 and nothing is left', () => {
+    const onlyRes = (code) => `for a in "$@"; do case $a in */res) exit ${code} ;; esac; done\nexec ${which('cmp')} "$@"`;
+    for (const code of [1, 2]) {
+      const r = outCase({ cmp: onlyRes(code) });
+      couldNotRun(r.r, null);
+      assert.deepEqual(r.names, [], `cmp of the result ending with status ${code}: nothing is left at --out`);
+    }
+    const missing = outCase({ cmp: `for a in "$@"; do case $a in */res) exit 127 ;; esac; done\nexec ${which('cmp')} "$@"` });
+    couldNotRun(missing.r, null);
+    assert.deepEqual(missing.names, []);
+  });
+
+  /** A git whose answer to `rev-parse` or `cat-file` is changed by `body` (a shell fragment; $T holds the real answer). */
+  const gitShim = ({ revParse, catFile }) => `real=${which('git')}\ncase " $* " in\n *" rev-parse "*)\n  T=$(${which('mktemp')}) || exit 3; $real "$@" > "$T" || exit $?\n  ${revParse ?? `${which('cat')} "$T"`}\n  ${which('rm')} -f "$T"; exit 0 ;;\n *" cat-file "*)\n  ${catFile ?? 'exec $real "$@"'} ;;\n *) exec $real "$@" ;;\nesac`;
+  const rangeArgs = () => ['--list', writeList(RANGE_LIST, root), '--range', fx.a, fx.b];
+  it('a range whose git answers are untouched passes (guard for the shim below)', () => {
+    const r = shimmed({ git: gitShim({}) }, rangeArgs(), { cwd: fx.repo });
+    assert.equal(r.status, 0, r.all);
+    assert.match(r.out, /3 path\(s\)/);
+  });
+  it('rev-parse must answer exactly "<sha>\\n": an extra line, extra bytes, no line feed, a CR, a blank line or two shas is exit 2', () => {
+    const cat = which('cat'); const tr = which('tr');
+    const variants = {
+      'an extra line': `${cat} "$T"; echo extra`,
+      'a blank line after': `${cat} "$T"; echo`,
+      'two shas': `${cat} "$T"; ${cat} "$T"`,
+      'no line feed': `${tr} -d '\\n' < "$T"`,
+      'a trailing space': `${tr} '\\n' ' ' < "$T"; echo`,
+      'a carriage return': `${tr} -d '\\n' < "$T"; printf '\\r\\n'`,
+      'extra bytes after the line': `${cat} "$T"; printf 'x'`,
+    };
+    for (const [name, revParse] of Object.entries(variants)) {
+      couldNotRun(shimmed({ git: gitShim({ revParse }) }, rangeArgs(), { cwd: fx.repo }), null);
+      assert.ok(name);
+    }
+  });
+  it('the object must be confirmed as a commit by a second question: cat-file -t answering anything but "commit\\n", or cut short, is exit 2', () => {
+    const variants = {
+      tree: 'echo tree', blob: 'echo blob', tag: 'echo tag', 'commit without a line feed': "printf 'commit'",
+      'commit and an extra line': "echo commit; echo extra", 'commit with a space': "echo 'commit '", 'nothing': ':', 'a failing cat-file': 'exit 1',
+      'a CR': "printf 'commit\\r\\n'",
+    };
+    for (const [name, catFile] of Object.entries(variants)) {
+      couldNotRun(shimmed({ git: gitShim({ catFile }) }, rangeArgs(), { cwd: fx.repo }), null);
+      assert.ok(name);
+    }
+    const asked = path.join(root, `asked-${n++}`);
+    const r = shimmed({ git: gitShim({ catFile: `echo "$@" >> ${asked}; exec $real "$@"` }) }, rangeArgs(), { cwd: fx.repo });
+    assert.equal(r.status, 0, r.all);
+    const lines = readFileSync(asked, 'utf8').trim().split('\n');
+    assert.equal(lines.length, 2, 'one cat-file question for each of the two arguments');
+    for (const l of lines) assert.match(l, /cat-file -t [0-9a-f]{40}$/);
   });
 });
 

@@ -129,6 +129,18 @@ describe('ビルドの関所と実装の範囲', () => {
     expect(run.stderr).toContain('/items に対応する実ルートが app/src/app にありません');
   }, SLOW);
 
+  it.each([
+    ['null', ['implemented:']],
+    ['scalar', ['implemented: room-create-action']],
+    ['duplicate', ['implemented:', '  - screen-item-list', 'implemented:', '  - screen-item-list']],
+  ] as const)('全部の画面に実ルートがあっても、範囲の宣言が壊れていれば赤(%s。宣言のエラーは P0 として名指す)', (label, implementedRaw) => {
+    const run = gate(caseTree(`broken-${label}`, { implementedRaw }));
+
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('P0');
+    expect(run.stderr).toContain('implemented');
+  }, SLOW);
+
   it('宣言していない実ルートは、範囲に依らず赤(範囲が外すのは「無い」ことだけ)', () => {
     const run = gate(caseTree('undeclared', { undeclaredRoute: true, implemented: [] }));
 

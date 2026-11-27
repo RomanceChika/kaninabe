@@ -228,7 +228,7 @@ describe('H2: 着地と関門の接地', () => {
       verifyLandingGrounding({ roots: TEST_ROOTS, auth: authModel({ landings: MATCHED, gates: [authGate('session', { implementation })] }), screens: screens(), repoRoot: REPO_ROOT })[0];
 
     expect(find('app/src/composition/nope.ts::requireSession')?.absentFor).toEqual({ kind: 'catalog', id: 'auth-flow' });
-    for (const malformed of ['::requireSession', 'app/src/composition/nope.ts::', '::', 'app/src/composition/nope.ts']) {
+    for (const malformed of ['::requireSession', 'app/src/composition/nope.ts::', '::', 'app/src/composition/nope.ts', 'app/src/composition/nope.ts::requireSession::extra']) {
       const finding = find(malformed);
       expect(finding?.message, malformed).toContain('実在しません');
       expect(finding?.absentFor, malformed).toBeUndefined();

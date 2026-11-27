@@ -2,87 +2,25 @@
  * Scanner change, what the scans cannot read and the mail rule (docs/known-gaps.md 16(b), 16(e)): unreadable content is red
  * unless a `binary` entry names it, file names that cannot be written in the list are exit 2, and a mail address is matched
  * whole. REAL gitleaks and actionlint, like push-gate-verdict.test.mjs; a separate file so that node --test runs it in
- * parallel with the others. The harness repeats the one in push-gate-verdict.test.mjs (see scanner-keys.test.mjs for why).
+ * parallel with the others. The harness is tests/push-gate/harness.mjs.
  */
 import assert from 'node:assert/strict';
-import { afterEach, beforeEach, describe, it } from 'node:test';
+import { describe, it } from 'node:test';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { createHash, randomBytes } from 'node:crypto';
-import { tmpdir } from 'node:os';
+import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const realGate = fileURLToPath(new URL('../../scripts/push-gate.sh', import.meta.url));
-// The tests never run the gate with the repository's own exclusion list: every test runs a COPY of the scripts directory whose
-// scan-exclusions.tsv is empty (setList writes another one into the copy). Only scan-exclusions.test.mjs reads the real list.
-const realScripts = path.dirname(realGate);
+import { harness, realGate, reason, fakeKey, tab, sha256, blobId, rangeUnr, treeUnr, MAILMSG } from './harness.mjs';
+
+// The harness registers the beforeEach / afterEach of this file. The paths live in the variables below (a test may move into another
+// repository by assigning `repo`); the harness reads and sets them through these two functions.
 let gate = realGate;
-let gscripts = realScripts;
-const CORE = [
-  'sh', 'git', 'grep', 'sed', 'cut', 'wc', 'tr', 'head', 'tail', 'mktemp', 'rm', 'cat', 'dirname', 'basename', 'tar',
-  'awk', 'sort', 'uniq', 'mkdir', 'ls', 'find', 'env', 'true', 'false', 'cp', 'mv', 'date', 'less',
-];
-
-const find = (name, searchPath) => {
-  const r = spawnSync('/bin/sh', ['-c', `command -v ${name}`], { encoding: 'utf8', env: { PATH: searchPath } });
-  const p = r.stdout.trim();
-  return r.status === 0 && p.startsWith('/') ? p : null;
-};
-const SYSTEM = '/usr/bin:/bin:/usr/local/bin';
-const real = {
-  gitleaks: find('gitleaks', process.env.PATH ?? ''),
-  actionlint: find('actionlint', process.env.PATH ?? ''),
-};
-const missing = Object.entries(real).filter(([, p]) => !p).map(([n]) => n);
-const reason = `${missing.join(' and ')} not installed: run "sh scripts/setup-dev-env.sh --bin-dir <dir on PATH>" first`;
-
-/** A fake key built from pieces; every call gives a new one. */
-const fakeKey = () => ['gh', 'p_'].join('') + randomBytes(60).toString('base64').replace(/[^A-Za-z0-9]/g, '').slice(0, 36).padEnd(36, 'x');
-
+let gscripts;
 let dir;
 let repo;
 let bin;
-const env = (extra = {}) => ({
-  PATH: bin, HOME: path.join(dir, 'home'), GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', LC_ALL: 'C', ...extra,
-});
-const git = (...args) => {
-  const r = spawnSync('git', ['-c', 'user.name=Tester', '-c', 'user.email=tester@users.noreply.github.com', '-c', 'commit.gpgsign=false', ...args],
-    { cwd: repo, encoding: 'utf8', env: { ...process.env, ...env(), PATH: process.env.PATH } });
-  if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
-  return r.stdout.trim();
-};
-const commit = (files, message = 'change') => {
-  for (const [name, text] of Object.entries(files)) {
-    mkdirSync(path.dirname(path.join(repo, name)), { recursive: true });
-    writeFileSync(path.join(repo, name), text);
-    git('add', name);
-  }
-  git('commit', '-q', '-m', message);
-  return git('rev-parse', 'HEAD');
-};
-const gateRun = (args, extra = {}) => {
-  const r = spawnSync('/bin/sh', [gate, ...args], { cwd: repo, encoding: 'utf8', env: env(extra) });
-  return { status: r.status, out: r.stdout + r.stderr };
-};
-const general = (...range) => gateRun(['--mode', 'general', ...(range.length ? range : ['--all'])]);
-
-beforeEach(() => {
-  if (missing.length) throw new Error(reason);
-  dir = mkdtempSync(path.join(tmpdir(), 'push-gate-real-'));
-  bin = path.join(dir, 'bin');
-  mkdirSync(bin);
-  for (const n of CORE) { const p = find(n, SYSTEM); if (p) symlinkSync(p, path.join(bin, n)); }
-  for (const [n, p] of Object.entries(real)) symlinkSync(p, path.join(bin, n));
-  repo = path.join(dir, 'repo');
-  mkdirSync(repo);
-  git('init', '-q', '-b', 'main');
-  gscripts = path.join(dir, 'gate-scripts');
-  cpSync(realScripts, gscripts, { recursive: true });
-  writeFileSync(path.join(gscripts, 'scan-exclusions.tsv'), '');
-  gate = path.join(gscripts, 'push-gate.sh');
-});
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
+const H = harness({ get: () => ({ dir, repo, bin, gate, gscripts }), set: (v) => { ({ dir, repo, bin, gate, gscripts } = v); } });
+const { env, git, commit, gateRun, general, setList, gateWith, scanPublic, commitRaw, commitNamed, scanPrText, WORDS } = H;
 
 
 /**
@@ -102,52 +40,6 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
  *
  * Keys and addresses are assembled at run time; the only literal addresses are on reserved domains.
  */
-const tab = (...f) => `${f.join('\t')}\n`;
-const sha256 = (text) => createHash('sha256').update(text).digest('hex');
-const blobId = (buf) => createHash('sha1').update(Buffer.concat([Buffer.from(`blob ${buf.length}\0`), buf])).digest('hex');
-const patchesOf = (r) => Number(/\((\d+) finding\(s\) in patches/.exec(r.out)?.[1] ?? NaN);
-const treeOf = (r) => Number(/(\d+) in the tree of HEAD\)/.exec(r.out)?.[1] ?? NaN);
-const rangeUnr = (r) => Number(/unreadable file\(s\): (\d+)/.exec(r.out)?.[1] ?? 0);
-const treeUnr = (r) => Number(/unreadable file\(s\) in the tree of HEAD: (\d+)/.exec(r.out)?.[1] ?? 0);
-const setList = (list) => {
-  const f = path.join(gscripts, 'scan-exclusions.tsv');
-  if (list === null) rmSync(f, { force: true });
-  else writeFileSync(f, list);
-};
-/** The gate (from the copy of the scripts) with `list` as its exclusion list. */
-const gateWith = (list, args = ['--mode', 'general', '--all'], extra = {}) => { setList(list); return gateRun(args, extra); };
-/** scan-public.sh of the copy, over every commit (or the given arguments). Faster than the gate: no gitleaks. */
-const scanPublic = (args = [], list = '') => {
-  setList(list);
-  const r = spawnSync('/bin/sh', [path.join(gscripts, 'scan-public.sh'), ...args], { cwd: repo, encoding: 'utf8', env: env(), timeout: 30000 });
-  assert.ok(r.error === undefined, `did not finish within 30 s: ${r.error?.message}`);
-  return { status: r.status, out: r.stdout + r.stderr };
-};
-/** Like commit(), but the content is bytes (a Buffer) or text. */
-const commitRaw = (files, message = 'change') => {
-  for (const [name, data] of Object.entries(files)) {
-    mkdirSync(path.dirname(path.join(repo, name)), { recursive: true });
-    writeFileSync(path.join(repo, name), data);
-    git('add', '--', name);
-  }
-  git('commit', '-q', '-m', message);
-  return git('rev-parse', 'HEAD');
-};
-/** Commits files whose names are given as Buffers (bytes that a string cannot carry). */
-const commitNamed = (named, message = 'change') => {
-  for (const [name, data] of named) writeFileSync(Buffer.concat([Buffer.from(`${repo}/`), Buffer.isBuffer(name) ? name : Buffer.from(name)]), data);
-  git('add', '-A');
-  git('commit', '-q', '-m', message);
-  return git('rev-parse', 'HEAD');
-};
-const scanPrText = (text, extra = {}) => {
-  const f = path.join(dir, 'pr-text');
-  writeFileSync(f, text);
-  const r = spawnSync('/bin/sh', [path.join(gscripts, 'scan-pr-text.sh'), f], { cwd: repo, encoding: 'utf8', env: env(extra) });
-  return { status: r.status, out: r.stdout + r.stderr };
-};
-const MAILMSG = 'email-like string: pull request title or body';
-const WORDS = () => { const f = path.join(dir, 'words.txt'); writeFileSync(f, 'zzgatewordzz\n'); return f; };
 
 describe('the scanner change: a file that git treats as binary (the old known gap)', () => {
   it('a file that git treats as binary is not readable by the scans, so it is red, with the count of such files (known-gaps 16(e))', () => {

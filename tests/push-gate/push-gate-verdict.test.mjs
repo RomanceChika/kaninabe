@@ -8,84 +8,24 @@
  * is committed here (push protection and the secret scan of this repository stay quiet on this file).
  */
 import assert from 'node:assert/strict';
-import { afterEach, beforeEach, describe, it } from 'node:test';
+import { describe, it } from 'node:test';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { createHash, randomBytes } from 'node:crypto';
+import { cpSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const realGate = fileURLToPath(new URL('../../scripts/push-gate.sh', import.meta.url));
-// The tests never run the gate with the repository's own exclusion list: every test runs a COPY of the scripts directory whose
-// scan-exclusions.tsv is empty (setList writes another one into the copy). Only scan-exclusions.test.mjs reads the real list.
-const realScripts = path.dirname(realGate);
+import { harness, realGate, real, missing, reason, find, fakeKey, tab, blobId, patchesOf, treeOf } from './harness.mjs';
+
+// The harness registers the beforeEach / afterEach of this file. The paths live in the variables below (a test may move into another
+// repository by assigning `repo`); the harness reads and sets them through these two functions.
 let gate = realGate;
-let gscripts = realScripts;
-const CORE = [
-  'sh', 'git', 'grep', 'sed', 'cut', 'wc', 'tr', 'head', 'tail', 'mktemp', 'rm', 'cat', 'dirname', 'basename', 'tar',
-  'awk', 'sort', 'uniq', 'mkdir', 'ls', 'find', 'env', 'true', 'false', 'cp', 'mv', 'date', 'less',
-];
-
-const find = (name, searchPath) => {
-  const r = spawnSync('/bin/sh', ['-c', `command -v ${name}`], { encoding: 'utf8', env: { PATH: searchPath } });
-  const p = r.stdout.trim();
-  return r.status === 0 && p.startsWith('/') ? p : null;
-};
-const SYSTEM = '/usr/bin:/bin:/usr/local/bin';
-const real = {
-  gitleaks: find('gitleaks', process.env.PATH ?? ''),
-  actionlint: find('actionlint', process.env.PATH ?? ''),
-};
-const missing = Object.entries(real).filter(([, p]) => !p).map(([n]) => n);
-const reason = `${missing.join(' and ')} not installed: run "sh scripts/setup-dev-env.sh --bin-dir <dir on PATH>" first`;
-
-/** A fake key built from pieces; every call gives a new one. */
-const fakeKey = () => ['gh', 'p_'].join('') + randomBytes(60).toString('base64').replace(/[^A-Za-z0-9]/g, '').slice(0, 36).padEnd(36, 'x');
-
+let gscripts;
 let dir;
 let repo;
 let bin;
-const env = (extra = {}) => ({
-  PATH: bin, HOME: path.join(dir, 'home'), GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', LC_ALL: 'C', ...extra,
-});
-const git = (...args) => {
-  const r = spawnSync('git', ['-c', 'user.name=Tester', '-c', 'user.email=tester@users.noreply.github.com', '-c', 'commit.gpgsign=false', ...args],
-    { cwd: repo, encoding: 'utf8', env: { ...process.env, ...env(), PATH: process.env.PATH } });
-  if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
-  return r.stdout.trim();
-};
-const commit = (files, message = 'change') => {
-  for (const [name, text] of Object.entries(files)) {
-    mkdirSync(path.dirname(path.join(repo, name)), { recursive: true });
-    writeFileSync(path.join(repo, name), text);
-    git('add', name);
-  }
-  git('commit', '-q', '-m', message);
-  return git('rev-parse', 'HEAD');
-};
-const gateRun = (args, extra = {}) => {
-  const r = spawnSync('/bin/sh', [gate, ...args], { cwd: repo, encoding: 'utf8', env: env(extra) });
-  return { status: r.status, out: r.stdout + r.stderr };
-};
-const general = (...range) => gateRun(['--mode', 'general', ...(range.length ? range : ['--all'])]);
-
-beforeEach(() => {
-  if (missing.length) throw new Error(reason);
-  dir = mkdtempSync(path.join(tmpdir(), 'push-gate-real-'));
-  bin = path.join(dir, 'bin');
-  mkdirSync(bin);
-  for (const n of CORE) { const p = find(n, SYSTEM); if (p) symlinkSync(p, path.join(bin, n)); }
-  for (const [n, p] of Object.entries(real)) symlinkSync(p, path.join(bin, n));
-  repo = path.join(dir, 'repo');
-  mkdirSync(repo);
-  git('init', '-q', '-b', 'main');
-  gscripts = path.join(dir, 'gate-scripts');
-  cpSync(realScripts, gscripts, { recursive: true });
-  writeFileSync(path.join(gscripts, 'scan-exclusions.tsv'), '');
-  gate = path.join(gscripts, 'push-gate.sh');
-});
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
+const H = harness({ get: () => ({ dir, repo, bin, gate, gscripts }), set: (v) => { ({ dir, repo, bin, gate, gscripts } = v); } });
+const { env, git, commit, gateRun, general, gateWith, commitRaw } = H;
 
 /** The gate stopped on gitleaks (exit 1) and printed neither the key nor the text around it. */
 function stoppedOnKey(r, key) {
@@ -765,19 +705,3 @@ describe('push-gate.sh with the real tools: history is read by gitleaks git, one
     assert.ok(patches(r) >= 1, r.out);
   });
 });
-
-// Helpers of the tests above that read the exclusion list (the scanner-change tests have their own files).
-const tab = (...f) => `${f.join('\t')}\n`;
-const blobId = (buf) => createHash('sha1').update(Buffer.concat([Buffer.from(`blob ${buf.length}\0`), buf])).digest('hex');
-const patchesOf = (r) => Number(/\((\d+) finding\(s\) in patches/.exec(r.out)?.[1] ?? NaN);
-const treeOf = (r) => Number(/(\d+) in the tree of HEAD\)/.exec(r.out)?.[1] ?? NaN);
-const gateWith = (list) => { writeFileSync(path.join(gscripts, 'scan-exclusions.tsv'), list); return gateRun(['--mode', 'general', '--all']); };
-const commitRaw = (files, message = 'change') => {
-  for (const [name, data] of Object.entries(files)) {
-    mkdirSync(path.dirname(path.join(repo, name)), { recursive: true });
-    writeFileSync(path.join(repo, name), data);
-    git('add', '--', name);
-  }
-  git('commit', '-q', '-m', message);
-  return git('rev-parse', 'HEAD');
-};

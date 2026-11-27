@@ -2,7 +2,7 @@
 
 A spec-driven framework for building web apps with a small team and AI. The specs under `docs/specs/` are the source of truth. Verification, documents, implementation parts and tests are derived from them.
 
-Status: pre-1.0 (0.1.4). The spec DSL, the checks and the shape of generated output can still change.
+Status: pre-1.0 (0.1.5). The spec DSL, the checks and the shape of generated output can still change.
 
 ## Layout
 

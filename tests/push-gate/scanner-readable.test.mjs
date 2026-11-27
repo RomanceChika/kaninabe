@@ -7,8 +7,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { harness, realGate, reason, fakeKey, tab, sha256, blobId, rangeUnr, treeUnr, MAILMSG } from './harness.mjs';
 
@@ -371,3 +372,68 @@ describe('the scanner change: a mail address is matched whole (known-gaps 16(b))
   });
 });
 
+
+describe('the mail-entry check uses sha256sum, and no awk dialect matters', () => {
+  const at = (user, host) => `${user}@${host}`;
+  const owner = at('owner', 'corp-mail.test');
+  const other = at('other', 'corp-mail.test');
+  const entry = (str) => tab('mail', 'docs/contact.txt', `sha256:${sha256(str)}`, 'a made-up contact of a made-up fixture');
+  const swapTool = (name, body) => {
+    rmSync(path.join(bin, name), { force: true });
+    writeFileSync(path.join(bin, name), body);
+    chmodSync(path.join(bin, name), 0o755);
+  };
+
+  it('a sha256sum that fails during the mail-entry check stops scan-public and the gate with exit 2, never a pass', () => {
+    commit({ 'docs/contact.txt': `contact ${owner}\n` });
+    swapTool('sha256sum', '#!/bin/sh\nexit 1\n');
+    const p = scanPublic([], entry(owner));
+    assert.equal(p.status, 2, p.out);
+    assert.ok(p.out.includes('could not check the mail entries'), p.out);
+    assert.ok(!p.out.includes('scan-public: clean'), p.out);
+    const g = gateWith(entry(owner));
+    assert.equal(g.status, 2, g.out);
+    assert.ok(!g.out.includes('push-gate: passed'), g.out);
+  });
+  it('a sha256sum that prints something that is not a hash stops with exit 2 too', () => {
+    commit({ 'docs/contact.txt': `contact ${owner}\n` });
+    swapTool('sha256sum', '#!/bin/sh\necho not-a-hash\n');
+    const p = scanPublic([], entry(owner));
+    assert.equal(p.status, 2, p.out);
+  });
+  it('a missing sha256sum stops with exit 2, never a pass', () => {
+    commit({ 'docs/contact.txt': `contact ${owner}\n` });
+    rmSync(path.join(bin, 'sha256sum'), { force: true });
+    const p = scanPublic([], entry(owner));
+    assert.equal(p.status, 2, p.out);
+    assert.ok(!p.out.includes('scan-public: clean'), p.out);
+  });
+
+  it('no script that decides holds a SHA implementation in awk', () => {
+    const dir0 = path.dirname(realGate);
+    const hits = [];
+    for (const n of readdirSync(dir0).filter((f) => /\.sh$/.test(f))) {
+      readFileSync(path.join(dir0, n), 'utf8').split('\n').forEach((l, i) => {
+        if (/function\s+(sha256|sha1|rotr|shr|nib|xor|and|or)\s*\(/.test(l) || /scan_sha_awk/.test(l)) hits.push(`${n}:${i + 1}`);
+      });
+    }
+    assert.deepEqual(hits, [], 'a hash is made by sha256sum; an awk function with the name of a gawk built-in is not portable');
+  });
+
+  const AWKS = ['gawk', 'mawk', 'original-awk', 'nawk', 'busybox']
+    .map((name) => [name, ['/usr/bin', '/bin', '/usr/local/bin'].map((d) => path.join(d, name)).find((p) => spawnSync('/bin/sh', ['-c', `test -x ${p}`]).status === 0)])
+    .filter(([, p]) => p);
+  it('(guard) at least one awk is installed here', () => assert.ok(AWKS.length > 0));
+  for (const [name, p] of AWKS) {
+    it(`with awk = ${name}: a listed string at its path passes, another address at the same path is red`, () => {
+      swapTool('awk', name === 'busybox' ? `#!/bin/sh\nexec ${p} awk "$@"\n` : `#!/bin/sh\nexec ${p} "$@"\n`);
+      commit({ 'docs/contact.txt': `contact ${owner}\n` });
+      const ok = scanPublic([], entry(owner));
+      assert.equal(ok.status, 0, `${name}: ${ok.out}`);
+      commit({ 'docs/contact.txt': `contact ${owner} and ${other}\n` });
+      const red = scanPublic([], entry(owner));
+      assert.equal(red.status, 1, `${name}: ${red.out}`);
+      assert.ok(/email-like string: 1 hit\(s\) in/.test(red.out), red.out);
+    });
+  }
+});

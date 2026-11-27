@@ -23,7 +23,7 @@ export const realGate = fileURLToPath(new URL('../../scripts/push-gate.sh', impo
 export const realScripts = path.dirname(realGate);
 export const CORE = [
   'sh', 'git', 'grep', 'sed', 'cut', 'wc', 'tr', 'head', 'tail', 'mktemp', 'rm', 'cat', 'dirname', 'basename', 'tar',
-  'awk', 'sort', 'uniq', 'mkdir', 'ls', 'find', 'env', 'true', 'false', 'cp', 'mv', 'date', 'less',
+  'awk', 'sort', 'uniq', 'mkdir', 'ls', 'find', 'env', 'true', 'false', 'cp', 'mv', 'date', 'less', 'sha256sum',
 ];
 export const find = (name, searchPath) => {
   const r = spawnSync('/bin/sh', ['-c', `command -v ${name}`], { encoding: 'utf8', env: { PATH: searchPath } });

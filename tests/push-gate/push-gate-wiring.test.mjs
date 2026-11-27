@@ -166,8 +166,8 @@ function runGate(sb, args, env = {}) {
 }
 
 /** Runs the pre-push hook as git does: `<remote> <url>` as arguments and the ref lines on stdin. */
-function runHook(sb, { remote = 'origin', lines = [], env = {}, url } = {}) {
-  const input = lines.map((l) => `${l}\n`).join('');
+function runHook(sb, { remote = 'origin', lines = [], env = {}, url, noFinalNewline = false } = {}) {
+  const input = noFinalNewline ? lines.join('\n') : lines.map((l) => `${l}\n`).join('');
   // Git passes the URL it pushes to; by default, the remote's own URL when there is one.
   const own = spawnSync('git', ['remote', 'get-url', remote], { cwd: sb.repo, encoding: 'utf8' });
   const r = spawnSync('/bin/sh', [hook, remote, url ?? (own.status === 0 ? own.stdout.trim() : 'unused-url')], { cwd: sb.repo, encoding: 'utf8', env: sb.env(env), input });
@@ -1124,6 +1124,20 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
         const out = history(`"${list}"`, `wc_num() { wc_v=1; rm -f "${list}"; }\nneutral_adds_text() { return 1; }\n${stub}`);
         assert.match(out, /rc=2/, out);
       });
+      it('scan_history: a list whose last line has no line break is rc=2 (the unread last entry is counted), never rc=0', () => {
+        const list = path.join(sb.dir, 'unterminated');
+        writeFileSync(list, 'a'.repeat(40) + '\n' + 'b'.repeat(40));
+        const out = history(`"${list}"`, `neutral_adds_text() { return 1; }\n${stub}`);
+        assert.match(out, /rc=2/, out);
+      });
+      it('the shared count of a list counts an unterminated last line too (wc_lines)', () => {
+        const list = path.join(sb.dir, 'cnt');
+        for (const [text, want] of [['', '0'], ['a\n', '1'], ['a\nb', '2'], ['a\nb\n', '2']]) {
+          writeFileSync(list, text);
+          const r = spawnSync('/bin/sh', ['-c', `. "${neutral}"\nwc_lines "${list}" && echo "$wc_v"`, neutral], { cwd: sb.repo, encoding: 'utf8', env: sb.env() });
+          assert.equal(r.stdout.trim(), want, r.stdout + r.stderr);
+        }
+      });
       it('scan_history: a list whose line count differs from the lines processed is rc=2', () => {
         const list = path.join(sb.dir, 'two-commits');
         writeFileSync(list, 'a'.repeat(40) + '\nb'.repeat(1) + '\n');
@@ -1211,6 +1225,19 @@ describe('pre-push hook', () => {
     const r = runHook(sb, { lines: [`(delete) ${ZERO} refs/heads/old ${head}`] });
     assert.equal(r.status, 0, r.out);
     assert.deepEqual(sb.calls(), []);
+  });
+
+  it('the last line git sends is read even without a final line break (review round 23, AD1)', () => {
+    const other = commit(sb, { 'b.txt': 'two\n' });
+    git(sb, 'checkout', '-q', '--detach', head);
+    record(other);
+    const r = runHook(sb, { lines: [pushLine(other)], env: words(), noFinalNewline: true });
+    assert.notEqual(r.status, 0, r.out);
+    assert.ok(r.out.includes('not the checked-out commit'), r.out);
+    record(head);
+    const ok = runHook(sb, { lines: [pushLine(head)], env: words(), noFinalNewline: true });
+    assert.equal(ok.status, 0, ok.out);
+    assert.ok(ok.out.includes('push-gate: passed (mode words, 1 commit(s))'), ok.out);
   });
 
   it('refuses to push a commit that is not the checked-out one', () => {

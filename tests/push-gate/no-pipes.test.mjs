@@ -10,7 +10,8 @@
  * The detector is a small scanner of one line at a time: it blanks single-quoted text, double-quoted text and comments, and keeps
  * the inside of `$( ... )` as code. A `|` that is not part of `||` is a pipeline unless it is a case alternation: a `|` at the base
  * level of the line with an unmatched `)` after it on the same line (the structural form `a | b) ...`).
- * Also flagged: `egrep`, `fgrep`, `\grep`, `command grep`, a path to grep, `eval`, `sh -c`, and a one-line group `{ a; b; }` or
+ * Also flagged: an input redirect `<` on a command inside an `if` / `while` / `until` / `!` condition (a redirect that fails reads as the
+ * command's own non-zero), `egrep`, `fgrep`, `\grep`, `command grep`, a path to grep, `eval`, `sh -c`, and a one-line group `{ a; b; }` or
  * `( a; b )` whose status or output is used (only the last command counts). NOT seen: anything that spans lines (a group opened on one
  * line and closed on another, a pipe after a `\` continuation is seen only on its own line), a function that is called in a
  * condition and relies on `set -e` inside (that is a review item, listed in known-gaps), a construct built at run time, and a
@@ -94,6 +95,7 @@ export function inspect(line) {
   if (/(^|[\s;&|({!`])eval(\s|$)/.test(code)) problems.push('eval');
   if (/(^|[\s;&|({!`])(sh|bash|dash|ksh|zsh)\s+(-[a-zA-Z]*c)(\s|$)/.test(code)) problems.push('sh -c');
   for (const g of groupsWithSemicolons(code)) problems.push(g);
+  if (/(\b(if|elif|while|until)|(^|[\s;])!)\s+[^;]*\s<\s*[^\s<(]/.test(code)) problems.push('input redirect on a command in a condition');
   return { marked: false, problems };
 }
 
@@ -147,14 +149,14 @@ describe('no pipelines, no `|| true`, no bare grep in the scripts that decide (r
     const bad = [
       'a | b', 'x=$(a | b)', 'x=$(a) | b', '"$(a | b)"', 'foo || true', 'foo || : ', 'if grep -q x f; then', '! grep -q x f',
       'grep x f && y', 'x=$(grep x f)',
-      '{ printf x; cat f; } > out || return 1', '( a; b ) || c', 'x=$({ a; b; })', 'if { a; b; }; then', 'if x || (a; b); then', 'egrep x f', 'fgrep x f', '\\grep x f', 'command grep x f', '/bin/grep x f', 'eval "$x"', 'sh -c "x"', 'sort -u f | while read x; do', '( cd d && a | b )',
+      '{ printf x; cat f; } > out || return 1', '( a; b ) || c', 'x=$({ a; b; })', 'if { a; b; }; then', 'if x || (a; b); then', 'if f < "$x"; then', 'while f < x; do', '! f < x', 'egrep x f', 'fgrep x f', '\\grep x f', 'command grep x f', '/bin/grep x f', 'eval "$x"', 'sh -c "x"', 'sort -u f | while read x; do', '( cd d && a | b )',
     ];
     for (const l of bad) assert.ok(inspect(l).problems.length > 0, `should be flagged: ${l}`);
     const good = [
       '# a | b || true grep', "awk '$1 == 1 || $2 { a | b }' f", 'echo "a | b || true grep"', 'case $x in 0 | 1) return 1 ;; esac',
       'a || b', 'grep_q -q x f', 'scan_grep -q x f', 'neutral_git grep -q x', 'x=$(git grep -q y)', 'x=$((a + b))',
       'echo ok # a | b', 'grep_q() { true; } # GATE-EXCEPTION: the one helper', 'tr "|" "\\n"', 'foo || [ $? = 1 ]',
-      '{ a && b; } > out || return 1', 'a || { echo x; exit 2; }', 'f() { a; b; }', 'x=$(cd d && a)', '( cd d && a ) > out || rc=$?', 'echo "eval and sh -c"',
+      '{ a && b; } > out || return 1', 'a || { echo x; exit 2; }', 'f() { a; b; }', 'x=$(cd d && a)', '( cd d && a ) > out || rc=$?', 'echo "eval and sh -c"', 'while read x; do :; done < f', 'if f "$x"; then g < y; fi', 'x=$(a < f) || b',
     ];
     for (const l of good) assert.deepEqual(inspect(l).problems, [], `should pass: ${l}`);
   });

@@ -1153,6 +1153,29 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
         const w = wrap('git');
         assert.equal(w.status, 2, w.out);
       });
+      it('scan_attribution and scan_bad_email: an input path that cannot be read is exit 2, never "no finding" (review round 24, AE1)', () => {
+        for (const fn of ['scan_attribution', 'scan_bad_email']) {
+          const script = `scan_name=t\n. "${scanRules}"\n${fn} /nonexistent/input < /dev/null\necho "rc=$?"\n`;
+          const r = spawnSync('/bin/sh', ['-c', script, scanRules], { cwd: sb.repo, encoding: 'utf8', env: sb.env() });
+          assert.equal(r.status, 2, `${fn}: ${r.stdout}${r.stderr}`);
+          assert.ok(!r.stdout.includes('rc='), r.stdout);
+        }
+      });
+      it('scan-pr-text: an input that cannot be read is exit 2 (the attribution and mail checks are never reached with a failed open)', () => {
+        for (const input of [path.join(sb.dir, 'missing.txt'), sb.dir]) {
+          const r = spawnSync('/bin/sh', [scanPr, input], { cwd: sb.repo, encoding: 'utf8', env: sb.env() });
+          assert.equal(r.status, 2, r.stdout + r.stderr);
+          assert.ok(!/clean/.test(r.stdout), r.stdout);
+        }
+      });
+      it('scan_filter: an output file that cannot be created is exit 2 whatever the shell says for a failed redirect', () => {
+        const inp = path.join(sb.dir, 'in.txt');
+        writeFileSync(inp, 'x\n');
+        const script = `scan_name=t\n. "${scanRules}"\nscan_filter "${inp}" /nonexistent/dir/out -E x\necho "rc=$?"\n`;
+        const r = spawnSync('/bin/sh', ['-c', script, scanRules], { cwd: sb.repo, encoding: 'utf8', env: sb.env() });
+        assert.equal(r.status, 2, r.stdout + r.stderr);
+        assert.ok(!r.stdout.includes('rc='), r.stdout);
+      });
       it('scan_attribution: a first stage whose redirect fails is exit 2, not "no attribution line"', () => {
         const script = `scan_name=t\n. "${scanRules}"\nmkdir "$scan_dir/attr.1"\nprintf 'Co-Authored-By: someone\\n' > "$scan_dir/in"\nscan_attribution < "$scan_dir/in"\necho "rc=$?"\n`;
         const r = spawnSync('/bin/sh', ['-c', script, scanRules], { cwd: sb.repo, encoding: 'utf8', env: sb.env() });

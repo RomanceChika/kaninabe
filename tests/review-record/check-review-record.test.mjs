@@ -5,8 +5,8 @@
  * and each failing body fails for the rule it is meant to show.
  */
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { after, before, describe, it } from 'node:test';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -17,13 +17,18 @@ const HEAD = 'a'.repeat(40);
 const OLD = 'b'.repeat(40);
 const record = (o = HEAD, c = HEAD) => `## Review\n- opus: ${o}\n- codex: ${c}\n`;
 
+// The directory of tools the script runs with, when a test names one (a private PATH: a chosen awk, or a tool missing or failing).
+// null: the PATH of the test run.
+let toolPath = null;
+const envOf = () => (toolPath ? { ...process.env, PATH: toolPath } : process.env);
+
 /** Runs the script on `body` against `head`; returns the exit status and output. */
 function check(body, head = HEAD) {
   const dir = mkdtempSync(path.join(tmpdir(), 'review-record-'));
   try {
     const file = path.join(dir, 'body');
     writeFileSync(file, body);
-    const r = spawnSync('sh', [script, file, head], { encoding: 'utf8' });
+    const r = spawnSync('/bin/sh', [script, file, head], { encoding: 'utf8', env: envOf() });
     return { status: r.status, out: r.stdout + r.stderr };
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -42,7 +47,7 @@ const LAST = 'must be the last one';
 const BEFORE = 'record line appears before';
 const INFENCE = 'inside fenced code';
 
-describe('check-review-record.sh', () => {
+function cases() {
   it('passes when both lines name the head, also with CRLF, code and prose about the reviewers before the section', () => {
     assert.equal(check(`## 何を変えたか\n\nOpus と Codex の両方が見る\n\n${record()}`).status, 0);
     assert.equal(check(`x\r\n\r\n## Review\r\n- opus: ${HEAD}\r\n- codex: ${HEAD}\r\n`).status, 0);
@@ -131,4 +136,213 @@ describe('check-review-record.sh', () => {
     const r = check(`秘密の語\n${record(OLD)}`);
     assert.ok(!r.out.includes('秘密の語') && !r.out.includes(OLD), r.out);
   });
+}
+
+describe('check-review-record.sh', cases);
+
+// ---- the awk that runs it: the runner's awk is not the author's (the last scanner change taught that) ----
+const SYSTEM = ['/usr/bin', '/bin', '/usr/local/bin'];
+const which = (name) => SYSTEM.map((d) => path.join(d, name)).find((p) => spawnSync('/bin/sh', ['-c', `test -x ${p}`]).status === 0) ?? null;
+const TOOLS = ['mktemp', 'rm', 'sed', 'sort', 'cat'];
+/** A directory with only the tools the script needs: `awk` is the given program (a path, or ['busybox', 'awk']); `omit` names tools left out; `shim` maps a tool to a shell body. */
+function makeBin(root, { awk = which('awk'), omit = [], shim = {} } = {}) {
+  const bin = path.join(root, `bin-${Math.random().toString(36).slice(2)}`);
+  mkdirSync(bin);
+  const put = (name, body) => { writeFileSync(path.join(bin, name), `#!/bin/sh\n${body}\n`); chmodSync(path.join(bin, name), 0o755); };
+  for (const n of TOOLS) {
+    if (omit.includes(n)) continue;
+    if (shim[n] !== undefined) put(n, shim[n]);
+    else symlinkSync(which(n), path.join(bin, n));
+  }
+  if (!omit.includes('awk')) {
+    if (shim.awk !== undefined) put('awk', shim.awk);
+    else if (Array.isArray(awk)) put('awk', `exec ${awk[0]} ${awk[1]} "$@"`);
+    else symlinkSync(awk, path.join(bin, 'awk'));
+  }
+  return bin;
+}
+
+const AWKS = [['gawk', which('gawk')], ['mawk', which('mawk')], ['original-awk', which('original-awk')], ['nawk', which('nawk')], ['busybox', which('busybox') ? [which('busybox'), 'awk'] : null]]
+  .filter(([, p]) => p);
+describe('check-review-record.sh: awks installed here', () => {
+  it('(guard) at least one awk is installed', () => assert.ok(AWKS.length > 0));
 });
+for (const [name, awk] of AWKS) {
+  describe(`check-review-record.sh with awk = ${name}`, () => {
+    let root;
+    before(() => { root = mkdtempSync(path.join(tmpdir(), 'review-record-awk-')); toolPath = makeBin(root, { awk }); });
+    after(() => { toolPath = null; rmSync(root, { recursive: true, force: true }); });
+    cases();
+  });
+}
+
+describe('check-review-record.sh: a step that cannot run is exit 2, never 1 and never "matches the head"', () => {
+  let root;
+  before(() => { root = mkdtempSync(path.join(tmpdir(), 'review-record-run-')); });
+  after(() => { toolPath = null; rmSync(root, { recursive: true, force: true }); });
+  const stops = (r, why) => {
+    assert.equal(r.status, 2, `${why}: ${r.out}`);
+    assert.ok(!r.out.includes('matches the head'), `${why}: ${r.out}`);
+    assert.ok(!r.out.includes('review record: FAILED'), `${why}: a verdict was printed: ${r.out}`);
+    assert.ok(r.out.includes('could not run'), `${why}: no fixed message: ${r.out}`);
+  };
+  /** A body that fails the check (a stale record): an unusable tool must not turn it into exit 1 either. */
+  const BODIES = [['a matching record', record()], ['a stale record', record(OLD)], ['a body with a rule broken', `<div>\n${record()}`]];
+
+  it('(guard) the private PATH itself works: the tools it holds give exit 0 for a matching record', () => {
+    toolPath = makeBin(root);
+    assert.equal(check(record()).status, 0);
+    assert.equal(check(record(OLD)).status, 1);
+  });
+  for (const tool of ['awk', ...TOOLS]) {
+    for (const [what, body] of BODIES) {
+      it(`${tool} missing: ${what} is exit 2`, () => {
+        toolPath = makeBin(root, { omit: [tool] });
+        stops(check(body), `${tool} missing`);
+      });
+      it(`${tool} failing with status 1: ${what} is exit 2`, () => {
+        toolPath = makeBin(root, { shim: { [tool]: 'exit 1' } });
+        stops(check(body), `${tool} fails`);
+      });
+    }
+  }
+  it('awk failing with status 1 after it printed findings is exit 2, not "found"', () => {
+    toolPath = makeBin(root, { shim: { awk: "echo 'E need one ## Review section (found none outside fenced code)'; exit 1" } });
+    stops(check(record()), 'awk exits 1 with output');
+  });
+  it('awk failing with status 2 (a program that does not parse) is exit 2', () => {
+    toolPath = makeBin(root, { shim: { awk: 'exit 2' } });
+    stops(check(record()), 'awk exits 2');
+  });
+  it('a temporary directory that cannot be made is exit 2: mktemp failing, and TMPDIR that does not exist', () => {
+    toolPath = makeBin(root, { shim: { mktemp: 'exit 1' } });
+    stops(check(record()), 'mktemp fails');
+    toolPath = makeBin(root);
+    const dir = mkdtempSync(path.join(tmpdir(), 'review-record-'));
+    try {
+      writeFileSync(path.join(dir, 'body'), record());
+      const r = spawnSync('/bin/sh', [script, path.join(dir, 'body'), HEAD], { encoding: 'utf8', env: { ...process.env, PATH: toolPath, TMPDIR: '/nonexistent/tmpdir' } });
+      stops({ status: r.status, out: r.stdout + r.stderr }, 'TMPDIR is not a directory');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  it('the body is not printed when a step cannot run', () => {
+    toolPath = makeBin(root, { shim: { sort: 'exit 1' } });
+    const r = check(`秘密の語\n${record(OLD)}`);
+    assert.equal(r.status, 2, r.out);
+    assert.ok(!r.out.includes('秘密の語') && !r.out.includes(OLD), r.out);
+  });
+});
+
+describe('check-review-record.sh: a result that was cut short, or a body named like an awk assignment', () => {
+  let root;
+  before(() => { root = mkdtempSync(path.join(tmpdir(), 'review-record-cut-')); });
+  after(() => { toolPath = null; rmSync(root, { recursive: true, force: true }); });
+  /** An awk that runs the real one and then hands on its output without the last `n` lines, with status 0 (a write error that nobody saw). */
+  const cutAwk = (n) => `T=$(${which('mktemp')}) || exit 3\n${which('awk')} "$@" > "$T" || exit $?\n${which('head')} -n -${n} "$T"\n${which('rm')} -f "$T"\nexit 0`;
+  const BODIES = [['a matching record', record()], ['a record with a section after it', `${record()}メモ\n`], ['a record with an HTML tag before it', `<div>\n${record()}`]];
+  for (const n of [1, 2]) {
+    for (const [what, body] of BODIES) {
+      it(`an awk whose output lost its last ${n} line(s): ${what} is exit 2, never 0 or 1`, () => {
+        toolPath = makeBin(root, { shim: { awk: cutAwk(n) } });
+        const r = check(body);
+        assert.equal(r.status, 2, r.out);
+        assert.ok(r.out.includes('could not run'), r.out);
+        assert.ok(!r.out.includes('matches the head') && !r.out.includes('review record: FAILED'), r.out);
+      });
+    }
+  }
+
+  const inDir = (name, body) => {
+    const dir = mkdtempSync(path.join(root, 'd-'));
+    writeFileSync(path.join(dir, name), body);
+    const r = spawnSync('/bin/sh', [script, name, HEAD], { cwd: dir, encoding: 'utf8' });
+    return { status: r.status, out: r.stdout + r.stderr };
+  };
+  it('a body file named like an awk assignment (x=1, relative) is read as a file: a matching record passes', () => {
+    const r = inDir('x=1', record());
+    assert.equal(r.status, 0, r.out);
+    assert.ok(r.out.includes('matches the head'), r.out);
+  });
+  it('and a stale record in it fails for the right rule', () => {
+    const r = inDir('x=1', record(OLD));
+    assert.equal(r.status, 1, r.out);
+    assert.ok(r.out.includes('reviewed bbbbbbbb'), r.out);
+  });
+});
+
+// ---- the class: every output the script reads must be proven complete before it is used ----
+// A mechanical sweep: for each external tool the script calls, for each call index n of that tool (counted per body, since the path
+// differs), a shim runs the real tool and hands on its standard output without the last k lines (k = 1, 2 and all) with status 0.
+// The shim records whether the cut really changed the output of that call. A call whose output changed must be exit 2 (could not
+// run); a call whose output did not change (there was nothing to cut) must be the untruncated run exactly.
+describe('check-review-record.sh: a stage output that is cut short is exit 2, whatever the tool and whichever call', () => {
+  let root;
+  before(() => { root = mkdtempSync(path.join(tmpdir(), 'review-record-sweep-')); });
+  after(() => { toolPath = null; rmSync(root, { recursive: true, force: true }); });
+  const SWEPT = ['awk', 'sed', 'sort', 'cat', 'mktemp'];
+  const BODIES = [
+    ['a matching record', record(), 0],
+    ['a stale record', record(OLD), 1],
+    ['a record followed by another section', `${record()}\n## 後書き\n`, 1],
+    ['an HTML tag before the record', `<div>\n${record()}`, 1],
+    ['no section', 'no record\n', 1],
+    ['two sections', `${record()}\n${record()}`, 1],
+  ];
+  let counter = 0;
+  /** Runs the body with `tool` shimmed: its call number `n` loses its last `k` lines (n = 0: no cut, only counted). Returns the result, how many times the tool was called, and whether the cut really changed what that call handed on (the shim compares the two). */
+  const run = (tool, n, k, body) => {
+    const cnt = path.join(root, `cnt-${counter++}`);
+    const real = tool === 'awk' ? which('awk') : which(tool);
+    const cut = k === 'all' ? ': > "$U"' : `${which('head')} -n -${k} "$T" > "$U"`;
+    // every command of the shim itself is checked: a failure of the test's own I/O is written to `.err` and fails the test, so that
+    // it is never counted as "the script noticed the cut" (the mark that the output changed is written last, after everything else succeeded); cmp is read as 0 (same), 1 (changed) or anything else (could not compare)
+    const shim = `bad() { echo "$1" >> ${cnt}.err; exit 3; }\nc=0\nif [ -f ${cnt} ]; then read c < ${cnt} || bad count-read; fi\nc=$((c+1))\necho $c > ${cnt} || bad count-write\n`
+      + `if [ "$c" = ${n} ]; then\n  T=$(${which('mktemp')}) || bad mktemp\n  U=$(${which('mktemp')}) || bad mktemp\n  ${real} "$@" > "$T" || bad real-tool\n  ${cut} || bad cut\n  rc=0; ${which('cmp')} -s "$T" "$U" || rc=$?\n  case $rc in 0 | 1) ;; *) bad cmp ;; esac\n  ${which('cat')} "$U" || bad hand-on\n  ${which('rm')} -f "$T" "$U" || bad rm\n  if [ "$rc" = 1 ]; then echo changed > ${cnt}.chg || bad mark; fi\n  exit 0\nfi\nexec ${real} "$@"`;
+    toolPath = makeBin(root, { shim: { [tool]: shim } });
+    const r = check(body);
+    let calls = 0;
+    try { calls = Number(readFileSync(cnt, 'utf8').trim()); } catch { /* the tool was not called */ }
+    assert.ok(!existsSync(`${cnt}.err`), `the shim's own command failed (${tool} call ${n}, k=${k}): ${existsSync(`${cnt}.err`) ? readFileSync(`${cnt}.err`, 'utf8') : ''}`);
+    return { ...r, calls, changed: existsSync(`${cnt}.chg`) };
+  };
+  let runs = 0;
+  const cutCalls = Object.fromEntries(SWEPT.map((t) => [t, new Set()]));
+  const allCalls = Object.fromEntries(SWEPT.map((t) => [t, new Set()]));
+  const started = Date.now();
+  for (const tool of SWEPT) {
+    for (const [what, body, truth] of BODIES) {
+      it(`${tool}: every call cut by 1, 2 or all lines: ${what} is exit 2 or unchanged`, () => {
+        const base = run(tool, 0, 1, body);
+        assert.equal(base.status, truth, `the untruncated run: ${base.out}`);
+        assert.ok(base.calls >= 1, `${tool} is not called for ${what}`);
+        for (let n = 1; n <= base.calls; n += 1) {
+          for (const k of [1, 2, 'all']) {
+            runs += 1;
+            const r = run(tool, n, k, body);
+            const label = `${tool} call ${n} of ${base.calls}, last ${k} line(s) dropped`;
+            allCalls[tool].add(`${what}#${n}`);
+            if (r.changed) {
+              cutCalls[tool].add(`${what}#${n}`);
+              assert.equal(r.status, 2, `${label}: the output of the call was cut, and the result is not exit 2: ${r.out}`);
+              assert.ok(r.out.includes('could not run'), `${label}: ${r.out}`);
+              assert.ok(!r.out.includes('matches the head') && !r.out.includes('review record: FAILED'), `${label}: ${r.out}`);
+            } else {
+              assert.equal(r.status, truth, `${label}: nothing was cut, and the verdict changed: ${r.out}`);
+              assert.equal(r.out, base.out, `${label}: nothing was cut, and the output changed`);
+            }
+          }
+        }
+      });
+    }
+  }
+  it('(guard) the sweep ran, and every call of every tool had its output really cut at least once (a shim that cuts nothing would pass everything)', () => {
+    assert.ok(runs > 100, `only ${runs} shimmed runs`);
+    for (const tool of SWEPT) {
+      const never = [...allCalls[tool]].filter((c) => !cutCalls[tool].has(c));
+      assert.deepEqual(never, [], `${tool}: these calls were never really cut (the call prints nothing, or the shim does not cut)`);
+      assert.ok(cutCalls[tool].size >= 1, `${tool}: no call was cut`);
+    }
+    console.log(`sweep: ${runs} shimmed runs in ${Date.now() - started} ms, calls cut ${JSON.stringify(Object.fromEntries(SWEPT.map((t) => [t, cutCalls[t].size])))}`);
+  });
+});
+

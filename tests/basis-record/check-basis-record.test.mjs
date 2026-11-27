@@ -686,6 +686,7 @@ describe('check-basis-record.sh: a tool that fails, is missing or hands on a cut
   const scenarios = [
     { name: 'no record, one kind of path', truth: 0, make: (w) => { w.I(); w.I(); } },
     { name: 'no record, basis and implementation', truth: 1, make: (w) => { w.B(); w.I(); } },
+    { name: 'no record, several merge bases', truth: 1, make: (w) => { w.I(); const b1 = w.onMain(() => w.B()); w.onMain(() => w.merge('pr')); w.merge(b1); } },
     { name: 'a record that matches', truth: 0, make: (w) => { const b = w.B(); w.I(); return { basis: b }; }, record: true },
     { name: 'a record, a commit that changes both', truth: 1, make: (w) => { const first = w.B(); w.M(); const b = w.B(); return { first, basis: b }; }, record: true },
   ];

@@ -136,6 +136,7 @@ describe('push-range.sh', () => {
     writeFileSync(path.join(shim, 'grep'), `#!/bin/sh\ncase "$*" in "-q ^?"*) exit 2 ;; esac\nexec ${realGrep} "$@"\n`, { mode: 0o755 });
     const r = run([bare], repo, { PATH: `${shim}:${process.env.PATH}` });
     assert.equal(r.status, 2, r.all);
+    assert.ok(r.all.includes('push-range: a search could not run (grep exit 2)'), r.all);
     assert.equal(r.out.trim(), '', 'it printed a range');
   });
 
@@ -147,6 +148,7 @@ describe('push-range.sh', () => {
     writeFileSync(path.join(shim, 'wc'), `#!/bin/sh\ncase "$*" in *-l*) exit 1 ;; esac\nexec ${realWc} "$@"\n`, { mode: 0o755 });
     const r = run([bare], repo, { PATH: `${shim}:${process.env.PATH}` });
     assert.equal(r.status, 2, r.all);
+    assert.ok(r.all.includes('push-range: could not count the commits'), r.all);
   });
 
   describe('the id is made only when every write and the hash succeed (review round 21, AB1)', () => {
@@ -178,6 +180,7 @@ describe('push-range.sh', () => {
         writeFileSync(path.join(shim, tool), `#!/bin/sh\ncase "$*" in *${tool === 'cat' ? 'commits' : ''}*) exit 1 ;; esac\nexec ${real} "$@"\n`, { mode: 0o755 });
         const r = run(['--gate-args', bare], repo, { PATH: `${shim}:${process.env.PATH}` });
         assert.equal(r.status, 2, r.all);
+        assert.ok(r.all.includes('push-range: could not compute the range id (sha256sum is needed)'), r.all);
         assert.equal(r.out, '');
       });
     }
@@ -194,7 +197,9 @@ describe('push-range.sh', () => {
 
   it('refuses a URL that looks like an option and a missing argument', () => {
     commit(repo, 'a.txt');
-    assert.equal(run(['--upload-pack=x']).status, 2);
+    const opt = run(['--upload-pack=x']);
+    assert.equal(opt.status, 2);
+    assert.ok(opt.all.includes('push-range: the destination looks like an option'), opt.all);
     assert.ok(run([]).all.includes('push-range: usage'), 'usage');
   });
 });

@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -179,6 +179,12 @@ const pushLine = (sha, remoteSha = ZERO) => `refs/heads/main ${sha} refs/heads/m
 
 
 // ---- the gate ----
+
+/** The output of a result of runGate / runHook (`out`) or of spawnSync (`stdout` + `stderr`) must hold the fixed reason of the failure under test. */
+function said(r, reason) {
+  const out = r.out ?? `${r.stdout}${r.stderr}`;
+  assert.ok(out.includes(reason), `expected "${reason}" in: ${out}`);
+}
 
 {
 let sb;
@@ -587,20 +593,21 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     });
     it('the check of gitleaks\' log for an error line: the gate and the wrapper exit 2', () => {
       shimGrep();
-      stops(runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_GREP_FAIL: '(ERR|FTL|PNC)' }), 2, 'push-gate: ');
+      stops(runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_GREP_FAIL: '(ERR|FTL|PNC)' }), 2, 'push-gate: a search could not run (grep exit 2)');
       const f = path.join(sb.dir, 'plain-gitleaks');
       writeFileSync(f, '#!/bin/sh\n[ "$1" != git ] || echo "6:02PM INF 1 commits scanned." >&2\nexit 0\n');
       chmodSync(f, 0o755);
       for (const mode of ['git', 'dir']) {
         const r = spawnSync('/bin/sh', [path.join(scripts, 'gitleaks-public.sh'), mode, sb.repo], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ GL_BIN: f, SHIM_GREP_FAIL: '(ERR|FTL|PNC)' }) });
         assert.equal(r.status, 2, `${mode}: ${r.stdout + r.stderr}`);
+        said(r, `gitleaks ${mode}: could not run (a search failed)`);
         assert.ok(!(r.stdout + r.stderr).includes(`gitleaks ${mode}: ok`), r.stdout + r.stderr);
       }
     });
     it('the check of the workflow file names: the gate exits 2', () => {
       shimGrep();
       commit(sb, { '.github/workflows/ci.yml': 'name: x\n' });
-      stops(runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_GREP_FAIL: '[A-Za-z0-9._/-]+$' }), 2, 'push-gate: ');
+      stops(runGate(sb, ['--mode', 'words', '--all'], { ...words(), SHIM_GREP_FAIL: '[A-Za-z0-9._/-]+$' }), 2, 'push-gate: a search could not run (grep exit 2)');
     });
   });
 
@@ -674,9 +681,13 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     it('a failing read of a commit patch stops the gate (2)', () => {
       const first = git(sb, 'rev-list', '--max-parents=0', 'HEAD');
       const blob = git(sb, 'rev-parse', `${first}:a.txt`);
+      // a later commit changes the file, so that the blob of the first commit is not in HEAD's tree: the export of HEAD still works
+      // and the stop comes from reading the patch of that first commit (a blob of HEAD would stop the export first)
+      commit(sb, { 'a.txt': 'changed\n' });
       rmSync(path.join(sb.repo, '.git/objects', blob.slice(0, 2), blob.slice(2)), { force: true });
       const r = runGate(sb, ['--mode', 'words', '--all'], words());
       assert.equal(r.status, 2, r.out);
+      said(r, 'push-gate: step gitleaks could not run (could not read the patch of a commit)');
       assert.ok(!r.out.includes('push-gate: passed'), r.out);
     });
   });
@@ -981,19 +992,22 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
         'a carriage return': Buffer.from('plainword\r\nsecondone\n'),
         'a byte order mark': Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('plainword\nsecondone\n')]),
       };
+      const why = { 'a line that is not valid UTF-8': 'is not valid UTF-8', 'a NUL byte': 'contains a NUL byte', 'a carriage return': 'contains a carriage return', 'a byte order mark': 'begins a line with a byte order mark' };
       for (const [label, content] of Object.entries(lists)) {
         it(`a list with ${label} stops the gate, scan-public and scan-pr-text (exit 2) with a fixed reason and no line of the list`, () => {
           writeFileSync(sb.words, content);
           const g = runGate(sb, ['--mode', 'words', '--all'], { SCAN_WORDS_FILE: sb.words });
           assert.equal(g.status, 2, g.out);
-          assert.ok(g.out.includes('push-gate: the word list'), g.out);
+          said(g, `push-gate: the word list ${why[label]}`);
           const p = spawnSync('/bin/sh', [scanPublic], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ SCAN_WORDS_FILE: sb.words }) });
           assert.equal(p.status, 2, p.stdout + p.stderr);
-          assert.ok((p.stdout + p.stderr).includes('scan-public: ERROR'), p.stdout + p.stderr);
+          said(p, `scan: the word list ${why[label]}`);
+          said(p, 'scan-public: ERROR');
           const text = path.join(sb.dir, 'pr.txt');
           writeFileSync(text, 'title\n');
           const t = spawnSync('/bin/sh', [scanPr, text], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ SCAN_WORDS_FILE: sb.words }) });
           assert.equal(t.status, 2, t.stdout + t.stderr);
+          said(t, `scan-pr-text: the word list ${why[label]}`);
           for (const o of [g.out, p.stdout + p.stderr, t.stdout + t.stderr]) assert.ok(!o.includes('plainword') && !o.includes('word'.repeat(2)), o);
         });
       }
@@ -1003,17 +1017,20 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
         const env = { SCAN_WORDS_FILE: sb.words };
         const p = spawnSync('/bin/sh', [scanPublic], { cwd: sb.repo, encoding: 'utf8', env: sb.env(env) });
         assert.equal(p.status, 2, p.stdout + p.stderr);
+        said(p, 'scan: the word list could not be read');
         const text = path.join(sb.dir, 'pr.txt');
         writeFileSync(text, 'title\n');
         const t = spawnSync('/bin/sh', [scanPr, text], { cwd: sb.repo, encoding: 'utf8', env: sb.env(env) });
         assert.equal(t.status, 2, t.stdout + t.stderr);
-        assert.equal(runGate(sb, ['--mode', 'words', '--all'], env).status, 2);
+        said(t, 'scan-pr-text: the word list could not be read');
+        stops(runGate(sb, ['--mode', 'words', '--all'], env), 2, 'push-gate: the word list could not be read');
       });
       it('a list file that is named but missing or empty is exit 2 in scan-public (not a scan without a list)', () => {
         for (const file of [path.join(sb.dir, 'no-such-list'), sb.words]) {
           writeFileSync(sb.words, '');
           const p = spawnSync('/bin/sh', [scanPublic], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ SCAN_WORDS_FILE: file }) });
           assert.equal(p.status, 2, `${file}: ${p.stdout + p.stderr}`);
+          said(p, 'scan: the word list is missing or empty');
         }
       });
     });
@@ -1021,28 +1038,31 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     it('W2: an ls-tree that fails is not "no workflow files" (the gate exits 2)', () => {
       commit(sb, { '.github/workflows/ci.yml': 'name: x\n' });
       shimFail('git', 'ls-tree');
-      stops(runGate(sb, ['--mode', 'general', '--all']), 2, 'push-gate: ');
+      stops(runGate(sb, ['--mode', 'general', '--all']), 2, 'push-gate: step workflows could not run (could not list the files of HEAD)');
     });
     it('W2: the tr of the text-added decision that fails stops the wrapper (the gate reads the same decision), it is not "nothing added"', () => {
       shimFail('tr', '\\000');
       const r = wrap('git');
       assert.equal(r.status, 2, r.out);
+      said(r, 'gitleaks git: could not run (could not read the patch of a commit)');
       assert.ok(!r.out.includes('gitleaks git: ok'), r.out);
     });
     it('a cat that fails while the list of commits is read stops the gate and scan-public, never "no commits to scan"', () => {
       rmSync(path.join(sb.bin, 'cat'), { force: true });
       writeFileSync(path.join(sb.bin, 'cat'), `#!/bin/sh\nif [ $# -eq 1 ] && [ -f "$1" ] && head -n 1 "$1" | grep -Eqx '[0-9a-f]{40}'; then exit 1; fi\nexec ${which('cat')} "$@"\n`);
       chmodSync(path.join(sb.bin, 'cat'), 0o755);
-      stops(runGate(sb, ['--mode', 'general', '--all']), 2, 'push-gate: ');
+      stops(runGate(sb, ['--mode', 'general', '--all']), 2, 'push-gate: step gitleaks could not run (could not read the list of commits)');
       writeWords(sb);
       const p = spawnSync('/bin/sh', [scanPublic], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ SCAN_WORDS_FILE: sb.words }) });
       assert.equal(p.status, 2, p.stdout + p.stderr);
+      said(p, 'scan: could not read the list of commits');
       assert.ok(!(p.stdout + p.stderr).includes('scan-public: clean'), p.stdout + p.stderr);
     });
     it('the wrapper: a rev-parse of HEAD that fails is exit 2, and so is a cat-file that fails on the commit a tag points to', () => {
       shimFail('git', '-q --verify HEAD^{commit}', 128);
       let r = wrap('git');
       assert.equal(r.status, 2, r.out);
+      said(r, 'gitleaks git: could not run (exit 2)');
       assert.ok(!r.out.includes('gitleaks git: ok'), r.out);
       rmSync(path.join(sb.bin, 'git'), { force: true });
       symlinkSync(which('git'), path.join(sb.bin, 'git'));
@@ -1054,6 +1074,7 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
       shimFail('git', `cat-file -t ${only}`, 128);
       r = wrap('git');
       assert.equal(r.status, 2, r.out);
+      said(r, 'gitleaks git: could not run (exit 2)');
       assert.ok(!r.out.includes('gitleaks git: ok'), r.out);
     });
     it('scan-public: a sed that fails while the hits of a file are filtered is exit 2, not "no hits"', () => {
@@ -1062,6 +1083,7 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
       shimFail('sed', 's/^[^:]*://');
       const p = spawnSync('/bin/sh', [scanPublic], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ SCAN_WORDS_FILE: sb.words }) });
       assert.equal(p.status, 2, p.stdout + p.stderr);
+      said(p, 'scan: could not read the hits');
     });
     it('a command that fails with exit 1 under set -e is exit 2 in the gate and the wrapper (1 is "found something")', () => {
       shimFail('mkdir', '/home', 1);
@@ -1069,42 +1091,68 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
       rmSync(path.join(sb.bin, 'mkdir'), { force: true });
       symlinkSync(which('mkdir'), path.join(sb.bin, 'mkdir'));
       shimFail('sort', '-u', 1);
-      const r = wrap('git');
+      const r = wrap('git'); // (no message by design: the exit guard turns the stray exit 1 into 2, so the check is that no verdict was printed)
       assert.equal(r.status, 2, r.out);
+      assert.ok(!r.out.includes('gitleaks git: ok') && !r.out.includes('FAILED'), r.out);
     });
     it('a report whose lines cannot be checked (awk fails) is "could not read the result", not findings', () => {
       shimFail('awk', 'who=x_count');
       const r = runGate(sb, ['--mode', 'general', '--all'], { SHIM_GITLEAKS_EXIT: '99', SHIM_REPORT_gitleaks: HIT });
       stops(r, 2, 'push-gate: step gitleaks could not read the result');
     });
+    it('gl_scanned: a stage that fails (sed) is "could not confirm what it scanned", not a count', () => {
+      shimFail('sed', 'commits scanned', 1);
+      stops(runGate(sb, ['--mode', 'general', '--all']), 2, 'push-gate: step gitleaks could not confirm what it scanned');
+    });
+    it('neutral_commit_text: a cat-file that fails is "could not read the text of a commit"', () => {
+      shimFail('git', 'cat-file commit', 1);
+      stops(runGate(sb, ['--mode', 'general', '--all']), 2, 'push-gate: step gitleaks could not run (could not read the text of a commit)');
+    });
+    it('the hook\'s cfg_get: a git config that fails with a status other than "not set" is exit 2, not an empty value', () => {
+      shimFail('git', 'config --get', 128);
+      const r = runHook(sb, { lines: [pushLine(git(sb, 'rev-parse', 'HEAD'))] });
+      assert.equal(r.status, 2, r.out);
+      said(r, 'pre-push: could not read git config kaninabe.contentReviewed');
+    });
     describe('a number from wc is validated, one helper for every read (review round 19, X1)', () => {
-      it('a wc that fails on the list of commits does not read as "no commits": the gate exits 2, not 0', () => {
+      it('a line count of the list of commits that fails does not read as "no commits": the gate exits 2, not 0 (the count is the awk of wc_lines)', () => {
+        shimFail('awk', 'print NR', 1);
+        stops(runGate(sb, ['--mode', 'general', '--all']), 2, 'push-gate: could not count the commits');
+      });
+      it('a wc -l that fails inside the scan-public step stops the gate with that step named', () => {
         shimFail('wc', '-l', 1);
-        stops(runGate(sb, ['--mode', 'general', '--all']), 2, 'push-gate: ');
+        stops(runGate(sb, ['--mode', 'general', '--all']), 2, 'push-gate: step scan-public could not run (exit 2)');
       });
       it('a wc that fails on the size of a commit text does not bypass the 64 KiB bound: the gate exits 2', () => {
         shimFail('wc', '-c', 1);
-        stops(runGate(sb, ['--mode', 'general', '--all']), 2, 'push-gate: ');
+        stops(runGate(sb, ['--mode', 'general', '--all']), 2, 'push-gate: step gitleaks could not run (could not measure the text of a commit)');
       });
       it('scan-public: a wc that fails is exit 2 with its ERROR line, never a count of nothing', () => {
         writeWords(sb);
         shimFail('wc', '-l', 1);
         const p = spawnSync('/bin/sh', [scanPublic], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ SCAN_WORDS_FILE: sb.words }) });
         assert.equal(p.status, 2, p.stdout + p.stderr);
-        assert.ok((p.stdout + p.stderr).includes('scan-public: ERROR'), p.stdout + p.stderr);
+        said(p, 'scan: could not count lines');
+        said(p, 'scan-public: ERROR');
       });
     });
     it('the gate\'s list-id check: a sha256sum that fails is exit 2, never a pass (review round 21, AB1)', () => {
+      // the CORRECT list id: with a working sha256sum the gate passes, so that only the failing hash can stop it. (The message is the same
+      // as for a wrong id: a hash that cannot be made is "not the list".)
+      const headSha = git(sb, 'rev-parse', 'HEAD');
+      const listId = createHash('sha256').update(`head ${headSha}\n${git(sb, 'rev-list', 'HEAD')}\n`).digest('hex');
+      const control = runGate(sb, ['--mode', 'general', '--all', '--list-id', listId]);
+      assert.equal(control.status, 0, control.out);
       shimFail('sha256sum', '', 1);
-      stops(runGate(sb, ['--mode', 'general', '--all', '--list-id', 'a'.repeat(64)]), 2, 'push-gate: the commits to scan are not the list');
+      stops(runGate(sb, ['--mode', 'general', '--all', '--list-id', listId]), 2, 'push-gate: the commits to scan are not the list');
     });
     describe('a loop over a list is complete: every line is processed, or the run stops (review round 22, AC1)', () => {
       const neutral = path.join(scripts, 'neutral-git.sh');
       const scanRules = path.join(scripts, 'scan-rules.sh');
-      /** A line count (the awk of wc_lines) that claims more lines than the file has: the list was not read to the end. */
+      /** A line count (the awk of wc_lines) of a list of commits that claims more lines than the file has: the list was not read to the end. (Only the file named `commits`: the other lists keep their real count.) */
       const wcLies = () => {
         rmSync(path.join(sb.bin, 'awk'), { force: true });
-        writeFileSync(path.join(sb.bin, 'awk'), `#!/bin/sh\ncase "$*" in *'print NR'*) echo 99; exit 0 ;; esac\nexec ${which('awk')} "$@"\n`);
+        writeFileSync(path.join(sb.bin, 'awk'), `#!/bin/sh\ncase "$*" in *'print NR'*commits*) echo 99; exit 0 ;; esac\nexec ${which('awk')} "$@"\n`);
         chmodSync(path.join(sb.bin, 'awk'), 0o755);
       };
       const stub = "gl() { echo '6:02PM INF 1 commits scanned.' >&2; return 0; }";
@@ -1114,8 +1162,11 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
         return r.stdout + r.stderr;
       };
       it('scan_history: a list that is missing, or is not a file, is rc=2 with a reason, never "no findings"', () => {
-        assert.match(history('/nonexistent/list'), /rc=2/);
-        assert.match(history(`"${sb.dir}"`), /rc=2/);
+        for (const list of ['/nonexistent/list', `"${sb.dir}"`]) {
+          const out = history(list);
+          assert.match(out, /rc=2/, out);
+          assert.ok(out.includes('err=could not run (the list of commits cannot be read)'), out); // (the same reason for both)
+        }
       });
       it('scan_history: a list that cannot be opened by the loop is rc=2 (the check and the loop can disagree)', () => {
         const list = path.join(sb.dir, 'one-commit');
@@ -1123,12 +1174,14 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
         // the list is checked, then the loop's own redirect fails: simulated by a function that removes the file after the check
         const out = history(`"${list}"`, `wc_lines() { wc_v=1; rm -f "${list}"; }\nneutral_adds_text() { return 1; }\n${stub}`);
         assert.match(out, /rc=2/, out);
+        assert.ok(out.includes('err=could not run (the list of commits was not read to the end)'), out);
       });
       it('scan_history: a list whose last line has no line break is rc=2 (the unread last entry is counted), never rc=0', () => {
         const list = path.join(sb.dir, 'unterminated');
         writeFileSync(list, 'a'.repeat(40) + '\n' + 'b'.repeat(40));
         const out = history(`"${list}"`, `neutral_adds_text() { return 1; }\n${stub}`);
         assert.match(out, /rc=2/, out);
+        assert.ok(out.includes('err=could not run (the list of commits was not read to the end)'), out);
       });
       it('the shared count of a list counts an unterminated last line too (wc_lines)', () => {
         const list = path.join(sb.dir, 'cnt');
@@ -1143,21 +1196,24 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
         writeFileSync(list, 'a'.repeat(40) + '\nb'.repeat(1) + '\n');
         const out = history(`"${list}"`, `wc_lines() { wc_v=5; }\nneutral_adds_text() { return 1; }\n${stub}`);
         assert.match(out, /rc=2/, out);
+        assert.ok(out.includes('err=could not run (the list of commits was not read to the end)'), out);
       });
       it('the gate: a count of lines that does not match what scan_history processed is exit 2, not a clean scan', () => {
         wcLies();
-        stops(runGate(sb, ['--mode', 'general', '--all']), 2, 'push-gate: ');
+        stops(runGate(sb, ['--mode', 'general', '--all']), 2, 'push-gate: step gitleaks could not run (the list of commits was not read to the end)');
       });
       it('the old-step wrapper: the same is exit 2', () => {
         wcLies();
         const w = wrap('git');
         assert.equal(w.status, 2, w.out);
+        said(w, 'gitleaks git: could not run (the list of commits was not read to the end)');
       });
       it('scan_attribution and scan_bad_email: an input path that cannot be read is exit 2, never "no finding" (review round 24, AE1)', () => {
         for (const fn of ['scan_attribution', 'scan_bad_email']) {
           const script = `scan_name=t\n. "${scanRules}"\n${fn} /nonexistent/input < /dev/null\necho "rc=$?"\n`;
           const r = spawnSync('/bin/sh', ['-c', script, scanRules], { cwd: sb.repo, encoding: 'utf8', env: sb.env() });
           assert.equal(r.status, 2, `${fn}: ${r.stdout}${r.stderr}`);
+          said(r, 'scan: could not read a result');
           assert.ok(!r.stdout.includes('rc='), r.stdout);
         }
       });
@@ -1165,6 +1221,7 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
         for (const input of [path.join(sb.dir, 'missing.txt'), sb.dir]) {
           const r = spawnSync('/bin/sh', [scanPr, input], { cwd: sb.repo, encoding: 'utf8', env: sb.env() });
           assert.equal(r.status, 2, r.stdout + r.stderr);
+          said(r, 'scan-pr-text: cannot read the input');
           assert.ok(!/clean/.test(r.stdout), r.stdout);
         }
       });
@@ -1174,13 +1231,18 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
         const script = `scan_name=t\n. "${scanRules}"\nscan_filter "${inp}" /nonexistent/dir/out -E x\necho "rc=$?"\n`;
         const r = spawnSync('/bin/sh', ['-c', script, scanRules], { cwd: sb.repo, encoding: 'utf8', env: sb.env() });
         assert.equal(r.status, 2, r.stdout + r.stderr);
+        // dash ends the shell itself when the redirect of the `:` builtin fails ("cannot create"); other shells run scan_io_failed
+        assert.match(r.stdout + r.stderr, /cannot create|scan: could not read a result/, r.stdout + r.stderr);
         assert.ok(!r.stdout.includes('rc='), r.stdout);
       });
       it('scan_attribution: a first stage whose redirect fails is exit 2, not "no attribution line"', () => {
-        const script = `scan_name=t\n. "${scanRules}"\nmkdir "$scan_dir/attr.1"\nprintf 'Co-Authored-By: someone\\n' > "$scan_dir/in"\nscan_attribution < "$scan_dir/in"\necho "rc=$?"\n`;
+        // a READABLE input path, so that the function gets past the input check and reaches the stage whose output cannot be made (a directory in its place)
+        const script = `scan_name=t\n. "${scanRules}"\nmkdir "$scan_dir/attr.1"\nprintf 'Co-Authored-By: someone\\n' > "$scan_dir/in"\nscan_attribution "$scan_dir/in"\necho "rc=$?"\n`;
         const r = spawnSync('/bin/sh', ['-c', script, scanRules], { cwd: sb.repo, encoding: 'utf8', env: sb.env() });
         assert.equal(r.status, 2, r.stdout + r.stderr);
-        assert.ok(!r.stdout.includes('rc=1'), r.stdout);
+        // dash ends the shell itself when the redirect of the `:` builtin fails ("cannot create"); other shells run scan_io_failed
+        assert.match(r.stdout + r.stderr, /cannot create|scan: could not read a result/, r.stdout + r.stderr);
+        assert.ok(!r.stdout.includes('rc='), r.stdout);
       });
     });
     describe('one trap per script, holding the cleanup and the exit guard (review round 19, X2)', () => {
@@ -1203,7 +1265,8 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
       shimFail('grep', '-qiE -f');
       const p = spawnSync('/bin/sh', [scanPublic], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ SCAN_WORDS_FILE: sb.words }) });
       assert.equal(p.status, 2, p.stdout + p.stderr);
-      assert.ok((p.stdout + p.stderr).includes('scan-public: ERROR'), p.stdout + p.stderr);
+      said(p, 'scan: grep failed (exit 2)');
+      said(p, 'scan-public: ERROR');
     });
   });
 }
@@ -1856,6 +1919,7 @@ describe('gitleaks-public.sh git: a history that cannot be read is exit 2, never
     gitIn(d, 'commit', '-q', '-m', 'x');
     const r = wrapIn(d);
     assert.equal(r.status, 2, r.out);
+    said(r, 'gitleaks git: could not run (exit 2)'); // (the wrapper does not print the reason of the shared setup check: the same line for a shallow clone)
     assert.ok(!r.out.includes('gitleaks git: ok'), r.out);
   });
 
@@ -1866,6 +1930,7 @@ describe('gitleaks-public.sh git: a history that cannot be read is exit 2, never
     git({ ...sb, cwd: sb.dir }, 'clone', '-q', '--depth', '1', `file://${sb.repo}`, d);
     const r = wrapIn(d);
     assert.equal(r.status, 2, r.out);
+    said(r, 'gitleaks git: could not run (exit 2)');
     assert.ok(!r.out.includes('gitleaks git: ok'), r.out);
   });
 
@@ -1875,6 +1940,7 @@ describe('gitleaks-public.sh git: a history that cannot be read is exit 2, never
     rmSync(path.join(sb.repo, '.git/objects', first.slice(0, 2), first.slice(2)), { force: true });
     const r = wrapIn(sb.repo);
     assert.equal(r.status, 2, r.out);
+    said(r, 'gitleaks git: could not run (exit 2)');
     assert.ok(!r.out.includes('gitleaks git: ok'), r.out);
   });
 
@@ -1937,6 +2003,7 @@ describe('gitleaks-public.sh dir: a failing archive step is exit 2 (review round
     chmodSync(f, 0o755);
     const r = spawnSync('/bin/sh', [path.join(scripts, 'gitleaks-public.sh'), 'dir', sb.repo], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ GL_BIN: f }) });
     assert.equal(r.status, 2, r.stdout + r.stderr);
+    said(r, 'gitleaks dir: could not run (exit 2)');
     assert.ok(!(r.stdout + r.stderr).includes('gitleaks dir: ok'), r.stdout + r.stderr);
   });
 });
@@ -1981,9 +2048,11 @@ describe('the scans stop for a repository they cannot read, instead of scanning 
     run(dirSha256, 'commit', '-q', '-m', 'x');
     const g = spawnSync('/bin/sh', [gate, '--mode', 'words', '--all'], { cwd: dirSha256, encoding: 'utf8', env: sb.env(words()) });
     assert.equal(g.status, 2, g.stdout + g.stderr);
+    said(g, 'push-gate: this repository does not use SHA-1 object names');
     assert.ok(!(g.stdout + g.stderr).includes('push-gate: passed'));
     const rg = spawnSync('/bin/sh', [rangeScript, path.join(sb.dir, 'origin.git')], { cwd: dirSha256, encoding: 'utf8', env: sb.env() });
     assert.equal(rg.status, 2, rg.stdout + rg.stderr);
+    said(rg, 'push-range: this repository does not use SHA-1 object names');
   });
 });
 }

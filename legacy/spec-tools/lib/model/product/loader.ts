@@ -15,6 +15,7 @@ import type { Finding } from '../../kernel/finding.js';
 import { SpecReporter } from '../parse-common.js';
 import { parseSafeFrontmatter } from '../safe-frontmatter.js';
 import { isFile, PRODUCT_DECL_FILE } from '../../io/paths.js';
+import { parseProductImplemented, type ProductImplemented } from './implemented.js';
 import { parseProductRoots, parseProductUses } from './parse-product.js';
 import type { ProductRootsModel } from './types.js';
 import type { ProductUses } from './uses.js';
@@ -31,6 +32,11 @@ export interface LoadProductRootsResult {
    * 宣言が無い・根か `uses` のどちらかが読めなかったときは null(根も null になる)。
    */
   readonly uses: ProductUses | null;
+  /**
+   * 製品が宣言した実装の範囲(`implemented`)。キーが無い・値が壊れている・宣言が読めないときは `{ declared: false }`(全部が範囲)。
+   * 根と `uses` の読み取りとは独立で、壊れていても根と `uses` は読めたまま返る。
+   */
+  readonly implemented: ProductImplemented;
   /** 構築中に検出した P0 違反。 */
   readonly findings: readonly Finding[];
 }
@@ -46,7 +52,7 @@ export interface LoadProductRootsResult {
  */
 export function loadProductRoots(repoRoot: string): LoadProductRootsResult {
   const file = path.join(repoRoot, PRODUCT_DECL_FILE);
-  if (!isFile(file)) return { model: { available: false, roots: null }, uses: null, findings: [] };
+  if (!isFile(file)) return { model: { available: false, roots: null }, uses: null, implemented: { declared: false }, findings: [] };
 
   const reporter = new SpecReporter(PRODUCT_DECL_FILE);
   const source = readText(file, reporter);
@@ -55,10 +61,13 @@ export function loadProductRoots(repoRoot: string): LoadProductRootsResult {
   const parsedUses = data === null ? null : parseProductUses(data, reporter);
   // **根と採用の宣言は 1 組で読む。** `uses` に既定値を置かない(推定しない)ので、どちらかが読めない宣言は
   // 「何も採っていない」ではなく「宣言が読めない」である。根だけ生かすと、採用が不明のまま検査が走る。
+  const parsedImplemented: ProductImplemented = data === null ? { declared: false } : parseProductImplemented(data, reporter);
   const complete = parsedRoots !== null && parsedUses !== null;
   return {
     model: { available: true, roots: complete ? parsedRoots : null },
     uses: complete ? parsedUses : null,
+    // 根か `uses` が読めない宣言は「宣言が読めない」で、範囲も宣言なし(全部)に戻す(読めた一部だけで検査を外さない)。
+    implemented: complete ? parsedImplemented : { declared: false },
     findings: reporter.findings().map(rebrand),
   };
 }

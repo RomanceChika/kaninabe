@@ -302,6 +302,7 @@ describe('check-review-record.sh: a stage output that is cut short is exit 2, wh
     return { ...r, calls };
   };
   let runs = 0;
+  const refused = Object.fromEntries(SWEPT.map((t) => [t, 0]));
   const started = Date.now();
   for (const tool of SWEPT) {
     for (const [what, body, truth] of BODIES) {
@@ -315,6 +316,7 @@ describe('check-review-record.sh: a stage output that is cut short is exit 2, wh
             const r = run(tool, n, k, body);
             const label = `${tool} call ${n} of ${base.calls}, last ${k} line(s) dropped`;
             if (r.status === 2) {
+              refused[tool] += 1;
               assert.ok(r.out.includes('could not run'), `${label}: ${r.out}`);
               assert.ok(!r.out.includes('matches the head') && !r.out.includes('review record: FAILED'), `${label}: ${r.out}`);
             } else {
@@ -326,6 +328,10 @@ describe('check-review-record.sh: a stage output that is cut short is exit 2, wh
       });
     }
   }
-  it('(guard) the sweep ran', () => { assert.ok(runs > 100, `only ${runs} shimmed runs`); console.log(`sweep: ${runs} shimmed runs in ${Date.now() - started} ms`); });
+  it('(guard) the sweep ran, and for every tool at least one cut was refused (a shim that cuts nothing would pass everything)', () => {
+    assert.ok(runs > 100, `only ${runs} shimmed runs`);
+    for (const tool of SWEPT) assert.ok(refused[tool] >= 1, `no cut of ${tool} gave exit 2: the shim does not cut`);
+    console.log(`sweep: ${runs} shimmed runs in ${Date.now() - started} ms, refused ${JSON.stringify(refused)}`);
+  });
 });
 

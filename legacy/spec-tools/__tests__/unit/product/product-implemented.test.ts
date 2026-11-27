@@ -97,7 +97,8 @@ describe('implemented を読む', () => {
     ['改行なしの空白(U+00A0)を含む要素', ['implemented:', '  - "room\\u00A0create"'], 'implemented[0]'],
     ['先頭が全角の空白の要素', ['implemented:', '  - "\\u3000room-create-action"'], 'implemented[0]'],
     ['制御文字(タブ)を含む要素', ['implemented:', '  - "room\\tcreate"'], 'implemented[0]'],
-    ['制御文字(改行)を含む要素', ['implemented:', '  - "room\\ncreate"'], 'implemented[0]'],
+    // 改行はフロントマターの読み込み(YAML の置けない文字の関門)が先に落とす。要素の書き方より手前なので、指すのは文字(U+000A)で、要素の位置ではない。
+    ['制御文字(改行)を含む要素', ['implemented:', '  - "room\\ncreate"'], 'U+000A'],
     ['重複', ['implemented:', '  - room-create-action', '  - room-create-action'], 'implemented[1]'],
   ])('%sは P0 が指し、範囲は「全部」として扱う(根と uses は読めたまま)', (_label, yaml, pointer) => {
     const loaded = loadProductRoots(repoWith(yaml));

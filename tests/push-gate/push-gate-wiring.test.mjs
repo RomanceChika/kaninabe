@@ -1033,15 +1033,28 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
       shimFail('git', 'ls-tree');
       stops(runGate(sb, ['--mode', 'general', '--all']), 2, 'push-gate: step workflows could not run (could not list the files of HEAD)');
     });
-    describe('the tree of HEAD is read as a synthetic root commit: a step of it that fails is exit 2, never a clean tree line', () => {
-      // The contract of the tree step: it builds the commit with `git commit-tree`, lists the tree with `ls-tree -r -z`, and reads
-      // the content of each file with `cat-file blob`. A shim fails exactly that command; the others keep working.
-      for (const [label, needle] of [['commit-tree (making the root commit)', 'commit-tree'], ['ls-tree -r -z (listing the files of the tree)', 'ls-tree -r -z'], ['cat-file blob (reading a file of the tree)', 'cat-file blob']]) {
-        it(`a ${label} that fails stops the gate (2)`, () => {
-          shimFail('git', needle);
-          const r = runGate(sb, ['--mode', 'general', '--all']);
+    describe('the tree of HEAD is read as a synthetic root commit: a failing step of it is exit 2 with a message of its own, never a clean tree line', () => {
+      // The range is empty (`--base HEAD`), so only the tree step runs. The shim is the real git except for the commands that
+      // build, list or read the tree, whatever their other arguments: any `commit-tree`; any `ls-tree` with `-z`; any `cat-file`
+      // that is not `cat-file commit` (the commit texts are read with that). So `cat-file --batch`, `ls-tree -z -r` and the like
+      // are caught as well as the spelling the implementation happens to use.
+      const BODIES = {
+        'commit-tree': 'case " $* " in *commit-tree*) exit 2 ;; esac',
+        'ls-tree with -z': 'case " $* " in *ls-tree*" -z "*) exit 2 ;; esac',
+        'a cat-file that is not cat-file commit': 'case " $* " in *" cat-file commit "*) ;; *" cat-file "*) exit 2 ;; esac',
+      };
+      const shimTree = (variant) => {
+        rmSync(path.join(sb.bin, 'git'), { force: true });
+        writeFileSync(path.join(sb.bin, 'git'), `#!/bin/sh\n${BODIES[variant]}\nexec ${which('git')} "$@"\n`);
+        chmodSync(path.join(sb.bin, 'git'), 0o755);
+      };
+      for (const variant of ['commit-tree', 'ls-tree with -z', 'a cat-file that is not cat-file commit']) {
+        it(`${variant} that fails stops the gate (2) with "tree of HEAD could not be read"`, () => {
+          shimTree(variant);
+          const r = runGate(sb, ['--mode', 'general', '--base', 'HEAD']);
           assert.equal(r.status, 2, r.out);
-          assert.ok(!r.out.includes('push-gate: passed') && !r.out.includes('step gitleaks: ok'), r.out);
+          assert.ok(r.out.includes('tree of HEAD could not be read'), r.out);
+          assert.ok(!r.out.includes('push-gate: passed') && !r.out.includes('step gitleaks: ok') && !r.out.includes('skipped'), r.out);
           assert.ok(!/tree of HEAD[^\n]*(ok|clean)/i.test(r.out), `a clean tree line was printed: ${r.out}`);
         });
       }

@@ -1,0 +1,5 @@
+keys	scripts/push-gate.gitleaks.toml	8d94336deeab403efc1f403286a857309ef8a95d	the vendored rule for short-lived cloud API keys is itself a pattern shaped like such a key; the file holds no secret
+mail	docs/package-lock.json	sha256:b0373516d594ddd199b25c3655332b354837e065c5cc232f5043189897900ca7	the address of a package maintainer, as published in the npm lockfile (a generated file)
+mail	framework/adapters/log-axiom/src/__tests__/axiom-sink.test.ts	sha256:fdcd7acf897737fa7d1c1f9e696c51b2fc280c4c64b5d4767c49d7f21aa5f044	a test string: credentials written into a URL (user and host), not a mailbox
+mail	legacy/spec-tools/__tests__/unit/deps/lockfile-pins.test.ts	sha256:12a67fb5451e50dab29f7769fd577d47fbe02c0a57cbf209aee2d1ed043a21fc	a test string: a user name in a registry URL, not a mailbox
+mail	legacy/spec-tools/__tests__/unit/targets/supabase/config/h5-auth-config.test.ts	sha256:bada91a66ae900b9334e230d1e8576c7e325fe6f689064b9a74d223430219f82	a test string: a dotted configuration key, not a mailbox

@@ -14,8 +14,10 @@
 #                           stops if the commits it would scan are another list
 #   --head <sha>            the commit that is being pushed (the hook passes it); the gate stops if HEAD is another commit
 #   --all                   every commit reachable from HEAD
-# Steps: (1) gitleaks over those commits; (2) scripts/scan-public.sh over the same commits; (3) every workflow file of
-# HEAD (.github/workflows) must parse and pass actionlint. An empty range passes (1) and (2), and (3) still runs.
+# Steps: (1) every workflow file of HEAD (.github/workflows) must parse and pass actionlint; (2) gitleaks over those commits, over their
+# texts, and over the tree of HEAD (read as one synthetic root commit); (3) files that cannot be read as text are red unless
+# scripts/scan-exclusions.tsv names them; (4) scripts/scan-public.sh over the same commits. An empty range passes (2) for the commits
+# and (4), but the tree of HEAD is still read in (2) and (3), and (1) still runs.
 # Fail closed: a missing gitleaks or actionlint, a missing word list in words mode, and any step that errors (as opposed
 # to finding something) stop the gate. Exit 0 = passed, 1 = a step found something, 2 = the gate could not run.
 # Output is limited to step names, counts, commit short ids, file paths and line numbers. It never prints a matched word,
@@ -79,6 +81,13 @@ cgit() { clean GIT_DIR="$repo_gitdir" git "$@"; }
 # (A gitleaks report is read with x_count in neutral-git.sh: every line is the "x" that the template writes for one finding;
 # a result that cannot be read is "could not read the result", never "no findings".)
 
+# The one exclusion list, read from the gate's own scripts directory (never from the tree being scanned, never from the environment).
+# A list that is missing or does not fit is exit 2, whatever else is true; `keys` and `binary` entries are used below, `mail` entries by scan-public.
+excl_read "$here/scan-exclusions.tsv" "$tmp/excl" || die "$ex_err"
+excl_kind "$tmp/excl" keys "$tmp/excl.keys" || die "scan-exclusions.tsv could not be read"
+excl_kind "$tmp/excl" binary "$tmp/excl.binary" || die "scan-exclusions.tsv could not be read"
+hist_keys=$tmp/excl.keys
+
 if [ "$mode" = words ]; then
   if [ -n "${SCAN_WORDS_FILE:-}" ] && [ -f "$SCAN_WORDS_FILE" ] && [ -r "$SCAN_WORDS_FILE" ] && [ -s "$SCAN_WORDS_FILE" ]; then :
   else die "words mode needs the word list (SCAN_WORDS_FILE is unset, empty or unreadable)"; fi
@@ -124,113 +133,11 @@ if [ -n "$want_list" ] && [ "$(range_list_id "$head_sha" "$tmp/commits")" != "$w
   die "the commits to scan are not the list the range id was computed from"
 fi
 # The files of HEAD, exactly as committed (see neutral-git.sh: git archive would honour export-ignore and export-subst
-# attributes of the tree). Both the tree scan and the workflow check read this export.
+# attributes of the tree). Only the workflow check reads this export.
 neutral_export "$head_sha" "$tmp/head" || die "could not export HEAD"
 failed=
 
-# Step 1: gitleaks, three ways: the history, each commit message, and the tree of HEAD exported cleanly (not the working tree).
-# The history is read by `gitleaks git`, ONE COMMIT AT A TIME, each commit checked on its own (scan_history in neutral-git.sh:
-# gitleaks cuts large input into chunks and can lose a secret at a chunk boundary, so a stream of the whole range is not used).
-# Findings exit 99 (so that gitleaks' own errors, which exit 1, are told apart from findings); anything else is "could not run",
-# and so is an error line in gitleaks' log with exit 0 or 99. The reports are templates that write an x per finding: the output
-# holds counts, nothing from the tool's own text.
-# Nothing in the scanned tree may change what is read: the configuration is the fixed file next to this script (not
-# .gitleaks.toml of the tree, not GITLEAKS_CONFIG / GITLEAKS_CONFIG_TOML); the ignore file is a path that does not exist
-# (not the default ".", where a .gitleaksignore of the tree would be read); inline `gitleaks:allow` comments are not
-# honoured; no baseline is given. The environment is not the caller's (see clean above), so no GITLEAKS_* variable gets in.
-# gitleaks also reads <source>/.gitleaksignore whatever --gitleaks-ignore-path says, so the history is scanned with the neutral
-# git directory as the source (it holds no such file) and the exported tree has every .gitleaksignore taken out before the scan.
-gl_config="$here/gitleaks-gate.toml"
-[ -f "$gl_config" ] && [ -r "$gl_config" ] || die "gitleaks-gate.toml is missing next to the gate"
-# gl <subcommand> <arguments...>: gitleaks with the fixed flags; every path is one quoted argument (spaces are fine).
-gl() {
-  gl_sub=$1; shift
-  clean GIT_ATTR_SOURCE="$ng_empty" gitleaks "$gl_sub" --no-banner --redact --exit-code 99 --log-level "${gl_level:-error}" --config "$gl_config" \
-    --gitleaks-ignore-path "$tmp/no-gitleaksignore" --ignore-gitleaks-allow "$@"
-}
-# gl_check <exit status>: what a run's status and log mean. An error line in the log is "could not run" even with exit 0 or 99.
-gl_check() {
-  case $1 in
-    0 | 99) if log_has_error "$tmp/gl.log"; then die "step gitleaks could not run (it logged an error)"; fi ;;
-    *) die "step gitleaks could not run (exit $1)" ;;
-  esac
-}
-tick; t_step=$now_t
-if [ "$count" -gt 0 ]; then
-  printf '%s\n' '{{ range . }}x{{ "\n" }}{{ end }}' > "$tmp/gitleaks.tpl"
-  scan_history "$tmp/commits" "$tmp/gitleaks.tpl" "$tmp" || die "step gitleaks $hist_err"
-  patch_n=$hist_n
-  if [ "$patch_n" -gt 0 ]; then echo x > "$tmp/gl.found"; fi
-  # The text of each commit is the raw commit object (neutral_commit_text: every header, the whole message, NUL as a line break), scanned in batches:
-  # gitleaks cuts stdin into chunks of about 100 KB (measured: no key lost up to 98 000 bytes, some lost from 140 000), and a key
-  # that straddles a boundary can be lost. A batch is texts put together (each followed by a separator line break that counts toward the bound) while it stays at or under
-  # 64 KiB, so no boundary can occur in a batch; a single text over 64 KiB stops the gate. Findings are counted, not named.
-  msg_n=0; : > "$tmp/batch"; batch_bytes=0
-  flush_batch() {
-    [ "$batch_bytes" -gt 0 ] || return 0
-    rm -f "$tmp/msgs.out"; rc=0
-    gl stdin --report-format template --report-template "$tmp/gitleaks.tpl" --report-path "$tmp/msgs.out" < "$tmp/batch" > /dev/null 2> "$tmp/gl.log" || rc=$?
-    gl_check "$rc"
-    if [ "$rc" = 99 ]; then
-      msg_x=$(x_count "$tmp/msgs.out") || die "step gitleaks could not read the result"
-      msg_n=$((msg_n + msg_x)); echo x > "$tmp/gl.found"
-    fi
-    : > "$tmp/batch"; batch_bytes=0
-  }
-  commit_ids=$(cat "$tmp/commits") || die "step gitleaks could not run (could not read the list of commits)"
-  c_seen=0
-  for c in $commit_ids; do
-    c_seen=$((c_seen + 1))
-    neutral_commit_text "$c" "$tmp/text" || die "step gitleaks could not run (could not read the text of a commit)"
-    # every text is followed by one separator line break, whatever the text ends with, and that byte counts toward the bound
-    wc_num -c "$tmp/text" || die "step gitleaks could not run (could not measure the text of a commit)"
-    text_bytes=$((wc_v + 1))
-    [ "$text_bytes" -le 65536 ] || die "step gitleaks could not run (the text of a commit is over 64 KiB)"
-    if [ $((batch_bytes + text_bytes)) -gt 65536 ]; then flush_batch; fi
-    { cat "$tmp/text" && printf '\n'; } >> "$tmp/batch" || die "step gitleaks could not run (could not make a batch)"
-    batch_bytes=$((batch_bytes + text_bytes))
-  done
-  [ "$c_seen" = "$count" ] || die "step gitleaks could not run (the commit texts read are not all the commits of the list)"
-  flush_batch
-  find "$tmp/head" -name .gitleaksignore -exec rm -f {} + || die "step gitleaks could not run (could not prepare the export of HEAD)"
-  rm -f "$tmp/gitleaks.out"; rc=0; tree_n=0
-  ( cd "$tmp/head" && gl dir --report-format template --report-template "$tmp/gitleaks.tpl" --report-path "$tmp/gitleaks.out" . ) > /dev/null 2> "$tmp/gl.log" || rc=$?
-  gl_check "$rc"
-  if [ "$rc" = 99 ]; then
-    tree_n=$(x_count "$tmp/gitleaks.out") || die "step gitleaks could not read the result"
-    echo x > "$tmp/gl.found"
-  fi
-  if [ -f "$tmp/gl.found" ]; then
-    nm=$msg_n
-    elapsed "$t_step"; echo "push-gate: step gitleaks: FAILED ($patch_n finding(s) in patches, $nm in commit messages, $tree_n in the tree of HEAD) in $el s"
-    echo "  (details: run gitleaks yourself on your own copy, for example: gitleaks git . and gitleaks dir .)"
-    failed="gitleaks"
-  else
-    elapsed "$t_step"; echo "push-gate: step gitleaks: ok ($count commit(s)) in $el s"
-  fi
-else
-  echo "push-gate: step gitleaks: skipped (no commits in range)"
-fi
-
-# Step 2: the repository's own scan over the same commits (scan-public prints places, never matched text).
-tick; t_step=$now_t
-if [ "$count" -gt 0 ]; then
-  rc=0
-  # shellcheck disable=SC2086
-  # In CI (a public log) scan-public gives counts only (SCAN_QUIET); anywhere else it names places.
-  if [ -n "${CI:-}" ]; then SCAN_QUIET=1; export SCAN_QUIET; fi
-  clean GIT_DIR="$repo_gitdir" ${SCAN_WORDS_FILE:+"SCAN_WORDS_FILE=$SCAN_WORDS_FILE"} ${SCAN_OWNER:+"SCAN_OWNER=$SCAN_OWNER"} ${GITHUB_REPOSITORY_OWNER:+"GITHUB_REPOSITORY_OWNER=$GITHUB_REPOSITORY_OWNER"} ${SCAN_QUIET:+"SCAN_QUIET=$SCAN_QUIET"} sh "$here/scan-public.sh" --revs $revs > "$tmp/scan-public.out" 2>&1 || rc=$?
-  cat "$tmp/scan-public.out"
-  case $rc in
-    0) elapsed "$t_step"; echo "push-gate: step scan-public: ok ($count commit(s)) in $el s" ;;
-    1) elapsed "$t_step"; echo "push-gate: step scan-public: FAILED in $el s"; failed="${failed:+$failed, }scan-public" ;;
-    *) die "step scan-public could not run (exit $rc)" ;;
-  esac
-else
-  echo "push-gate: step scan-public: skipped (no commits in range)"
-fi
-
-# Step 3: the workflow files of HEAD (the committed tree, not the working tree), each parsed and checked by actionlint.
+# Step 1: the workflow files of HEAD (the committed tree, not the working tree), each parsed and checked by actionlint.
 # actionlint's own config file is not extracted, so that a file in the tree cannot switch checks off; the shellcheck
 # and pyflakes integrations are off so that the result does not depend on what else is installed. The report template
 # holds only the file, the line and the kind of problem, never the message or the source line.
@@ -273,6 +180,164 @@ else
       failed="${failed:+$failed, }workflows" ;;
     *) die "step workflows could not run (exit $rc)" ;;
   esac
+fi
+
+# Step 2: gitleaks, three ways: the history, each commit message, and the tree of HEAD read as one synthetic root commit (below).
+# The history is read by `gitleaks git`, ONE COMMIT AT A TIME, each commit checked on its own (scan_history in neutral-git.sh:
+# gitleaks cuts large input into chunks and can lose a secret at a chunk boundary, so a stream of the whole range is not used).
+# Findings exit 99 (so that gitleaks' own errors, which exit 1, are told apart from findings); anything else is "could not run",
+# and so is an error line in gitleaks' log with exit 0 or 99. The reports are templates that write an x per finding: the output
+# holds counts, nothing from the tool's own text.
+# Nothing in the scanned tree may change what is read: the configuration is the fixed file next to this script (not
+# .gitleaks.toml of the tree, not GITLEAKS_CONFIG / GITLEAKS_CONFIG_TOML); the ignore file is a path that does not exist
+# (not the default ".", where a .gitleaksignore of the tree would be read); inline `gitleaks:allow` comments are not
+# honoured; no baseline is given. The environment is not the caller's (see clean above), so no GITLEAKS_* variable gets in.
+# gitleaks also reads <source>/.gitleaksignore whatever --gitleaks-ignore-path says, so every run reads the neutral git directory as the
+# source (it holds no such file): the tree of HEAD is not exported for gitleaks and not read by `gitleaks dir`.
+gl_config="$here/push-gate.gitleaks.toml"
+[ -f "$gl_config" ] && [ -r "$gl_config" ] || die "push-gate.gitleaks.toml is missing next to the gate"
+# gl <subcommand> <arguments...>: gitleaks with the fixed flags; every path is one quoted argument (spaces are fine).
+gl() {
+  gl_sub=$1; shift
+  clean GIT_ATTR_SOURCE="$ng_empty" gitleaks "$gl_sub" --no-banner --redact --exit-code 99 --log-level "${gl_level:-error}" --config "$gl_config" \
+    --gitleaks-ignore-path "$tmp/no-gitleaksignore" --ignore-gitleaks-allow "$@"
+}
+# gl_check <exit status>: what a run's status and log mean. An error line in the log is "could not run" even with exit 0 or 99.
+gl_check() {
+  case $1 in
+    0 | 99) if log_has_error "$tmp/gl.log"; then die "step gitleaks could not run (it logged an error)"; fi ;;
+    *) die "step gitleaks could not run (exit $1)" ;;
+  esac
+}
+# (gl_secs adds up the time of the gitleaks parts: the unreadable-files step runs between them and has its own time)
+printf '%s\n' '{{ range . }}x{{ "\n" }}{{ end }}' > "$tmp/gitleaks.tpl"
+# a history run reports where each finding is (`x TAB commit TAB file`), so that a `keys` entry can silence one blob at one path (keys_count)
+printf '%s\n' '{{ range . }}x{{ "\t" }}{{ .Commit }}{{ "\t" }}{{ .File }}{{ "\n" }}{{ end }}' > "$tmp/gitleaks.tpl.f"
+patch_n=0; msg_n=0; tree_n=0; gl_secs=0
+tick; t_seg=$now_t
+if [ "$count" -gt 0 ]; then
+  scan_history "$tmp/commits" "$tmp/gitleaks.tpl.f" "$tmp" || die "step gitleaks $hist_err"
+  patch_n=$hist_n
+  if [ "$patch_n" -gt 0 ]; then echo x > "$tmp/gl.found"; fi
+  # The text of each commit is the raw commit object (neutral_commit_text: every header, the whole message, NUL as a line break), scanned in batches:
+  # gitleaks cuts stdin into chunks of about 100 KB (measured: no key lost up to 98 000 bytes, some lost from 140 000), and a key
+  # that straddles a boundary can be lost. A batch is texts put together (each followed by a separator line break that counts toward the bound) while it stays at or under
+  # 64 KiB, so no boundary can occur in a batch; a single text over 64 KiB stops the gate. Findings are counted, not named.
+  msg_n=0; : > "$tmp/batch"; batch_bytes=0
+  flush_batch() {
+    [ "$batch_bytes" -gt 0 ] || return 0
+    rm -f "$tmp/msgs.out"; rc=0
+    gl stdin --report-format template --report-template "$tmp/gitleaks.tpl" --report-path "$tmp/msgs.out" < "$tmp/batch" > /dev/null 2> "$tmp/gl.log" || rc=$?
+    gl_check "$rc"
+    if [ "$rc" = 99 ]; then
+      msg_x=$(x_count "$tmp/msgs.out") || die "step gitleaks could not read the result"
+      msg_n=$((msg_n + msg_x)); echo x > "$tmp/gl.found"
+    fi
+    : > "$tmp/batch"; batch_bytes=0
+  }
+  commit_ids=$(cat "$tmp/commits") || die "step gitleaks could not run (could not read the list of commits)"
+  c_seen=0
+  for c in $commit_ids; do
+    c_seen=$((c_seen + 1))
+    neutral_commit_text "$c" "$tmp/text" || die "step gitleaks could not run (could not read the text of a commit)"
+    # every text is followed by one separator line break, whatever the text ends with, and that byte counts toward the bound
+    wc_num -c "$tmp/text" || die "step gitleaks could not run (could not measure the text of a commit)"
+    text_bytes=$((wc_v + 1))
+    [ "$text_bytes" -le 65536 ] || die "step gitleaks could not run (the text of a commit is over 64 KiB)"
+    if [ $((batch_bytes + text_bytes)) -gt 65536 ]; then flush_batch; fi
+    { cat "$tmp/text" && printf '\n'; } >> "$tmp/batch" || die "step gitleaks could not run (could not make a batch)"
+    batch_bytes=$((batch_bytes + text_bytes))
+  done
+  [ "$c_seen" = "$count" ] || die "step gitleaks could not run (the commit texts read are not all the commits of the list)"
+  flush_batch
+fi
+elapsed "$t_seg"; gl_secs=$el
+
+# Step 3: files that cannot be read as text (a NUL byte anywhere, or not valid UTF-8): the scans read text, so such a file is not scanned.
+# Red unless a `binary` entry of the list names that blob at that path. The files that the commits of the range add or change, and every file
+# of the tree of HEAD, are counted separately. A file name that cannot be written in the list (a control character, a byte that is not UTF-8)
+# is exit 2. Counts only are printed.
+tick; t_step=$now_t
+tree_id=$(neutral_git rev-parse --verify -q "$head_sha^{tree}" 2>/dev/null) || die "step unreadable could not run (the tree of HEAD could not be read)"
+: > "$tmp/ur.range" || die "step unreadable could not run (could not make a result file)"
+: > "$tmp/ur.tree" || die "step unreadable could not run (could not make a result file)"
+: > "$tmp/ur.range.names" || die "step unreadable could not run (could not make a result file)"
+: > "$tmp/ur.tree.names" || die "step unreadable could not run (could not make a result file)"
+c_seen=0
+while IFS= read -r c; do
+  c_seen=$((c_seen + 1))
+  [ -n "$c" ] || continue
+  rc=0; unr_commit_cands "$c" "$tmp/ur.range" || rc=$?
+  case $rc in
+    0) ;;
+    3) die "step unreadable could not run (a file name has a control character or a byte that is not UTF-8, so it cannot be named in scan-exclusions.tsv)" ;;
+    *) die "step unreadable could not run (could not read the files of a commit)" ;;
+  esac
+done < "$tmp/commits"
+[ "$c_seen" = "$count" ] || die "step unreadable could not run (the list of commits was not read to the end)"
+rc=0; unr_tree_cands "$tree_id" "$tmp/ur.tree" || rc=$?
+case $rc in
+  0) ;;
+  3) die "step unreadable could not run (a file name in the tree of HEAD has a control character or a byte that is not UTF-8, so it cannot be named in scan-exclusions.tsv)" ;;
+  *) die "step unreadable could not run (the tree of HEAD could not be read)" ;;
+esac
+cat "$tmp/ur.range.names" "$tmp/ur.tree.names" > "$tmp/ur.names" || die "step unreadable could not run (could not join the lists of names)"
+rc=0; unr_names_utf8 "$tmp/ur.names" || rc=$?
+case $rc in
+  0) ;;
+  3) die "step unreadable could not run (a file name has a byte that is not UTF-8, so it cannot be named in scan-exclusions.tsv)" ;;
+  *) die "step unreadable could not run (the file names could not be checked)" ;;
+esac
+cat "$tmp/ur.range" "$tmp/ur.tree" > "$tmp/ur.all" || die "step unreadable could not run (could not join the lists of files)"
+unr_bad_blobs "$tmp/ur.all" "$tmp/ur.bad" || die "step unreadable could not run (the files could not be checked for text)"
+unr_count "$tmp/ur.bad" "$tmp/excl.binary" "$tmp/ur.range" || die "step unreadable could not run (could not count the files)"; ur_range_n=$ur_n
+unr_count "$tmp/ur.bad" "$tmp/excl.binary" "$tmp/ur.tree" || die "step unreadable could not run (could not count the files)"; ur_tree_n=$ur_n
+elapsed "$t_step"
+if [ "$ur_range_n" -gt 0 ] || [ "$ur_tree_n" -gt 0 ]; then
+  ur_parts=
+  if [ "$ur_range_n" -gt 0 ]; then ur_parts="unreadable file(s): $ur_range_n"; fi
+  if [ "$ur_tree_n" -gt 0 ]; then ur_parts="${ur_parts:+$ur_parts, }unreadable file(s) in the tree of HEAD: $ur_tree_n"; fi
+  echo "push-gate: step unreadable: FAILED ($ur_parts) in $el s"
+  echo "  (a file with a NUL byte, or one that is not UTF-8, is not read by the scans: change it, or name its blob in scripts/scan-exclusions.tsv with kind binary)"
+  failed="${failed:+$failed, }unreadable"
+else
+  echo "push-gate: step unreadable: ok in $el s"
+fi
+
+# The tree of HEAD is scanned as one synthetic root commit of the neutral repository (a fixed identity and date), by the same
+# one-commit-at-a-time run as the history, so that a file is read the way a commit's patch is (no default allowlist, no chunking of a
+# long line). `gitleaks dir` is not used. It runs for an empty range too; a failing step of it is exit 2, never a clean tree.
+tick; t_seg=$now_t
+neutral_commit_tree "$tree_id" || die "step gitleaks could not run (the tree of HEAD could not be read)"
+printf '%s\n' "$nct_id" > "$tmp/tree.commits" || die "step gitleaks could not run (the tree of HEAD could not be read)"
+scan_history "$tmp/tree.commits" "$tmp/gitleaks.tpl.f" "$tmp" || die "step gitleaks $hist_err"
+tree_n=$hist_n
+if [ "$tree_n" -gt 0 ]; then echo x > "$tmp/gl.found"; fi
+elapsed "$t_seg"; gl_secs=$((gl_secs + el)); el=$gl_secs
+if [ -f "$tmp/gl.found" ]; then
+  echo "push-gate: step gitleaks: FAILED ($patch_n finding(s) in patches, $msg_n in commit messages, $tree_n in the tree of HEAD) in $el s"
+  echo "  (details: run gitleaks yourself on your own copy, for example: gitleaks git .)"
+  failed="${failed:+$failed, }gitleaks"
+else
+  echo "push-gate: step gitleaks: ok ($count commit(s)) in $el s"
+fi
+
+# Step 4: the repository's own scan over the same commits (scan-public prints places, never matched text).
+tick; t_step=$now_t
+if [ "$count" -gt 0 ]; then
+  rc=0
+  # shellcheck disable=SC2086
+  # In CI (a public log) scan-public gives counts only (SCAN_QUIET); anywhere else it names places.
+  if [ -n "${CI:-}" ]; then SCAN_QUIET=1; export SCAN_QUIET; fi
+  clean GIT_DIR="$repo_gitdir" ${SCAN_WORDS_FILE:+"SCAN_WORDS_FILE=$SCAN_WORDS_FILE"} ${SCAN_OWNER:+"SCAN_OWNER=$SCAN_OWNER"} ${GITHUB_REPOSITORY_OWNER:+"GITHUB_REPOSITORY_OWNER=$GITHUB_REPOSITORY_OWNER"} ${SCAN_QUIET:+"SCAN_QUIET=$SCAN_QUIET"} sh "$here/scan-public.sh" --revs $revs > "$tmp/scan-public.out" 2>&1 || rc=$?
+  cat "$tmp/scan-public.out"
+  case $rc in
+    0) elapsed "$t_step"; echo "push-gate: step scan-public: ok ($count commit(s)) in $el s" ;;
+    1) elapsed "$t_step"; echo "push-gate: step scan-public: FAILED in $el s"; failed="${failed:+$failed, }scan-public" ;;
+    *) die "step scan-public could not run (exit $rc)" ;;
+  esac
+else
+  echo "push-gate: step scan-public: skipped (no commits in range)"
 fi
 
 if [ -n "$failed" ]; then elapsed "$t_gate"; echo "push-gate: FAILED ($failed) in $el s"; verdict_exit=1; exit 1; fi

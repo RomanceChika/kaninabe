@@ -1,5 +1,5 @@
 /**
- * VERDICT tests of the push-before gate: scripts/push-gate.sh and scripts/gitleaks-public.sh with the REAL gitleaks and
+ * VERDICT tests of the push-before gate: scripts/push-gate.sh (and the scans it runs) with the REAL gitleaks and
  * actionlint. The wiring tests (push-gate-wiring.test.mjs) use fakes, which cannot show that the gate's questions get
  * the right answers from a real scanner; these can. They do not skip: without the two tools on PATH they fail with one
  * line saying how to install them (scripts/setup-dev-env.sh).
@@ -8,75 +8,24 @@
  * is committed here (push protection and the secret scan of this repository stay quiet on this file).
  */
 import assert from 'node:assert/strict';
-import { afterEach, beforeEach, describe, it } from 'node:test';
+import { describe, it } from 'node:test';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const gate = fileURLToPath(new URL('../../scripts/push-gate.sh', import.meta.url));
-const CORE = [
-  'sh', 'git', 'grep', 'sed', 'cut', 'wc', 'tr', 'head', 'tail', 'mktemp', 'rm', 'cat', 'dirname', 'basename', 'tar',
-  'awk', 'sort', 'uniq', 'mkdir', 'ls', 'find', 'env', 'true', 'false', 'cp', 'mv', 'date', 'less',
-];
+import { harness, realGate, real, missing, reason, find, fakeKey, tab, blobId, patchesOf, treeOf } from './harness.mjs';
 
-const find = (name, searchPath) => {
-  const r = spawnSync('/bin/sh', ['-c', `command -v ${name}`], { encoding: 'utf8', env: { PATH: searchPath } });
-  const p = r.stdout.trim();
-  return r.status === 0 && p.startsWith('/') ? p : null;
-};
-const SYSTEM = '/usr/bin:/bin:/usr/local/bin';
-const real = {
-  gitleaks: find('gitleaks', process.env.PATH ?? ''),
-  actionlint: find('actionlint', process.env.PATH ?? ''),
-};
-const missing = Object.entries(real).filter(([, p]) => !p).map(([n]) => n);
-const reason = `${missing.join(' and ')} not installed: run "sh scripts/setup-dev-env.sh --bin-dir <dir on PATH>" first`;
-
-/** A fake key built from pieces; every call gives a new one. */
-const fakeKey = () => ['gh', 'p_'].join('') + randomBytes(60).toString('base64').replace(/[^A-Za-z0-9]/g, '').slice(0, 36).padEnd(36, 'x');
-
+// The harness registers the beforeEach / afterEach of this file. The paths live in the variables below (a test may move into another
+// repository by assigning `repo`); the harness reads and sets them through these two functions.
+let gate = realGate;
+let gscripts;
 let dir;
 let repo;
 let bin;
-const env = (extra = {}) => ({
-  PATH: bin, HOME: path.join(dir, 'home'), GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', LC_ALL: 'C', ...extra,
-});
-const git = (...args) => {
-  const r = spawnSync('git', ['-c', 'user.name=Tester', '-c', 'user.email=tester@users.noreply.github.com', '-c', 'commit.gpgsign=false', ...args],
-    { cwd: repo, encoding: 'utf8', env: { ...process.env, ...env(), PATH: process.env.PATH } });
-  if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
-  return r.stdout.trim();
-};
-const commit = (files, message = 'change') => {
-  for (const [name, text] of Object.entries(files)) {
-    mkdirSync(path.dirname(path.join(repo, name)), { recursive: true });
-    writeFileSync(path.join(repo, name), text);
-    git('add', name);
-  }
-  git('commit', '-q', '-m', message);
-  return git('rev-parse', 'HEAD');
-};
-const gateRun = (args, extra = {}) => {
-  const r = spawnSync('/bin/sh', [gate, ...args], { cwd: repo, encoding: 'utf8', env: env(extra) });
-  return { status: r.status, out: r.stdout + r.stderr };
-};
-const general = (...range) => gateRun(['--mode', 'general', ...(range.length ? range : ['--all'])]);
-
-beforeEach(() => {
-  if (missing.length) throw new Error(reason);
-  dir = mkdtempSync(path.join(tmpdir(), 'push-gate-real-'));
-  bin = path.join(dir, 'bin');
-  mkdirSync(bin);
-  for (const n of CORE) { const p = find(n, SYSTEM); if (p) symlinkSync(p, path.join(bin, n)); }
-  for (const [n, p] of Object.entries(real)) symlinkSync(p, path.join(bin, n));
-  repo = path.join(dir, 'repo');
-  mkdirSync(repo);
-  git('init', '-q', '-b', 'main');
-});
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
+const H = harness({ get: () => ({ dir, repo, bin, gate, gscripts }), set: (v) => { ({ dir, repo, bin, gate, gscripts } = v); } });
+const { env, git, commit, gateRun, general, gateWith, commitRaw } = H;
 
 /** The gate stopped on gitleaks (exit 1) and printed neither the key nor the text around it. */
 function stoppedOnKey(r, key) {
@@ -554,6 +503,211 @@ describe('push-gate.sh with the real tools: state INSIDE the repository cannot c
   });
 });
 
+describe('push-gate.sh with the real tools: nothing in the scanned tree can change what the gate reads or prints (review round 8)', () => {
+  it('a finding prints counts, and no rule name, path, commit id, author, line or key', () => {
+    const key = fakeKey();
+    mkdirSync(path.join(repo, 'secret-dir'));
+    git('config', 'user.name', 'Some Author');
+    commit({ 'secret-dir/conf.txt': `note token = ${key} trailing words\n` }, 'a message');
+    const r = general();
+    assert.equal(r.status, 1, r.out);
+    assert.ok(/\(1 finding\(s\) in patches, 0 in commit messages, 1 in the tree of HEAD\)/.test(r.out), r.out);
+    assert.ok(!/rule /.test(r.out) && !r.out.includes('github-pat'), r.out);
+    for (const leak of ['secret-dir', 'conf.txt', 'Some Author', 'trailing words', key.slice(4, 20), git('rev-parse', 'HEAD').slice(0, 8)]) {
+      assert.ok(!r.out.includes(leak), `"${leak}" reached the output: ${r.out}`);
+    }
+  });
+
+  it('an in-tree config that names its own rule is not read: its rule id does not reach the output', () => {
+    const marker = 'attackerchosenword';
+    commit({
+      '.gitleaks.toml': `[[rules]]\nid = "zz-attacker-chosen-text"\ndescription = "x"\nregex = '''${marker}'''\n`,
+      'x.txt': `${marker}\n`,
+    });
+    const r = general();
+    assert.equal(r.status, 0, r.out);
+    assert.ok(!r.out.includes('zz-attacker'), r.out);
+  });
+
+  it('an in-tree .gitleaksignore and an inline gitleaks:allow do not silence a key', () => {
+    const key = fakeKey();
+    commit({ 'conf.txt': `token = ${key}\n`, '.gitleaksignore': 'conf.txt:github-pat:1\n' });
+    let r = general();
+    assert.equal(r.status, 1, `.gitleaksignore: ${r.out}`);
+    assert.equal(patchesOf(r), 1, r.out);
+    assert.equal(treeOf(r), 1, r.out);
+    commit({ 'conf.txt': `token = ${key} # gitleaks:allow\n` });
+    r = general();
+    assert.equal(r.status, 1, `inline allow: ${r.out}`);
+    assert.equal(patchesOf(r), 2, r.out);
+    assert.equal(treeOf(r), 1, r.out);
+  });
+
+  it('state inside the repository (local config, info/attributes, a replace ref) does not silence the scan', () => {
+    const key = fakeKey();
+    commit({ 'a.txt': 'one\n' });
+    const c2 = commit({ 'conf.txt': `token = ${key}\n` });
+    git('rm', '-q', 'conf.txt');
+    git('commit', '-q', '-m', 'remove');
+    mkdirSync(path.join(repo, '.git', 'info'), { recursive: true });
+    writeFileSync(path.join(repo, '.git', 'info', 'attributes'), '* -diff\n');
+    git('config', 'color.diff', 'always');
+    git('replace', c2, git('rev-parse', 'HEAD~2'));
+    const r = general();
+    assert.equal(r.status, 1, r.out);
+    assert.equal(patchesOf(r), 1, r.out);
+  });
+});
+
+describe('push-gate.sh with the real tools: history is read by gitleaks git, one commit at a time, with each commit checked (review rounds 10 and 11)', () => {
+  const patches = (r) => Number(/\((\d+) finding\(s\) in patches/.exec(r.out)?.[1] ?? NaN);
+  const pem = () => {
+    const body = randomBytes(420).toString('base64').match(/.{1,64}/g).join('\n');
+    return `${['-----BEGIN', 'RSA PRIVATE', 'KEY-----'].join(' ')}\n${body}\n${['-----END', 'RSA PRIVATE', 'KEY-----'].join(' ')}\n`;
+  };
+  /** About `bytes` of ordinary short lines with `k` distinct keys spread through them, one per line like `qqqqq = <key>`. */
+  const manyKeys = (bytes, k) => {
+    const line = `${'lorem ipsum dolor sit amet '.repeat(10).slice(0, 99)}\n`;
+    const every = Math.floor(bytes / line.length / k);
+    let out = '';
+    for (let i = 0; i < k; i += 1) out += `${line.repeat(every)}qqqqq = ${fakeKey()}\n`;
+    return out;
+  };
+
+  it('a multi-line private key added across lines is found', () => {
+    commit({ 'a.txt': 'one\n' });
+    commit({ 'id.pem': pem() });
+    const r = general();
+    assert.equal(r.status, 1, r.out);
+    assert.ok(patches(r) >= 1, r.out);
+  });
+
+  it('CRLF line endings and a path with spaces do not hide a key', () => {
+    commit({ 'a.txt': 'one\n' });
+    commit({ 'my dir/a b.txt': `token = ${fakeKey()}\r\nsecond\r\n` });
+    const r = general();
+    assert.equal(r.status, 1, r.out);
+    assert.ok(patches(r) >= 1, r.out);
+  });
+
+  it('a key on a removed line, and a key in a file the commit removes, do not block a commit that only removes them', () => {
+    const key = fakeKey();
+    commit({ 'a.txt': 'one\n' });
+    const added = commit({ 'conf.txt': `keep\ntoken = ${key}\n`, 'gone.txt': `token = ${fakeKey()}\n` });
+    git('rm', '-q', 'gone.txt');
+    commit({ 'conf.txt': 'keep\n' }, 'remove the line');
+    const r = gateRun(['--mode', 'general', '--base', added]);
+    assert.equal(r.status, 0, r.out);
+    stoppedOnKey(general(), key); // the commits that added them are still found when they are in the range
+  });
+
+  it('REGRESSION (round 11): several MB of ordinary lines with K distinct keys spread through them: exactly K findings in patches', () => {
+    const k = 3000;
+    commit({ 'a.txt': 'one\n' });
+    commit({ 'big.txt': manyKeys(4.8 * 1024 * 1024, k) });
+    const r = general();
+    assert.equal(r.status, 1, r.out);
+    assert.equal(patches(r), k, `a key that straddles a chunk was lost: ${r.out}`);
+  });
+
+  it('REGRESSION (round 11): one 3 MB line with K keys in it: exactly K findings in patches', () => {
+    const k = 3000;
+    const piece = 'lorem ipsum '.repeat(Math.floor((3 * 1024 * 1024) / k / 12));
+    let line = '';
+    for (let i = 0; i < k; i += 1) line += `${piece}qqqqq = ${fakeKey()} `;
+    commit({ 'a.txt': 'one\n' });
+    commit({ 'long.txt': `${line}\n` });
+    const r = general();
+    assert.equal(r.status, 1, r.out);
+    assert.equal(patches(r), k, `a key in the long line was lost: ${r.out}`);
+  });
+
+  it('REGRESSION (round 11): the same big file added in one commit and deleted in the next is still found in the commit that added it', () => {
+    const k = 3000;
+    commit({ 'a.txt': 'one\n' });
+    commit({ 'big.txt': manyKeys(4.8 * 1024 * 1024, k) });
+    git('rm', '-q', 'big.txt');
+    git('commit', '-q', '-m', 'delete it');
+    const r = general();
+    assert.equal(r.status, 1, r.out);
+    assert.equal(patches(r), k, r.out);
+  });
+
+  it('a key in a path that gitleaks\' own default allowlist skips (node_modules, a .svg) is found in history (known-gaps 16(a))', () => {
+    commit({ 'a.txt': 'one\n' });
+    commit({ 'node_modules/pkg/cfg.txt': `token = ${fakeKey()}\n`, 'logo.svg': `<!-- token = ${fakeKey()} -->\n` });
+    const r = general();
+    assert.equal(r.status, 1, r.out);
+    assert.equal(patches(r), 2, `a key under node_modules/ or in a .svg was not found: ${r.out}`);
+  });
+
+  it('every kind of commit passes the per-commit check "text added is 1 scanned, otherwise 0 or 1" (a mismatch is exit 2)', () => {
+    const sub = path.join(dir, 'submodule-source');
+    mkdirSync(sub);
+    const inSub = (...a) => spawnSync('git', ['-c', 'user.name=Tester', '-c', 'user.email=tester@users.noreply.github.com', '-c', 'commit.gpgsign=false', ...a], { cwd: sub, encoding: 'utf8', env: { ...process.env, ...env(), PATH: process.env.PATH } });
+    inSub('init', '-q', '-b', 'main');
+    writeFileSync(path.join(sub, 'f'), 'x\n');
+    inSub('add', 'f');
+    inSub('commit', '-q', '-m', 'i');
+    const c = (message, ...a) => git('commit', '-q', '-m', message, ...a);
+    commit({ 'a.txt': 'a\n' }, 'text add');
+    commit({ 'a.txt': 'b\n' }, 'line replace');
+    commit({ 'l.txt': 'x\ny\nz\n' }, 'pre-l'); commit({ 'l.txt': 'x\n' }, 'lines removed from an existing file');
+    git('rm', '-q', 'a.txt'); c('file deleted');
+    symlinkSync('target', path.join(repo, 'link')); git('add', 'link'); c('symlink add');
+    commit({ 'blank.txt': '\n' }, 'blank line add');
+    c('empty', '--allow-empty');
+    commit({ 'd.txt': 'x\ny\n' }, 'pre'); git('rm', '-q', 'd.txt'); c('deletion only');
+    commit({ 'm.sh': 'x\n' }, 'pre2'); spawnSync('chmod', ['+x', path.join(repo, 'm.sh')]); git('add', 'm.sh'); c('mode only');
+    commitRaw({ 'bin.dat': Buffer.from([0, 1, 2]) }, 'binary add');
+    commit({ 'zero.txt': '' }, '0-byte file');
+    commit({ 'r1.txt': Array.from({ length: 50 }, (_, i) => i).join('\n') + '\n' }, 'pre3'); git('mv', 'r1.txt', 'r2.txt'); c('rename only');
+    commit({ 'r3.txt': Array.from({ length: 50 }, (_, i) => i).join('\n') + '\n' }, 'pre4'); git('mv', 'r3.txt', 'r4.txt');
+    writeFileSync(path.join(repo, 'r4.txt'), `${Array.from({ length: 50 }, (_, i) => i).join('\n')}\nmore\n`); git('add', 'r4.txt'); c('rename with edit');
+    git('checkout', '-q', '-b', 'side'); commit({ 's.txt': 's\n' }, 'side'); git('checkout', '-q', 'main'); commit({ 'mm.txt': 'm\n' }, 'main change');
+    git('merge', '-q', '--no-ff', 'side', '-m', 'clean merge');
+    git('checkout', '-q', '-b', 's2'); commit({ 'conf.txt': 'one\n' }, 's2'); git('checkout', '-q', 'main'); commit({ 'conf.txt': 'two\n' }, 'm2');
+    spawnSync('git', ['merge', 's2'], { cwd: repo, env: { ...process.env, ...env(), PATH: process.env.PATH } });
+    writeFileSync(path.join(repo, 'conf.txt'), 'resolved\n'); git('add', 'conf.txt'); c('merge with a resolution');
+    for (const b of ['o1', 'o2', 'o3']) { git('checkout', '-q', '-b', b, 'main'); commit({ [`${b}.txt`]: `${b}\n` }, b); }
+    git('checkout', '-q', 'main');
+    spawnSync('git', ['-c', 'user.name=Tester', '-c', 'user.email=tester@users.noreply.github.com', 'merge', 'o1', 'o2', 'o3', '-m', 'octopus'], { cwd: repo, env: { ...process.env, ...env(), PATH: process.env.PATH } });
+    git('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', sub, 'subm'); c('submodule add');
+    git('checkout', '-q', '--orphan', 'rootb'); git('rm', '-rqf', '.'); commit({ 'r.txt': 'r\n' }, 'a second root commit');
+    git('checkout', '-q', 'main');
+    // (the one binary file of the matrix is named in the list: a binary file is otherwise red)
+    const r = gateWith(tab('binary', 'bin.dat', blobId(Buffer.from([0, 1, 2])), 'a made-up binary file of the commit-kinds matrix'));
+    assert.equal(r.status, 0, r.out);
+    assert.ok(r.out.includes('push-gate: passed'), r.out);
+  });
+
+  it('a key only in the resolution of a merge is found', () => {
+    commit({ 'a.txt': 'one\n' });
+    git('checkout', '-q', '-b', 's1'); commit({ 'conf.txt': 'one\n' }, 's1'); git('checkout', '-q', 'main'); commit({ 'conf.txt': 'two\n' }, 'm1');
+    spawnSync('git', ['merge', 's1'], { cwd: repo, env: { ...process.env, ...env(), PATH: process.env.PATH } });
+    writeFileSync(path.join(repo, 'conf.txt'), `token = ${fakeKey()}\n`); git('add', 'conf.txt'); git('commit', '-q', '-m', 'resolve');
+    const r = general();
+    assert.equal(r.status, 1, r.out);
+    assert.ok(patches(r) >= 1, r.out);
+  });
+
+  it('a key carried only by an octopus merge is found, even when the next commit removes it', () => {
+    commit({ 'a.txt': 'one\n' });
+    for (const b of ['o1', 'o2', 'o3']) { git('checkout', '-q', '-b', b, 'main'); commit({ [`${b}.txt`]: `${b}\n` }, b); }
+    git('checkout', '-q', 'main');
+    const merged = spawnSync('git', ['-c', 'user.name=Tester', '-c', 'user.email=tester@users.noreply.github.com', 'merge', '--no-commit', 'o1', 'o2', 'o3'], { cwd: repo, encoding: 'utf8', env: { ...process.env, ...env(), PATH: process.env.PATH } });
+    assert.equal(merged.status, 0, merged.stdout + merged.stderr);
+    writeFileSync(path.join(repo, 'carried.txt'), `token = ${fakeKey()}\n`); git('add', 'carried.txt'); git('commit', '-q', '-m', 'octopus');
+    assert.equal(git('rev-list', '--parents', '-1', 'HEAD').split(' ').length, 4, 'the commit has three parents and its own id');
+    git('rm', '-q', 'carried.txt'); git('commit', '-q', '-m', 'remove it');
+    const r = general();
+    assert.equal(r.status, 1, r.out);
+    assert.ok(patches(r) >= 1, r.out);
+  });
+});
+
+// ---- the old key-scan wrapper (scripts/gitleaks-public.sh), kept until the follow-up that removes it (known-gaps 15) ----
+
 describe('scripts/gitleaks-public.sh: what the old CI steps print, with the real gitleaks', () => {
   const run = (args, cwd = repo) => {
     const r = spawnSync('/bin/sh', [path.join(path.dirname(gate), 'gitleaks-public.sh'), ...args], { cwd, encoding: 'utf8', env: env() });
@@ -653,157 +807,5 @@ describe('real gitleaks: the old-step wrapper reads a history with a merge and a
     const w = spawnSync('/bin/sh', [path.join(path.dirname(gate), 'gitleaks-public.sh'), 'git', '.'], { cwd: repo, encoding: 'utf8', env: env() });
     assert.equal(w.status, 0, w.stdout + w.stderr);
     assert.ok((w.stdout + w.stderr).includes('gitleaks git: ok'), w.stdout + w.stderr);
-  });
-});
-
-describe('push-gate.sh with the real tools: history is read by gitleaks git, one commit at a time, with each commit checked (review rounds 10 and 11)', () => {
-  const patches = (r) => Number(/\((\d+) finding\(s\) in patches/.exec(r.out)?.[1] ?? NaN);
-  const pem = () => {
-    const body = randomBytes(420).toString('base64').match(/.{1,64}/g).join('\n');
-    return `${['-----BEGIN', 'RSA PRIVATE', 'KEY-----'].join(' ')}\n${body}\n${['-----END', 'RSA PRIVATE', 'KEY-----'].join(' ')}\n`;
-  };
-  /** About `bytes` of ordinary short lines with `k` distinct keys spread through them, one per line like `qqqqq = <key>`. */
-  const manyKeys = (bytes, k) => {
-    const line = `${'lorem ipsum dolor sit amet '.repeat(10).slice(0, 99)}\n`;
-    const every = Math.floor(bytes / line.length / k);
-    let out = '';
-    for (let i = 0; i < k; i += 1) out += `${line.repeat(every)}qqqqq = ${fakeKey()}\n`;
-    return out;
-  };
-
-  it('a multi-line private key added across lines is found', () => {
-    commit({ 'a.txt': 'one\n' });
-    commit({ 'id.pem': pem() });
-    const r = general();
-    assert.equal(r.status, 1, r.out);
-    assert.ok(patches(r) >= 1, r.out);
-  });
-
-  it('CRLF line endings and a path with spaces do not hide a key', () => {
-    commit({ 'a.txt': 'one\n' });
-    commit({ 'my dir/a b.txt': `token = ${fakeKey()}\r\nsecond\r\n` });
-    const r = general();
-    assert.equal(r.status, 1, r.out);
-    assert.ok(patches(r) >= 1, r.out);
-  });
-
-  it('a key on a removed line, and a key in a file the commit removes, do not block a commit that only removes them', () => {
-    const key = fakeKey();
-    commit({ 'a.txt': 'one\n' });
-    const added = commit({ 'conf.txt': `keep\ntoken = ${key}\n`, 'gone.txt': `token = ${fakeKey()}\n` });
-    git('rm', '-q', 'gone.txt');
-    commit({ 'conf.txt': 'keep\n' }, 'remove the line');
-    const r = gateRun(['--mode', 'general', '--base', added]);
-    assert.equal(r.status, 0, r.out);
-    stoppedOnKey(general(), key); // the commits that added them are still found when they are in the range
-  });
-
-  it('REGRESSION (round 11): several MB of ordinary lines with K distinct keys spread through them: exactly K findings in patches', () => {
-    const k = 3000;
-    commit({ 'a.txt': 'one\n' });
-    commit({ 'big.txt': manyKeys(4.8 * 1024 * 1024, k) });
-    const r = general();
-    assert.equal(r.status, 1, r.out);
-    assert.equal(patches(r), k, `a key that straddles a chunk was lost: ${r.out}`);
-  });
-
-  it('REGRESSION (round 11): one 3 MB line with K keys in it: exactly K findings in patches', () => {
-    const k = 3000;
-    const piece = 'lorem ipsum '.repeat(Math.floor((3 * 1024 * 1024) / k / 12));
-    let line = '';
-    for (let i = 0; i < k; i += 1) line += `${piece}qqqqq = ${fakeKey()} `;
-    commit({ 'a.txt': 'one\n' });
-    commit({ 'long.txt': `${line}\n` });
-    const r = general();
-    assert.equal(r.status, 1, r.out);
-    assert.equal(patches(r), k, `a key in the long line was lost: ${r.out}`);
-  });
-
-  it('REGRESSION (round 11): the same big file added in one commit and deleted in the next is still found in the commit that added it', () => {
-    const k = 3000;
-    commit({ 'a.txt': 'one\n' });
-    commit({ 'big.txt': manyKeys(4.8 * 1024 * 1024, k) });
-    git('rm', '-q', 'big.txt');
-    git('commit', '-q', '-m', 'delete it');
-    const r = general();
-    assert.equal(r.status, 1, r.out);
-    assert.equal(patches(r), k, r.out);
-  });
-
-  it('KNOWN GAP (scanner change): a key in a file on gitleaks\' default path allowlist (node_modules, a .svg) is not found in history (known-gaps 16(a))', () => {
-    commit({ 'a.txt': 'one\n' });
-    commit({ 'node_modules/pkg/cfg.txt': `token = ${fakeKey()}\n`, 'logo.svg': `<!-- token = ${fakeKey()} -->\n` });
-    const r = general();
-    assert.equal(r.status, 0, r.out);
-  });
-
-  it('KNOWN GAP (scanner change): a key in a file that git treats as binary is not in the patch, so it is not found (as before)', () => {
-    commit({ 'a.txt': 'one\n' });
-    commit({ 'blob.bin': Buffer.concat([Buffer.from([0, 1, 2, 0]), Buffer.from(`token = ${fakeKey()}\n`)]).toString('latin1') });
-    const r = general();
-    assert.equal(r.status, 0, r.out);
-  });
-
-  it('every kind of commit passes the per-commit check "text added is 1 scanned, otherwise 0 or 1" (a mismatch is exit 2)', () => {
-    const sub = path.join(dir, 'submodule-source');
-    mkdirSync(sub);
-    const inSub = (...a) => spawnSync('git', ['-c', 'user.name=Tester', '-c', 'user.email=tester@users.noreply.github.com', '-c', 'commit.gpgsign=false', ...a], { cwd: sub, encoding: 'utf8', env: { ...process.env, ...env(), PATH: process.env.PATH } });
-    inSub('init', '-q', '-b', 'main');
-    writeFileSync(path.join(sub, 'f'), 'x\n');
-    inSub('add', 'f');
-    inSub('commit', '-q', '-m', 'i');
-    const c = (message, ...a) => git('commit', '-q', '-m', message, ...a);
-    commit({ 'a.txt': 'a\n' }, 'text add');
-    commit({ 'a.txt': 'b\n' }, 'line replace');
-    commit({ 'l.txt': 'x\ny\nz\n' }, 'pre-l'); commit({ 'l.txt': 'x\n' }, 'lines removed from an existing file');
-    git('rm', '-q', 'a.txt'); c('file deleted');
-    symlinkSync('target', path.join(repo, 'link')); git('add', 'link'); c('symlink add');
-    commit({ 'blank.txt': '\n' }, 'blank line add');
-    c('empty', '--allow-empty');
-    commit({ 'd.txt': 'x\ny\n' }, 'pre'); git('rm', '-q', 'd.txt'); c('deletion only');
-    commit({ 'm.sh': 'x\n' }, 'pre2'); spawnSync('chmod', ['+x', path.join(repo, 'm.sh')]); git('add', 'm.sh'); c('mode only');
-    commit({ 'bin.dat': '\u0000\u0001\u0002' }, 'binary add');
-    commit({ 'zero.txt': '' }, '0-byte file');
-    commit({ 'r1.txt': Array.from({ length: 50 }, (_, i) => i).join('\n') + '\n' }, 'pre3'); git('mv', 'r1.txt', 'r2.txt'); c('rename only');
-    commit({ 'r3.txt': Array.from({ length: 50 }, (_, i) => i).join('\n') + '\n' }, 'pre4'); git('mv', 'r3.txt', 'r4.txt');
-    writeFileSync(path.join(repo, 'r4.txt'), `${Array.from({ length: 50 }, (_, i) => i).join('\n')}\nmore\n`); git('add', 'r4.txt'); c('rename with edit');
-    git('checkout', '-q', '-b', 'side'); commit({ 's.txt': 's\n' }, 'side'); git('checkout', '-q', 'main'); commit({ 'mm.txt': 'm\n' }, 'main change');
-    git('merge', '-q', '--no-ff', 'side', '-m', 'clean merge');
-    git('checkout', '-q', '-b', 's2'); commit({ 'conf.txt': 'one\n' }, 's2'); git('checkout', '-q', 'main'); commit({ 'conf.txt': 'two\n' }, 'm2');
-    spawnSync('git', ['merge', 's2'], { cwd: repo, env: { ...process.env, ...env(), PATH: process.env.PATH } });
-    writeFileSync(path.join(repo, 'conf.txt'), 'resolved\n'); git('add', 'conf.txt'); c('merge with a resolution');
-    for (const b of ['o1', 'o2', 'o3']) { git('checkout', '-q', '-b', b, 'main'); commit({ [`${b}.txt`]: `${b}\n` }, b); }
-    git('checkout', '-q', 'main');
-    spawnSync('git', ['-c', 'user.name=Tester', '-c', 'user.email=tester@users.noreply.github.com', 'merge', 'o1', 'o2', 'o3', '-m', 'octopus'], { cwd: repo, env: { ...process.env, ...env(), PATH: process.env.PATH } });
-    git('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', sub, 'subm'); c('submodule add');
-    git('checkout', '-q', '--orphan', 'rootb'); git('rm', '-rqf', '.'); commit({ 'r.txt': 'r\n' }, 'a second root commit');
-    git('checkout', '-q', 'main');
-    const r = general();
-    assert.equal(r.status, 0, r.out);
-    assert.ok(r.out.includes('push-gate: passed'), r.out);
-  });
-
-  it('a key only in the resolution of a merge is found', () => {
-    commit({ 'a.txt': 'one\n' });
-    git('checkout', '-q', '-b', 's1'); commit({ 'conf.txt': 'one\n' }, 's1'); git('checkout', '-q', 'main'); commit({ 'conf.txt': 'two\n' }, 'm1');
-    spawnSync('git', ['merge', 's1'], { cwd: repo, env: { ...process.env, ...env(), PATH: process.env.PATH } });
-    writeFileSync(path.join(repo, 'conf.txt'), `token = ${fakeKey()}\n`); git('add', 'conf.txt'); git('commit', '-q', '-m', 'resolve');
-    const r = general();
-    assert.equal(r.status, 1, r.out);
-    assert.ok(patches(r) >= 1, r.out);
-  });
-
-  it('a key carried only by an octopus merge is found, even when the next commit removes it', () => {
-    commit({ 'a.txt': 'one\n' });
-    for (const b of ['o1', 'o2', 'o3']) { git('checkout', '-q', '-b', b, 'main'); commit({ [`${b}.txt`]: `${b}\n` }, b); }
-    git('checkout', '-q', 'main');
-    const merged = spawnSync('git', ['-c', 'user.name=Tester', '-c', 'user.email=tester@users.noreply.github.com', 'merge', '--no-commit', 'o1', 'o2', 'o3'], { cwd: repo, encoding: 'utf8', env: { ...process.env, ...env(), PATH: process.env.PATH } });
-    assert.equal(merged.status, 0, merged.stdout + merged.stderr);
-    writeFileSync(path.join(repo, 'carried.txt'), `token = ${fakeKey()}\n`); git('add', 'carried.txt'); git('commit', '-q', '-m', 'octopus');
-    assert.equal(git('rev-list', '--parents', '-1', 'HEAD').split(' ').length, 4, 'the commit has three parents and its own id');
-    git('rm', '-q', 'carried.txt'); git('commit', '-q', '-m', 'remove it');
-    const r = general();
-    assert.equal(r.status, 1, r.out);
-    assert.ok(patches(r) >= 1, r.out);
   });
 });

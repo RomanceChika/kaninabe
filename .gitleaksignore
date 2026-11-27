@@ -1,0 +1,3 @@
+# Convenience for the pre-commit hook only (the push gate ignores this file): the vendored rule below is a pattern that is itself
+# shaped like a key. The gate silences it through scripts/scan-exclusions.tsv (a keys entry bound to the blob id).
+scripts/push-gate.gitleaks.toml:aws-amazon-bedrock-api-key-short-lived:179

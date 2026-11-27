@@ -396,7 +396,8 @@ describe('push-gate.sh: which commits are scanned', () => {
     assert.equal(r.status, 0, r.out);
     assert.ok(r.out.includes('(mode words, 0 commit(s))'), r.out);
     const calls = sb.calls();
-    assert.ok(!calls.some((l) => l.startsWith('gitleaks')), 'nothing to scan for secrets');
+    assert.equal(calls.filter((l) => l.startsWith('gitleaks git')).length, 1, 'only the tree of HEAD is scanned for secrets');
+    assert.ok(!calls.some((l) => l.startsWith('gitleaks stdin')), 'no commit text to scan');
     assert.ok(calls.some((l) => l.startsWith('actionlint')), 'the workflows are still checked');
     const bad = runGate(sb, ['--mode', 'words', '--base', 'HEAD'], { ...words(), SHIM_ACTIONLINT_EXIT: '1', SHIM_OUT_actionlint: '.github/workflows/ci.yml:3: [syntax-check]|' });
     stops(bad, 1, 'push-gate: step workflows: FAILED');
@@ -481,12 +482,13 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     const calls = sb.calls();
     const ids = git(sb, 'rev-list', 'HEAD').split('\n');
     const histories = calls.filter((l) => l.startsWith('gitleaks git'));
-    assert.equal(histories.length, ids.length, calls.join('\n'));
+    // one run per commit of the list, and one more for the tree of HEAD (read as a synthetic root commit, never by `gitleaks dir`)
+    assert.equal(histories.length, ids.length + 1, calls.join('\n'));
     for (const id of ids) {
       assert.equal(histories.filter((l) => l.includes(`--log-opts=-1 -m ${id} `)).length, 1, `no run for ${id}: ${histories.join('\n')}`);
     }
     assert.equal(calls.filter((l) => l.startsWith('gitleaks stdin')).length, 1, 'one batch for the texts of all the commits');
-        assert.ok(calls.some((l) => l.startsWith('gitleaks dir')), calls.join('\n'));
+    assert.equal(calls.filter((l) => l.startsWith('gitleaks dir')).length, 0, `the tree is read like a commit, not by gitleaks dir: ${calls.join('\n')}`);
   });
 
   it('only the commits of the range are read: not a commit before --base', () => {
@@ -495,8 +497,9 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     const r = runGate(sb, ['--mode', 'words', '--base', before], words());
     assert.equal(r.status, 0, r.out);
     const histories = sb.calls().filter((l) => l.startsWith('gitleaks git'));
-    assert.equal(histories.length, 1, histories.join('\n'));
-    assert.ok(histories[0].includes(git(sb, 'rev-parse', 'HEAD')) && !histories[0].includes(before), histories[0]);
+    assert.equal(histories.length, 2, `one run for the commit of the range and one for the tree of HEAD: ${histories.join('\n')}`);
+    assert.equal(histories.filter((l) => l.includes(`-m ${git(sb, 'rev-parse', 'HEAD')} `)).length, 1, histories.join('\n'));
+    assert.equal(histories.filter((l) => l.includes(before)).length, 0, histories.join('\n'));
   });
 
   it('prints the wall time of each step and the total in whole seconds, as numbers only (review round 12, C1a)', () => {
@@ -654,7 +657,9 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
       }
     });
 
-    it('a commit that adds no text may be 0 or 1, and nothing else', () => {
+    it('a commit that adds no text may be 0 or 1, and nothing else, when the tree of HEAD has no text either (and the tree must then still fit)', () => {
+      git(sb, 'rm', '-q', 'a.txt', 'b.txt');
+      git(sb, 'commit', '-q', '-m', 'delete');
       const before = git(sb, 'rev-parse', 'HEAD');
       git(sb, 'commit', '-q', '--allow-empty', '-m', 'empty');
       for (const scanned of ['0', '1']) {
@@ -666,9 +671,17 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
       }
     });
 
+    it('D2: the tree of HEAD is read as one commit and must be reported as 1 scanned when it has text: 0 stops the gate (2) even when the range adds no text', () => {
+      const before = git(sb, 'rev-parse', 'HEAD');
+      git(sb, 'commit', '-q', '--allow-empty', '-m', 'empty');
+      const r = runGate(sb, ['--mode', 'words', '--base', before], { ...words(), SHIM_SCANNED: '0' });
+      stops(r, 2, 'push-gate: step gitleaks could not confirm what it scanned');
+      assert.ok(!r.out.includes('push-gate: passed'), r.out);
+    });
+
     it('a deletion-only commit and a commit that adds an empty file add no text; a blank line and a symlink do', () => {
       const before = git(sb, 'rev-parse', 'HEAD');
-      git(sb, 'rm', '-q', 'a.txt');
+      git(sb, 'rm', '-q', 'a.txt', 'b.txt');
       git(sb, 'commit', '-q', '-m', 'delete');
       assert.equal(runGate(sb, ['--mode', 'words', '--base', before], { ...words(), SHIM_SCANNED: '0' }).status, 0);
       commit(sb, { 'empty.txt': '' });
@@ -696,9 +709,10 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     const r = runGate(sb, ['--mode', 'words', '--all'], { ...words(), GITLEAKS_CONFIG: '/nonexistent/allow.toml', GITLEAKS_CONFIG_TOML: 'x' });
     assert.equal(r.status, 0, r.out);
     const calls = sb.calls().filter((l) => l.startsWith('gitleaks '));
-    assert.equal(calls.length, 4, 'git x2, stdin x1 for the texts, dir');
+    assert.equal(calls.length, 4, 'git x2 (the commits), git x1 (the tree of HEAD), stdin x1 (the texts)');
+    assert.equal(calls.filter((l) => l.startsWith('gitleaks dir')).length, 0);
     for (const call of calls) {
-      assert.ok(call.includes('--config') && call.includes('gitleaks-gate.toml'), `no fixed config: ${call}`);
+      assert.ok(call.includes('--config') && call.includes('push-gate.gitleaks.toml') && !call.includes('gitleaks-public.toml'), `no fixed config, or the old check's: ${call}`);
       assert.ok(call.includes('--gitleaks-ignore-path'), `no ignore path: ${call}`);
       assert.ok(call.includes('--ignore-gitleaks-allow'), `inline allow honoured: ${call}`);
       assert.ok(call.endsWith('#env:unset:unset'), `the config environment variables reach gitleaks: ${call}`);
@@ -1040,12 +1054,57 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
       shimFail('git', 'ls-tree');
       stops(runGate(sb, ['--mode', 'general', '--all']), 2, 'push-gate: step workflows could not run (could not list the files of HEAD)');
     });
+    describe('the tree of HEAD is read as a synthetic root commit: a failing step of it is exit 2 with a message of its own, never a clean tree line', () => {
+      // The range is empty (`--base HEAD`), so only the tree step runs. The shim is the real git except for the commands that
+      // build, list or read the tree, whatever their other arguments: any `commit-tree`; any `ls-tree` with `-z`; any `cat-file`
+      // that is not `cat-file commit` (the commit texts are read with that). So `cat-file --batch`, `ls-tree -z -r` and the like
+      // are caught as well as the spelling the implementation happens to use.
+      const BODIES = {
+        'commit-tree': 'case " $* " in *commit-tree*) exit 2 ;; esac',
+        'ls-tree with -z': 'case " $* " in *ls-tree*" -z "*) exit 2 ;; esac',
+        'a cat-file that is not cat-file commit': 'case " $* " in *" cat-file commit "*) ;; *" cat-file "*) exit 2 ;; esac',
+      };
+      const shimTree = (variant) => {
+        rmSync(path.join(sb.bin, 'git'), { force: true });
+        writeFileSync(path.join(sb.bin, 'git'), `#!/bin/sh\n${BODIES[variant]}\nexec ${which('git')} "$@"\n`);
+        chmodSync(path.join(sb.bin, 'git'), 0o755);
+      };
+      for (const variant of ['commit-tree', 'ls-tree with -z', 'a cat-file that is not cat-file commit']) {
+        it(`${variant} that fails stops the gate (2) with "tree of HEAD could not be read"`, () => {
+          shimTree(variant);
+          const r = runGate(sb, ['--mode', 'general', '--base', 'HEAD']);
+          assert.equal(r.status, 2, r.out);
+          assert.ok(r.out.includes('tree of HEAD could not be read'), r.out);
+          assert.ok(!r.out.includes('push-gate: passed') && !r.out.includes('step gitleaks: ok') && !r.out.includes('skipped'), r.out);
+          assert.ok(!/tree of HEAD[^\n]*(ok|clean)/i.test(r.out), `a clean tree line was printed: ${r.out}`);
+        });
+      }
+    });
+    it('a shallow clone stops the gate (2): the history cannot be read to the end', () => {
+      const d = path.join(sb.dir, 'shallow');
+      git({ ...sb, cwd: sb.dir }, 'clone', '-q', '--depth', '1', `file://${sb.repo}`, d);
+      const r = spawnSync('/bin/sh', [gate, '--mode', 'general', '--all'], { cwd: d, encoding: 'utf8', env: sb.env() });
+      stops({ status: r.status, out: r.stdout + r.stderr }, 2, 'push-gate: this is a shallow clone, so the history cannot be read to the end');
+    });
+    it('a repository with no commit stops the gate (2) with "HEAD is not a commit", in every way of naming the range', () => {
+      const d = path.join(sb.dir, 'empty');
+      mkdirSync(d);
+      git({ ...sb, cwd: d }, 'init', '-q', '-b', 'main');
+      for (const range of [['--all'], ['--base', 'HEAD']]) {
+        const r = spawnSync('/bin/sh', [gate, '--mode', 'general', ...range], { cwd: d, encoding: 'utf8', env: sb.env() });
+        stops({ status: r.status, out: r.stdout + r.stderr }, 2, 'push-gate: HEAD is not a commit');
+      }
+    });
     it('W2: the tr of the text-added decision that fails stops the wrapper (the gate reads the same decision), it is not "nothing added"', () => {
       shimFail('tr', '\\000');
       const r = wrap('git');
       assert.equal(r.status, 2, r.out);
       said(r, 'gitleaks git: could not run (could not read the patch of a commit)');
       assert.ok(!r.out.includes('gitleaks git: ok'), r.out);
+    });
+    it('W2: the tr of the text-added decision that fails stops the gate, it is not "nothing added"', () => {
+      shimFail('tr', '\\000');
+      stops(runGate(sb, ['--mode', 'general', '--all']), 2, 'push-gate: step gitleaks could not run (could not read the patch of a commit)');
     });
     it('a cat that fails while the list of commits is read stops the gate and scan-public, never "no commits to scan"', () => {
       rmSync(path.join(sb.bin, 'cat'), { force: true });
@@ -1085,11 +1144,11 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
       assert.equal(p.status, 2, p.stdout + p.stderr);
       said(p, 'scan: could not read the hits');
     });
-    it('a command that fails with exit 1 under set -e is exit 2 in the gate and the wrapper (1 is "found something")', () => {
+    it('a command that fails with exit 1 under set -e is exit 2 in the gate (1 is "found something")', () => {
       shimFail('mkdir', '/home', 1);
       stops(runGate(sb, ['--mode', 'general', '--all']), 2, '');
-      rmSync(path.join(sb.bin, 'mkdir'), { force: true });
-      symlinkSync(which('mkdir'), path.join(sb.bin, 'mkdir'));
+    });
+    it('a command that fails with exit 1 under set -e is exit 2 in the wrapper (1 is "found something")', () => {
       shimFail('sort', '-u', 1);
       const r = wrap('git'); // (no message by design: the exit guard turns the stray exit 1 into 2, so the check is that no verdict was printed)
       assert.equal(r.status, 2, r.out);
@@ -1844,7 +1903,7 @@ describe('gitleaks-public.sh (the old CI steps): counts only, and an unreadable 
     const log = readFileSync(logfile, 'utf8');
     assert.ok(!log.includes('IGNOREFILE'), `an ignore file was in the scanned source: ${log}`);
     for (const line of log.split('\n').filter(Boolean)) {
-      assert.ok(line.includes('gitleaks-gate.toml') && line.includes('--ignore-gitleaks-allow') && line.includes('--gitleaks-ignore-path'), line);
+      assert.ok(line.includes('gitleaks-public.toml') && !line.includes('push-gate.gitleaks.toml') && line.includes('--ignore-gitleaks-allow') && line.includes('--gitleaks-ignore-path'), line);
     }
     const gits = log.split('\n').filter((l) => l.startsWith('git '));
     assert.equal(gits.length, git(sb, 'rev-list', 'HEAD').split('\n').length, `one history run per commit: ${log}`);
@@ -2110,3 +2169,41 @@ describe('setup-dev-env.sh', { skip: !supported && 'the pinned tools are for lin
   });
 });
 }
+
+// ---- the CI definition and the scripts directory after the scanner change (E1) ----
+
+describe('ci.yml keeps the old key-scan wrapper as a named exception, and no longer scans the pull request text (E1)', () => {
+  const read = (rel) => readFileSync(fileURLToPath(new URL(`../../${rel}`, import.meta.url)), 'utf8');
+  /** The lines of a workflow that are not comments. */
+  const code = (text) => text.split('\n').filter((l) => !/^\s*#/.test(l));
+  const ci = code(read('.github/workflows/ci.yml'));
+
+  // The named exception (old check, removed in the follow-up after the first green run on dev; development-flow.md "検査を入れ替えるとき",
+  // known-gaps 15): the one step "Scan the whole tree and the history" calls scripts/gitleaks-public.sh, in the two modes and nowhere else.
+  it('calls scripts/gitleaks-public.sh only in the step "Scan the whole tree and the history", in the modes dir and git (old check, removed in the follow-up after the first green run on dev)', () => {
+    assert.deepEqual(ci.filter((l) => l.includes('gitleaks-public.sh')).map((l) => l.trim()), [
+      'GL_BIN=./gitleaks sh scripts/gitleaks-public.sh dir .',
+      'GL_BIN=./gitleaks sh scripts/gitleaks-public.sh git .',
+    ]);
+    const i = ci.findIndex((l) => l.includes('- name: Scan the whole tree and the history'));
+    assert.ok(i >= 0, 'the step is there');
+    assert.ok(ci.slice(i + 1, i + 8).filter((l) => l.includes('gitleaks-public.sh')).length === 2, 'both calls are in that step');
+  });
+  it('does not call scripts/scan-pr-text.sh (pr-gate.yml scans the title and body)', () => {
+    assert.deepEqual(ci.filter((l) => l.includes('scan-pr-text.sh')), []);
+    assert.ok(code(read('.github/workflows/pr-gate.yml')).some((l) => l.includes('scan-pr-text.sh')), 'pr-gate.yml must keep scanning the title and body');
+  });
+  it('the pull_request trigger has no `edited` type', () => {
+    const start = ci.findIndex((l) => /^ {2}pull_request:\s*$/.test(l));
+    assert.ok(start >= 0, 'ci.yml has a pull_request trigger');
+    const block = [];
+    for (let i = start + 1; i < ci.length && /^ {4}/.test(ci[i]); i += 1) block.push(ci[i]);
+    assert.deepEqual(block.filter((l) => /\bedited\b/.test(l)), []);
+  });
+  it('scripts/gitleaks-public.sh exists (the old check kept on purpose, removed in the follow-up after the first green run on dev)', () => {
+    assert.equal(existsSync(path.join(scripts, 'gitleaks-public.sh')), true);
+  });
+  it('(guard) the word-scan step with scripts/scan-public.sh stays', () => {
+    assert.ok(ci.some((l) => l.includes('scripts/scan-public.sh')), 'the old word step must stay');
+  });
+});

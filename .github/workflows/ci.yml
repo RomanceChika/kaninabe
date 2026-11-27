@@ -3,8 +3,8 @@ name: ci
 on:
   push:
   pull_request:
-    # `edited`: the title and body become the squash commit message, so a change to them is checked again.
-    types: [opened, edited, synchronize, reopened]
+    # (the title and body of a pull request are scanned by pr-gate.yml, which runs on `edited` too)
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
@@ -48,17 +48,9 @@ jobs:
             echo "SCAN_WORDS is not set"; exit 1
           fi
           SCAN_QUIET=1 sh scripts/scan-public.sh
-          # The squash commit on the base branch is made at merge time from this title and body, so it is checked here,
-          # before the merge (scan-public.sh above sees only the commits that already exist).
-          # Read from the event file, not from env: the log prints a step's env, and the text is never printed.
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            jq -r '.pull_request.title, "", (.pull_request.body // "")' "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/pr-text"
-            sh scripts/scan-pr-text.sh "$RUNNER_TEMP/pr-text"
-          fi
           rm -f "$words"
       # The push-before gate (scripts/push-gate.sh), run here as well: the same script that the pre-push hook runs.
-      # It is added next to the scans above, which stay until this step has been seen passing in a run on the main
-      # branch (development-flow.md, "検査を入れ替えるとき"). The two steps below differ in the mode and in the secret.
+      # The word-scan step above stays until the CI rework (docs/known-gaps.md, 15). The two steps below differ in the mode and in the secret.
       - name: Install actionlint (pinned, checksum verified) and put the scanners on PATH
         run: |
           curl -sSfL -o al.tgz https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz

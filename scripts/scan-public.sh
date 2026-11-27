@@ -53,6 +53,10 @@ generic='/Users/[A-Za-z]|/home/[a-z]+/|C:\\Users|BEGIN [A-Z ]*PRIVATE KEY'
 email=$scan_email
 email_ok=$scan_email_ok
 commits=$(mktemp); gg_out=$(mktemp); ng_work=$(mktemp -d)
+# The exclusion list is read from the scripts directory of this script (never from the scanned tree, never from the environment); this scan
+# uses its `mail` entries. A list that is missing or does not fit is exit 2.
+excl_read "$(dirname "$0")/scan-exclusions.tsv" "$scan_dir/excl" || { echo "scan: $ex_err"; echo "scan-public: ERROR"; exit 2; }
+excl_kind "$scan_dir/excl" mail "$scan_dir/excl.mail" || { echo "scan: scan-exclusions.tsv could not be read"; echo "scan-public: ERROR"; exit 2; }
 # git grep runs in a neutral repository (no attributes from the tree or the clone, no user config): see neutral-git.sh.
 neutral_git_setup "$ng_work" || { echo "scan: $ng_error"; echo "scan-public: ERROR"; exit 2; }
 # A rev-list that fails is not an empty range: it stops the scan (exit 2), it does not read as "clean".
@@ -124,18 +128,23 @@ for c in $commit_ids; do
     echo "author or committer not allowed in $short"; fail=1
   fi
   if scan_bad_email "$text_mail"; then echo "email-like string in the message of $short"; fail=1; fi
-  gg -IlE "$generic" "$c" -- . ':!package-lock.json' ':!**/package-lock.json'; lines
+  gg -IlE "$generic" "$c"; lines
   if [ "$n" != "0" ]; then
-    gg -IhoE '/Users/[A-Za-z0-9_.-]+|/home/[a-z0-9_.-]+/|C:\\Users|BEGIN [A-Z ]*PRIVATE KEY' "$c" -- . ':!package-lock.json' ':!**/package-lock.json'
+    gg -IhoE '/Users/[A-Za-z0-9_.-]+|/home/[a-z0-9_.-]+/|C:\\Users|BEGIN [A-Z ]*PRIVATE KEY' "$c"
     sed 's/^[^:]*://' "$gg_out" > "$ng_work/hits" || { echo "scan: could not read the hits"; echo "scan-public: ERROR"; exit 2; }
     scan_filter "$ng_work/hits" "$ng_work/hits.f" -vE '^/home/(u|a|user|x|me|app|runner|node)/$'
     wc_num -l "$ng_work/hits.f" || scan_wc_failed; m=$wc_v
     if [ "$m" != "0" ]; then echo "local path or key shape: $m hit(s) in $short"; fail=1; fi
   fi
-  gg -IhoE "$email" "$c" -- . ':!package-lock.json' ':!**/package-lock.json'
+  gg -IhoE "$email" "$c"
   sed 's/^[^:]*://' "$gg_out" > "$ng_work/hits" || { echo "scan: could not read the hits"; echo "scan-public: ERROR"; exit 2; }
   scan_filter "$ng_work/hits" "$ng_work/hits.f" -vE "$email_ok"
   wc_num -l "$ng_work/hits.f" || scan_wc_failed; m=$wc_v
+  # a `mail` entry allows one exact string at one path (mail_allowed counts those hits)
+  if [ "$m" != "0" ] && [ -s "$scan_dir/excl.mail" ]; then
+    mail_allowed "$c" || { echo "scan: could not check the mail entries"; echo "scan-public: ERROR"; exit 2; }
+    m=$((m - ma_n))
+  fi
   if [ "$m" != "0" ]; then echo "email-like string: $m hit(s) in $short"; fail=1; fi
 done
 [ "$commits_seen" = "$commits_n" ] || scan_io_failed

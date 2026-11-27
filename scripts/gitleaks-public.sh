@@ -3,7 +3,7 @@
 # gitleaks, with output limited to what may be printed: ok, or a count, or a line saying that the run or its result could not
 # be used. Nothing derived from gitleaks' output is printed (its errors can name paths and its findings name the file, the
 # commit and the author, and the logs of a public repository are public); to see details, run gitleaks yourself.
-#   - the configuration is the gate's fixed file (scripts/gitleaks-gate.toml), never one in the scanned tree or in the
+#   - the configuration is the old check's own fixed file (scripts/gitleaks-public.toml, removed together with this script), never one in the scanned tree or in the
 #     environment; the ignore file is a path that does not exist and inline `gitleaks:allow` comments are not honoured;
 #   - `dir` scans a copy of the directory without its .git and without any .gitleaksignore (gitleaks reads
 #     <source>/.gitleaksignore whatever flag says); `git` reads the history from the neutral repository (see neutral-git.sh),
@@ -24,7 +24,7 @@ case $bin in /*) ;; */*) bin="$(pwd)/$bin" ;; esac   # a relative path must surv
 . "$here/neutral-git.sh"
 tmp=$(mktemp -d)
 trap 'rc=$?; rm -rf "$tmp"; guard_exit "$rc"' EXIT
-cfg="$here/gitleaks-gate.toml"
+cfg="$here/gitleaks-public.toml"
 [ -f "$cfg" ] && [ -r "$cfg" ] || { echo "gitleaks $mode: could not run (the fixed config is missing)"; exit 2; }
 printf '%s\n' '{{ range . }}x{{ "\n" }}{{ end }}' > "$tmp/rules.tpl"
 

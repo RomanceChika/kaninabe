@@ -150,7 +150,8 @@ gl_scanned() {
   gl_n=$(tail -n 1 "$1.g3" 2>/dev/null) || return 1
   case $gl_n in '' | *[!0-9]*) return 1 ;; esac
 }
-# scan_history <list> <template-file> <tmp>: why one commit at a time: gitleaks cuts large input (`stdin`, `dir`) into chunks and
+# scan_history <list> <template-file> <tmp>: (the template writes `x TAB commit TAB file` per finding; see report_read and keys_count)
+# why one commit at a time: gitleaks cuts large input (`stdin`, `dir`) into chunks and
 # loses a secret that straddles a boundary; `git` reads a patch whole. Each commit is also checked on its own, so that "the patch
 # was readable and gitleaks read it" is confirmed per commit: (a) neutral_adds_text (status checked); (b) gitleaks git with
 # --log-opts="-1 -m <id>" (ids only, never names; the info log goes to a private file and is never printed); (c) its "N commits
@@ -177,8 +178,10 @@ scan_history() {
     case $sh_rc in 0 | 99) ;; *) hist_err="could not run (exit $sh_rc)"; return 2 ;; esac
     if log_has_error "$3/hist.log"; then hist_err="could not run (it logged an error)"; return 2; fi
     if [ "$sh_rc" = 99 ]; then
-      sh_x=$(x_count "$3/hist.out") || { hist_err="could not read the result"; return 2; }
-      hist_n=$((hist_n + sh_x))
+      # a finding is silenced only by a `keys` entry of the exclusion list (hist_keys: lines `path TAB blob id`) for that path and that blob
+      report_read "$3/hist.out" "$3/hist.agg" || { hist_err="could not read the result"; return 2; }
+      keys_count "$3/hist.agg" "${hist_keys:-/dev/null}" "$3/hist.kw" || { hist_err="could not read the result"; return 2; }
+      hist_n=$((hist_n + kc_n))
     fi
     gl_scanned "$3/hist.log" || { hist_err="could not confirm what it scanned"; return 2; }
     sh_n=$gl_n
@@ -188,6 +191,7 @@ scan_history() {
   [ "$sh_seen" = "$sh_expect" ] || { hist_err="could not run (the list of commits was not read to the end)"; return 2; }
   return 0
 }
+
 # ---- the exclusion list (scripts/scan-exclusions.tsv) and the checks that read it ----
 # excl_read <list> <out>: the one reader of the exclusion list. Every line is `kind TAB path TAB value TAB reason` (kind binary, keys or
 # mail; the rest of the grammar is in tests/push-gate/scan-exclusions.test.mjs). On success <out> holds `kind TAB path TAB value` per line.
@@ -238,3 +242,48 @@ excl_read() {
 }
 # excl_kind <list-read> <kind> <out>: the `path TAB value` lines of one kind from what excl_read wrote.
 excl_kind() { LC_ALL=C awk -F'\t' -v k="$2" '$1 == k { print $2 "\t" $3 }' "$1" > "$3"; }
+
+# report_read <report> <out>: reads a gitleaks report (a line per finding: "x", or "x TAB <40 hex> TAB <file>") and writes <out>: one
+# line `count TAB commit TAB file` per distinct place, and `count TAB bare TAB -` for the lines that are only "x". Returns 1 for an
+# empty report, any other line, or an awk that does not run: a result that cannot be read is never a count.
+report_read() {
+  LC_ALL=C awk '
+    $0 == "" { next }
+    $0 == "x" { bare++; n++; next }
+    { nf = split($0, f, "\t")
+      if (nf != 3 || f[1] != "x" || length(f[2]) != 40 || f[2] !~ /^[0-9a-f]+$/ || f[3] == "") { bad = 1; next }
+      n++; c[f[2] "\t" f[3]]++ }
+    END { if (bad || !n) exit 1
+      if (bare) print bare "\tbare\t-"
+      for (k in c) print c[k] "\t" k }
+  ' "$1" > "$2"
+}
+# keys_count <report-read-output> <keys> <work>: sets $kc_n to the number of findings that no `keys` entry silences. <keys> holds
+# `path TAB blob id` lines. A finding is silenced only when an entry has exactly its path and the blob at that path in that commit
+# (neutral_git rev-parse <commit>:<path>) has exactly the entry's blob id; a rev-parse that fails is "not silenced". A bare "x" is not
+# silenced either. Returns 1 when the input cannot be read to the end.
+keys_count() {
+  kc_n=0; kc_seen=0; kc_tab=$(printf '\t') || return 1
+  wc_lines "$1" || return 1; kc_expect=$wc_v
+  while IFS=$kc_tab read -r kc_c kc_commit kc_path; do
+    kc_seen=$((kc_seen + 1))
+    case $kc_c in '' | *[!0-9]*) return 1 ;; esac
+    if [ "$kc_commit" = bare ]; then kc_n=$((kc_n + kc_c)); continue; fi
+    P=$kc_path LC_ALL=C awk -F'\t' '$1 == ENVIRON["P"] { print $2 }' "$2" > "$3" || return 1
+    kc_hit=0
+    if [ -s "$3" ]; then
+      kc_blob=$(neutral_git rev-parse --verify -q "$kc_commit:$kc_path" 2>/dev/null) || kc_blob=
+      if [ -n "$kc_blob" ] && grep_q -qFx "$kc_blob" "$3"; then kc_hit=1; fi
+    fi
+    [ "$kc_hit" = 1 ] || kc_n=$((kc_n + kc_c))
+  done < "$1"
+  [ "$kc_seen" = "$kc_expect" ] || return 1
+}
+
+# neutral_commit_tree <tree>: a commit of <tree> with no parent, a fixed identity and a fixed date, in the neutral repository only, so that
+# gitleaks can read the tree the way it reads a commit. Sets $nct_id to its id; returns 1 on failure.
+neutral_commit_tree() {
+  nct_id=$(ng_env GIT_DIR="$ng_dir" GIT_AUTHOR_NAME=gate GIT_AUTHOR_EMAIL=gate@users.noreply.github.com GIT_AUTHOR_DATE='2001-01-01T00:00:00Z' \
+    GIT_COMMITTER_NAME=gate GIT_COMMITTER_EMAIL=gate@users.noreply.github.com GIT_COMMITTER_DATE='2001-01-01T00:00:00Z' git commit-tree "$1" -m tree 2>/dev/null) || return 1
+  [ "$(neutral_git cat-file -t "$nct_id" 2>/dev/null)" = commit ] || return 1
+}

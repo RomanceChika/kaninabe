@@ -1,0 +1,1 @@
+keys	scripts/push-gate.gitleaks.toml	8d94336deeab403efc1f403286a857309ef8a95d	the vendored rule for short-lived cloud API keys is itself a pattern shaped like such a key; the file holds no secret

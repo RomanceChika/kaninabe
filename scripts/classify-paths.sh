@@ -14,11 +14,23 @@
 #   classify-paths.sh --list <file> (--paths <file> | --range <a> <b>) [--out <file>] [--quiet] [--require basis-only|no-basis|any]
 #   --paths   the file holds NUL-terminated records (a name that holds a line feed or another control character, an empty record
 #             and a last record without its NUL are exit 2)
-#   --range   `git diff --no-renames --name-only -z <a> <b>`: a rename is the delete of the old path and the add of the new one, and
-#             both are classified; a delete, a mode change, a type change and a submodule gitlink are one path each. Nothing is
-#             classified by its content, and no git configuration (diff.relative, diff.ignoreSubmodules, rename detection) changes the set.
-#   --out     one `<class><TAB><path>` per path, in the order given, written only when everything succeeded. Without --out and
-#             without --quiet the rows go to standard output instead.
+#   --range   `git diff --no-renames --name-only -z <a> <b>` in the repository of the current directory: a rename is the delete of the
+#             old path and the add of the new one, and both are classified; a delete, a mode change, a type change and a submodule
+#             gitlink are one path each. Nothing is classified by its content. Each of <a> and <b> must resolve to ONE COMMIT
+#             (`rev-parse --verify <x>^{commit}`, resolved once, to a full sha; a branch, a tag that peels to a commit, an abbreviated
+#             sha and HEAD~1 do; a tree, a blob, a range and `B:path` are exit 2), and the two shas are what is diffed.
+#             git runs under `env -i` with only PATH, a HOME and XDG_CONFIG_HOME that do not exist, GIT_CONFIG_NOSYSTEM,
+#             GIT_CONFIG_GLOBAL=/dev/null, GIT_ATTR_NOSYSTEM and GIT_NO_REPLACE_OBJECTS=1, and with `--no-replace-objects`. That
+#             NEUTRALISES everything the caller's environment or configuration could change: every GIT_* variable (GIT_DIR, GIT_WORK_TREE,
+#             GIT_INDEX_FILE, GIT_CONFIG_COUNT/KEY/VALUE, the object and alternate directories, GIT_NO_REPLACE_OBJECTS, GIT_EXTERNAL_DIFF),
+#             the user's and the system's git configuration, and replace refs; and the diff options fix rename detection, relative paths,
+#             hidden submodules and the external diff. It does NOT neutralise what belongs to the repository itself: its own
+#             configuration, its object directory and the alternates it records, and git refusing a repository owned by another user
+#             (safe.directory is not read, so that is exit 2). The repository is found from the current directory, never from GIT_DIR.
+#   --out     one `<class><TAB><path>` per path, in the order given. All or nothing: a file already at --out is removed first, the result is
+#             written to a temporary file in the same directory and moved into place as the very last step (after the cleanup), so a
+#             file at --out exists only after exit 0 or 1, and an exit 2 leaves no stale, partial or temporary file. --out may not be the
+#             list or the paths file. Without --out and without --quiet the rows go to standard output instead.
 #   --quiet   no row on standard output (counts only)
 #   --require basis-only: no implementation path; no-basis: no basis path; any (the default). Generated paths satisfy both.
 # Standard output ends with `classify-paths: N path(s): B basis, G generated, I implementation`, then, when --require is violated,
@@ -30,23 +42,26 @@
 # unsupported: there is none), every status is checked, every stage writes a private temporary file, and what is read from a stage is
 # proven complete first (a count taken by another command, or the frame of the data), so a cut-short output of any tool is exit 2.
 # NUL-separated input is turned into lines by `tr` (POSIX: `\000`), and a line feed inside a name is found by comparing the number of
-# NUL bytes with the number of lines. The tools used: git (--range only), mktemp, rm, tr, wc, cat (--out only), cmp.
+# NUL bytes with the number of lines. The tools used: env and git (--range only), mktemp, rm, tr, wc, cmp, and cat and mv (--out only).
 set -eu
 LC_ALL=C
 export LC_ALL
 tmp=
+outtmp=
+out_done=
+out=
 verdict_exit=
 # one EXIT trap: the cleanup, and the guard that turns a status that nobody chose (a command that failed under `set -e`) into 2.
 # (a verdict is printed only after the temporary directory is gone, so this cleanup runs only on a path that is already exit 2, or on
 # one that this trap makes exit 2; a cleanup that fails here is exit 2 as well)
-trap 'rc=$?; if [ -n "$tmp" ]; then rm -rf "$tmp" || rc=2; fi; if [ "$rc" != 0 ] && [ -z "$verdict_exit" ]; then exit 2; fi' EXIT
+trap 'rc=$?; if [ -n "$tmp" ]; then rm -rf "$tmp" || rc=2; fi; if [ -n "$outtmp" ]; then rm -f "$outtmp" || rc=2; fi; if [ "$rc" != 0 ] && [ -z "$verdict_exit" ] && [ -n "$out_done" ]; then rm -f "$out" || rc=2; fi; if [ "$rc" != 0 ] && [ -z "$verdict_exit" ]; then exit 2; fi' EXIT
 could_not() { echo "classify-paths: could not run ($1)"; exit 2; }
 tab=$(printf '\t')
 cr=$(printf '\r')
 nl='
 '
 
-list= paths= ra= rb= out= req=any quiet=0
+list= paths= ra= rb= req=any quiet=0
 list_set=0 paths_set=0 range_set=0 out_set=0 req_set=0
 while [ $# -gt 0 ]; do
   case $1 in
@@ -81,8 +96,16 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ "$list_set" = 1 ] || could_not "usage: --list is required"
+case $list in -*) could_not "usage: a file name starts with -" ;; esac
+case $paths in -*) could_not "usage: a file name starts with -" ;; esac
+case $out in -*) could_not "usage: a file name starts with -" ;; esac
 [ "$((paths_set + range_set))" = 1 ] || could_not "usage: exactly one of --paths and --range"
-if [ "$out_set" = 1 ] && [ -z "$out" ]; then could_not "usage: --out needs a file"; fi
+if [ "$out_set" = 1 ]; then
+  [ -n "$out" ] || could_not "usage: --out needs a file"
+  [ "$out" != "$list" ] && [ "$out" != "$paths" ] || could_not "usage: --out is the list or the paths file"
+  # a result that an earlier run left is removed first, so that no exit 2 leaves a stale one (a directory or an unremovable file is exit 2)
+  rm -f "$out" || could_not "the old output file could not be removed"
+fi
 if [ "$range_set" = 1 ]; then
   case $ra in '' | -*) could_not "usage: a commit is empty or starts with -" ;; esac
   case $rb in '' | -*) could_not "usage: a commit is empty or starts with -" ;; esac
@@ -103,6 +126,20 @@ nuls_of() {
   wc -c < "$tmp/nul.out" > "$tmp/wc.out" || return 1
   read -r nl_n < "$tmp/wc.out" || return 1
   case $nl_n in '' | *[!0-9]*) return 1 ;; esac
+}
+
+# gitc <git arguments...>: git with nothing of the caller's: no GIT_* variable, no user or system configuration, no replace refs
+gitc() {
+  env -i PATH="$PATH" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_ATTR_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 git --no-replace-objects "$@"
+}
+# resolve_commit <revision> <file>: sets $r_sha to the full sha of the commit that <revision> names (a tag is peeled); fails for anything
+# that is not one commit (a tree, a blob, a range, an unknown name, an empty answer, a cut-short answer, a name that is not 40 hex digits)
+resolve_commit() {
+  gitc rev-parse --verify --quiet --end-of-options "$1^{commit}" > "$2" 2> "$tmp/git.err" || return 1
+  read -r r_sha < "$2" || return 1
+  case $r_sha in '' | *[!0-9a-f]*) return 1 ;; esac
+  [ "${#r_sha}" = 40 ]
 }
 
 # ---- the list: read whole, every line judged, then proven complete ----
@@ -162,11 +199,16 @@ if [ "$paths_set" = 1 ]; then
   rec_in=$paths
 else
   src=range
-  # two runs of git: the names, and the raw form that holds the same names with two NUL bytes per path; the second is the count
-  # that proves the first complete. The options fix what a configuration could change: no rename detection, no relative paths,
-  # no hidden submodule change, no external diff. git's own messages go to a file and are never shown.
-  git diff --no-renames --no-relative --ignore-submodules=none --no-ext-diff --name-only -z "$ra" "$rb" -- > "$tmp/diff.names" 2> "$tmp/diff.err" || could_not "range: git diff failed"
-  git diff --no-renames --no-relative --ignore-submodules=none --no-ext-diff --raw -z "$ra" "$rb" -- > "$tmp/diff.raw" 2> "$tmp/diff.err2" || could_not "range: git diff failed"
+  # git runs in a clean environment (see the header). Each argument is resolved once, to the sha of ONE commit, and the shas are diffed.
+  # Then two runs of git: the names, and the raw form that holds the same names with two NUL bytes per path; the second is the count
+  # that proves the first complete. The options fix what a configuration could change: no rename detection, no relative paths, no
+  # hidden submodule change, no external diff. git's own messages go to a file and are never shown.
+  resolve_commit "$ra" "$tmp/sha.a" || could_not "range: the first argument is not a commit"
+  sha_a=$r_sha
+  resolve_commit "$rb" "$tmp/sha.b" || could_not "range: the second argument is not a commit"
+  sha_b=$r_sha
+  gitc diff --no-renames --no-relative --ignore-submodules=none --no-ext-diff --name-only -z "$sha_a" "$sha_b" -- > "$tmp/diff.names" 2> "$tmp/diff.err" || could_not "range: git diff failed"
+  gitc diff --no-renames --no-relative --ignore-submodules=none --no-ext-diff --raw -z "$sha_a" "$sha_b" -- > "$tmp/diff.raw" 2> "$tmp/diff.err2" || could_not "range: git diff failed"
   nuls_of "$tmp/diff.raw" || could_not "range: the diff could not be counted"
   raw_nuls=$nl_n
   nuls_of "$tmp/diff.names" || could_not "range: the diff could not be counted"
@@ -216,8 +258,11 @@ lines_of "$tmp/res" || could_not "the result could not be counted"
 [ "$((nb + ng + ni))" = "$nrec" ] || could_not "the result was cut short"
 
 if [ "$out_set" = 1 ]; then
-  cat "$tmp/res" > "$out" || could_not "the output file could not be written"
-  lines_of "$out" || could_not "the output file could not be counted"
+  # the copy is made next to --out under a temporary name, and proven complete; it is moved into place only after the cleanup below
+  outtmp=$(mktemp "$out.XXXXXX") || could_not "the output file could not be made"
+  [ -n "$outtmp" ] && [ -f "$outtmp" ] || could_not "the output file could not be made"
+  cat "$tmp/res" > "$outtmp" || could_not "the output file could not be written"
+  lines_of "$outtmp" || could_not "the output file could not be counted"
   [ "$nl_n" = "$nrec" ] || could_not "the output file is incomplete"
 fi
 
@@ -229,6 +274,11 @@ esac
 # the cleanup is a step like the others: no verdict is printed while the temporary directory cannot be removed
 rm -rf "$tmp" || could_not "the temporary directory could not be removed"
 tmp=
+if [ "$out_set" = 1 ]; then
+  mv "$outtmp" "$out" || could_not "the output file could not be put in place"
+  outtmp=
+  out_done=1
+fi
 printf '%s' "$rowtext"
 printf 'classify-paths: %s path(s): %s basis, %s generated, %s implementation\n' "$nrec" "$nb" "$ng" "$ni"
 if [ -n "$viol" ]; then

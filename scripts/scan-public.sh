@@ -110,20 +110,20 @@ for c in $commit_ids; do
     if [ "$n" != "0" ]; then if [ -n "${SCAN_QUIET:-}" ]; then echo "scoped word list: $n file(s) in $short"; else echo "scoped word list: $n file(s) under $prefix in $short"; fi; gg -InE "$re" "$c" -- "$prefix"; show_at; fail=1; fi
   done < "$scoped"
   [ "$sc_seen" = "$scoped_n" ] || scan_io_failed
-  if scan_attribution < "$text"; then echo "attribution line in $short"; fail=1; fi
+  if scan_attribution "$text"; then echo "attribution line in $short"; fail=1; fi
   # Author and committer: a GitHub noreply address naming no AI. A squash merge turns each into a co-author trailer.
   # (These stay on the identity fields: the AI words are about who the author is, not about anything written in a message.)
   neutral_git log -1 --format='%an%n%cn' "$c" > "$ng_work/names" 2>/dev/null && neutral_git log -1 --format='%ae%n%ce' "$c" > "$ng_work/addrs" 2>/dev/null \
     || { echo "scan: could not read a commit"; echo "scan-public: ERROR"; exit 2; }
   # An address that is empty (no <...>, or one that is not closed) is not a noreply address: every line must match, so it is red.
   wc_num -l "$ng_work/addrs" || scan_wc_failed; naddrs=$wc_v
-  scan_grep -cvE "$scan_ident_ok" "$ng_work/addrs" > "$ng_work/bad.n" || [ $? = 1 ]
+  scan_filter "$ng_work/addrs" "$ng_work/bad.n" -cvE "$scan_ident_ok"
   bad_addrs=$(cat "$ng_work/bad.n") || scan_io_failed
   case $bad_addrs in '' | *[!0-9]*) scan_io_failed ;; esac
   if scan_grep -qiE "$scan_ai" "$ng_work/names" || [ "${bad_addrs:-0}" != 0 ] || [ "$naddrs" != 2 ]; then
     echo "author or committer not allowed in $short"; fail=1
   fi
-  if scan_bad_email < "$text_mail"; then echo "email-like string in the message of $short"; fail=1; fi
+  if scan_bad_email "$text_mail"; then echo "email-like string in the message of $short"; fail=1; fi
   gg -IlE "$generic" "$c" -- . ':!package-lock.json' ':!**/package-lock.json'; lines
   if [ "$n" != "0" ]; then
     gg -IhoE '/Users/[A-Za-z0-9_.-]+|/home/[a-z0-9_.-]+/|C:\\Users|BEGIN [A-Z ]*PRIVATE KEY' "$c" -- . ':!package-lock.json' ':!**/package-lock.json'

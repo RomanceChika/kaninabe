@@ -34,7 +34,16 @@ grep_failed() { echo "scan: grep failed (exit $1): an invalid pattern or an unre
 scan_grep() { grep_q "$@"; }
 # scan_filter <in> <out> <grep arguments...>: the lines of <in> that grep selects, into <out>; "no line" (status 1) is a result, a failed
 # grep stops the scan (see scan_grep). Used instead of a pipe, so that no stage can fail unseen.
-scan_filter() { sf_in=$1; sf_out=$2; shift 2; scan_grep "$@" "$sf_in" > "$sf_out" || [ $? = 1 ]; }
+# The output is created first (a redirect that fails would give status 1 in one shell and 2 in another, and 1 is "no line"): once it
+# exists the redirect cannot fail, and the input is read by grep itself, whose failure is status 2 (scan_grep stops the scan).
+scan_filter() {
+  sf_in=$1; sf_out=$2; shift 2
+  : > "$sf_out" || scan_io_failed
+  scan_grep "$@" "$sf_in" > "$sf_out" || [ $? = 1 ]
+}
+# scan_input_ok <file>: the input of a scan function is a path, not a redirect on the call (a redirect that fails before the function
+# runs would read as "no finding" in an `if`): it must be a readable file, or the scan stops.
+scan_input_ok() { [ -f "$1" ] && [ -r "$1" ] || scan_io_failed; }
 
 # scan_finish NAME FAIL: the one exit of a scan. A recorded grep error wins over a clean result.
 scan_finish() {
@@ -49,27 +58,28 @@ scan_check_patterns() {
   scan_grep -qE -f "$1" /dev/null || [ $? = 1 ]
 }
 
-# scan_attribution: reads text on stdin; succeeds (and so means "found") when an attribution line is present
+# scan_attribution <file>: reads the text in <file>; succeeds (and so means "found") when an attribution line is present
 # other than the owner's own co-author trailer.
 scan_attribution() {
   # (every stage is a file in $scan_dir with its status checked: no pipe)
-  cat > "$scan_dir/attr.in" || scan_io_failed
-  scan_grep -iE "$scan_attrib" "$scan_dir/attr.in" > "$scan_dir/attr.1" || { [ $? = 1 ] || scan_io_failed; return 1; }
+  scan_input_ok "$1"
+  scan_filter "$1" "$scan_dir/attr.1" -iE "$scan_attrib"
+  [ -s "$scan_dir/attr.1" ] || return 1
   if [ -n "$scan_owner" ]; then
     ok="^co-authored-by: [^<@]*<([0-9]+\\+)?$scan_owner@users\\.noreply\\.github\\.com>\$"
-    scan_grep -viE "$ok" "$scan_dir/attr.1" > "$scan_dir/attr.2" || [ $? = 1 ]
+    scan_filter "$scan_dir/attr.1" "$scan_dir/attr.2" -viE "$ok"
     if scan_grep -q . "$scan_dir/attr.2"; then return 0; fi
-    scan_grep -iE '^co-authored-by:' "$scan_dir/attr.in" > "$scan_dir/attr.3" || [ $? = 1 ]
+    scan_filter "$1" "$scan_dir/attr.3" -iE '^co-authored-by:'
     if scan_grep -qiE "$scan_ai" "$scan_dir/attr.3"; then return 0; fi
     return 1
   fi
   return 0
 }
 
-# scan_bad_email: reads text on stdin; succeeds when an email-like string outside the allowed shapes is present.
+# scan_bad_email <file>: reads the text in <file>; succeeds when an email-like string outside the allowed shapes is present.
 scan_bad_email() {
-  cat > "$scan_dir/mail.in" || scan_io_failed
-  scan_grep -oE "$scan_email" "$scan_dir/mail.in" > "$scan_dir/mail.1" || [ $? = 1 ]
-  scan_grep -vE "$scan_email_ok" "$scan_dir/mail.1" > "$scan_dir/mail.2" || [ $? = 1 ]
+  scan_input_ok "$1"
+  scan_filter "$1" "$scan_dir/mail.1" -oE "$scan_email"
+  scan_filter "$scan_dir/mail.1" "$scan_dir/mail.2" -vE "$scan_email_ok"
   scan_grep -q . "$scan_dir/mail.2"
 }

@@ -236,6 +236,8 @@ fi
 # holds only the file, the line and the kind of problem, never the message or the source line.
 tick; t_step=$now_t
 neutral_git ls-tree -r --name-only "$head_sha" -- .github/workflows > "$tmp/lstree" 2>/dev/null || die "step workflows could not run (could not list the files of HEAD)"
+# (the output is created first: a failed redirect is status 1 in one shell and 2 in another, and 1 means "no line" here)
+: > "$tmp/lsfiles" || die "step workflows could not run (could not make a result file)"
 grep_q -E '\.ya?ml$' "$tmp/lstree" > "$tmp/lsfiles" || [ $? = 1 ]
 files=$(cat "$tmp/lsfiles") || die "step workflows could not run (could not list the files of HEAD)"
 if [ -z "$files" ]; then
@@ -256,6 +258,7 @@ else
       -format '{{range $e := .}}{{$e.Filepath}}:{{$e.Line}}: [{{$e.Kind}}]|{{end}}' $files ) > "$tmp/actionlint.raw" 2>/dev/null || rc=$?
   # (actionlint cannot be given a line feed or a \n escape in the template; entries are cut at '|' here.)
   tr '|' '\n' < "$tmp/actionlint.raw" > "$tmp/actionlint.lines" || die "step workflows could not read the result"
+  : > "$tmp/actionlint.out" || die "step workflows could not read the result"
   grep_q -E . "$tmp/actionlint.lines" > "$tmp/actionlint.out" || [ $? = 1 ]
   case $rc in
     0) elapsed "$t_step"; echo "push-gate: step workflows: ok ($nfiles file(s)) in $el s" ;;

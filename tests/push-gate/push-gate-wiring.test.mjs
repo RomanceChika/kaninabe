@@ -396,7 +396,8 @@ describe('push-gate.sh: which commits are scanned', () => {
     assert.equal(r.status, 0, r.out);
     assert.ok(r.out.includes('(mode words, 0 commit(s))'), r.out);
     const calls = sb.calls();
-    assert.ok(!calls.some((l) => l.startsWith('gitleaks')), 'nothing to scan for secrets');
+    assert.equal(calls.filter((l) => l.startsWith('gitleaks git')).length, 1, 'only the tree of HEAD is scanned for secrets');
+    assert.ok(!calls.some((l) => l.startsWith('gitleaks stdin')), 'no commit text to scan');
     assert.ok(calls.some((l) => l.startsWith('actionlint')), 'the workflows are still checked');
     const bad = runGate(sb, ['--mode', 'words', '--base', 'HEAD'], { ...words(), SHIM_ACTIONLINT_EXIT: '1', SHIM_OUT_actionlint: '.github/workflows/ci.yml:3: [syntax-check]|' });
     stops(bad, 1, 'push-gate: step workflows: FAILED');
@@ -648,7 +649,7 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
     });
 
     it('a commit that adds no text may be 0 or 1, and nothing else, when the tree of HEAD has no text either (and the tree must then still fit)', () => {
-      git(sb, 'rm', '-q', 'a.txt');
+      git(sb, 'rm', '-q', 'a.txt', 'b.txt');
       git(sb, 'commit', '-q', '-m', 'delete');
       const before = git(sb, 'rev-parse', 'HEAD');
       git(sb, 'commit', '-q', '--allow-empty', '-m', 'empty');
@@ -671,7 +672,7 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
 
     it('a deletion-only commit and a commit that adds an empty file add no text; a blank line and a symlink do', () => {
       const before = git(sb, 'rev-parse', 'HEAD');
-      git(sb, 'rm', '-q', 'a.txt');
+      git(sb, 'rm', '-q', 'a.txt', 'b.txt');
       git(sb, 'commit', '-q', '-m', 'delete');
       assert.equal(runGate(sb, ['--mode', 'words', '--base', before], { ...words(), SHIM_SCANNED: '0' }).status, 0);
       commit(sb, { 'empty.txt': '' });

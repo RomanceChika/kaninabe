@@ -308,7 +308,7 @@ describe('there is no way to skip a file except the list', () => {
   const SKIPPERS = [
     ['a `:!` pathspec', /:!/, "gg -l x -- . ':!lock.json'"],
     ['a `:(exclude)` pathspec', /:\(exclude/, "git grep x -- ':(exclude)a'"],
-    ['a `:^` pathspec', /:\^/, "git grep x -- ':^b'"],
+    ['a `:^` pathspec', /(^|[\s'"]):\^/, "git grep x -- ':^b'"],
     ['--exclude', /--exclude/, 'tar --exclude=.git'],
     ['find -not/! -path or -name', /(-not|!)\s+-(i?path|i?name|i?regex)\b/, 'find . ! -name x'],
     ['a path list in the gitleaks configuration', /^\s*paths\s*=/, 'paths = ["x"]'],
@@ -316,6 +316,7 @@ describe('there is no way to skip a file except the list', () => {
   it('(guard) the detector names each kind of skipper', () => {
     for (const [label, re, sample] of SKIPPERS) assert.ok(re.test(sample), `not seen: ${label}`);
     assert.ok(!SKIPPERS.some(([, re]) => re.test('echo "${x:-default}" && find . -name x')), 'a plain find -name is not a skipper');
+    assert.ok(!SKIPPERS.some(([, re]) => re.test("regex = '''(?:^|x)y'''")), 'a non-capturing group that starts with ^ is not a pathspec');
   });
 
   const files = [

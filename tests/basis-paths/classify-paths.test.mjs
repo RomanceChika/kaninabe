@@ -13,7 +13,7 @@
  */
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -470,10 +470,27 @@ describe('classify-paths.sh: --range on a temporary git repository (3)', () => {
       assert.deepEqual(r.sorted, want, x);
     }
     git(d, 'tag', 'treetag', `${b}^{tree}`);
-    for (const x of [`${b}:impl`, `${b}^{tree}`, `${b}:docs/b.md`, 'treetag', `${a}..${b}`, `^${a}`, `${b}:`, 'HEAD:docs']) {
-      couldNotRun(range(d, a, x), null);
-      couldNotRun(range(d, x, b), null);
+    const NOT_COMMIT = 'range: not a commit, or git refused the repository';
+    for (const x of [`${b}:impl`, `${b}^{tree}`, `${b}:docs/b.md`, 'treetag', `${a}..${b}`, `^${a}`, `${b}:`, 'HEAD:docs', 'no-such-branch']) {
+      couldNotRun(range(d, a, x), NOT_COMMIT);
+      couldNotRun(range(d, x, b), NOT_COMMIT);
     }
+  });
+  it('a SHA-256 repository works: a full sha of 64 hex digits is accepted (skipped here when git cannot make one)', (t) => {
+    const d = fresh('sha256');
+    const init = spawnSync('git', ['init', '-q', '-b', 'main', '--object-format=sha256', d], { env: gitEnv, encoding: 'utf8' });
+    if (init.status !== 0) { console.log('classify-paths sha256 test: this git cannot make a SHA-256 repository, skipped'); t.skip('no sha256 support'); return; }
+    put(d, 'impl/x.sh'); put(d, 'docs/a.md'); git(d, 'add', '-A'); git(d, 'commit', '-q', '-m', 'a');
+    const a = git(d, 'rev-parse', 'HEAD');
+    assert.equal(a.length, 64);
+    put(d, 'impl/x.sh', 'b\n'); put(d, 'docs/n.md');
+    const b = commit(d);
+    for (const [x, y] of [[a, b], [a.slice(0, 12), 'HEAD'], ['HEAD~1', b]]) {
+      const r = range(d, x, y);
+      assert.equal(r.status, 0, r.all);
+      assert.deepEqual(r.sorted, [['basis', 'docs/n.md'], ['implementation', 'impl/x.sh']]);
+    }
+    couldNotRun(range(d, a, `${b}:impl`), 'range: not a commit, or git refused the repository');
   });
 });
 
@@ -582,6 +599,33 @@ describe('classify-paths.sh: a step that cannot run is exit 2, never 1, never a 
     couldNotRun(run(['--list', '-list', '--paths', paths]), null);
     couldNotRun(run(['--list', list, '--paths', '-paths']), null);
     couldNotRun(run(['--list', list, '--paths', paths, '--out', '-out']), null);
+  });
+  it('--out that names the list or the paths file under another spelling (./name, a symlink, a hard link) is exit 2, and the input is untouched', () => {
+    toolPath = makeBin(root); tmpOverride = path.join(root, 'tmp');
+    for (const which of ['list', 'paths']) {
+      for (const spelling of ['dot', 'symlink', 'hardlink']) {
+        const dir = path.join(root, `id-${n++}`); mkdirSync(dir);
+        const listFile = path.join(dir, 'l2.tsv'); const pathsFile = path.join(dir, 'p2.bin');
+        writeFileSync(listFile, `${L('basis', 'x/*', 'r')}\n`); writeFileSync(pathsFile, 'a\0');
+        const target = which === 'list' ? 'l2.tsv' : 'p2.bin';
+        let out = `./${target}`;
+        if (spelling === 'symlink') { symlinkSync(target, path.join(dir, 'alias')); out = 'alias'; }
+        if (spelling === 'hardlink') { linkSync(path.join(dir, target), path.join(dir, 'hard')); out = 'hard'; }
+        const before = readFileSync(path.join(dir, target));
+        const r = run(['--list', 'l2.tsv', '--paths', 'p2.bin', '--out', out], { cwd: dir });
+        couldNotRun(r, 'usage: --out is the list or the paths file');
+        assert.ok(existsSync(path.join(dir, target)), `${which} via ${spelling}: the input was removed`);
+        assert.deepEqual(readFileSync(path.join(dir, target)), before, `${which} via ${spelling}: the input changed`);
+      }
+    }
+  });
+  it('the --out file has mode 0600 (it is made by mktemp and moved into place): pinned', () => {
+    toolPath = makeBin(root); tmpOverride = path.join(root, 'tmp');
+    const dir = path.join(root, `mode-${n++}`); mkdirSync(dir);
+    const out = path.join(dir, 'result');
+    const r = run(['--list', fx.list, '--paths', fx.paths, '--out', out]);
+    assert.equal(r.status, 0, r.all);
+    assert.equal(statSync(out).mode & 0o777, 0o600);
   });
   it('--out may not be the list or the paths file (they would be removed first)', () => {
     const list = writeList([L('basis', 'x/*', 'r')]); const paths = writePaths(['a']);
@@ -822,7 +866,7 @@ describe('classify-paths.sh: this repository (7)', () => {
 describe('classify-paths.sh: nothing that looks like a test or data drifts into implementation or generated (7, the reverse guard)', () => {
   // a path in a class that the rule keeps apart from basis must not look like a test or like data. An exception is named here with
   // its reason, and a stale exception fails.
-  const LOOKS_LIKE = /(\.test\.|\.spec\.|\/fixtures\/|\/__tests__\/|\.json$|\.md$|\.tsv$|\.ya?ml$|\.toml$|\.txt$)/;
+  const LOOKS_LIKE = /(\.test\.|\.spec\.|\/fixtures\/|\/__tests__\/|\.json$|\.md$|\.tsv$|\.ya?ml$|\.toml$|\.txt$|\.sql$|\.snap$|\.csv$|\.html$)/;
   const EXCEPTIONS = [
     [/^\.github\/workflows\/[^/]+\.ya?ml$/, 'a workflow is code: it runs, and a test-first change edits it after its tests'],
   ];
@@ -860,12 +904,17 @@ describe('classify-paths.sh: the same bytes under other shells', () => {
     const rng = run(['--list', list, '--range', a, b, '--out', o2], { cwd: d, shell });
     const bad = run(['--list', writeRaw('basis\tx\n', root), '--paths', paths], { shell });
     const own = run(['--list', path.join(repoRoot, 'basis-paths.tsv'), '--range', 'HEAD~1', 'HEAD', '--quiet'], { cwd: repoRoot, shell });
-    return JSON.stringify([rows, viaOut, readFileSync(o1, 'utf8'), rng, readFileSync(o2, 'utf8'), bad, own].map((x) => (typeof x === 'string' ? x : [x.status, x.out, x.err])));
+    const idDir = path.join(root, `id-${tag}`); mkdirSync(idDir);
+    writeFileSync(path.join(idDir, 'l2.tsv'), `${L('basis', 'x/*', 'r')}\n`); writeFileSync(path.join(idDir, 'p2.bin'), 'a\0');
+    const ident = run(['--list', 'l2.tsv', '--paths', 'p2.bin', '--out', './l2.tsv'], { cwd: idDir, shell });
+    const identKept = existsSync(path.join(idDir, 'l2.tsv'));
+    return JSON.stringify([rows, viaOut, readFileSync(o1, 'utf8'), rng, readFileSync(o2, 'utf8'), bad, own, ident, identKept].map((x) => (typeof x === 'string' || typeof x === 'boolean' ? x : [x.status, x.out, x.err])));
   };
   const baseline = () => scenario(undefined, 'sh');
   it('(guard) the scenario itself behaves: statuses 0, 1, 0, 2 and rows in order', () => {
-    const [rows, viaOut, , rng, , bad] = JSON.parse(baseline());
+    const [rows, viaOut, , rng, , bad, , ident, identKept] = JSON.parse(baseline());
     assert.equal(rows[0], 0); assert.equal(viaOut[0], 1); assert.equal(rng[0], 0); assert.equal(bad[0], 2);
+    assert.equal(ident[0], 2); assert.equal(identKept, true, 'the input named as --out is not removed');
     assert.match(rows[1], /^basis\tdocs\/a\n/);
   });
   for (const [name, shell] of SHELLS) {

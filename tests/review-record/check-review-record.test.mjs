@@ -6,7 +6,7 @@
  */
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -194,7 +194,7 @@ describe('check-review-record.sh: a step that cannot run is exit 2, never 1 and 
     assert.equal(check(record()).status, 0);
     assert.equal(check(record(OLD)).status, 1);
   });
-  for (const tool of ['awk', ...TOOLS.filter((n) => n !== 'rm')]) {
+  for (const tool of ['awk', ...TOOLS]) {
     for (const [what, body] of BODIES) {
       it(`${tool} missing: ${what} is exit 2`, () => {
         toolPath = makeBin(root, { omit: [tool] });
@@ -273,7 +273,8 @@ describe('check-review-record.sh: a result that was cut short, or a body named l
 // ---- the class: every output the script reads must be proven complete before it is used ----
 // A mechanical sweep: for each external tool the script calls, for each call index n of that tool (counted per body, since the path
 // differs), a shim runs the real tool and hands on its standard output without the last k lines (k = 1, 2 and all) with status 0.
-// Whatever it cuts, the result is exit 2 (could not run), or it is the untruncated run exactly (the cut had nothing to cut).
+// The shim records whether the cut really changed the output of that call. A call whose output changed must be exit 2 (could not
+// run); a call whose output did not change (there was nothing to cut) must be the untruncated run exactly.
 describe('check-review-record.sh: a stage output that is cut short is exit 2, whatever the tool and whichever call', () => {
   let root;
   before(() => { root = mkdtempSync(path.join(tmpdir(), 'review-record-sweep-')); });
@@ -288,21 +289,22 @@ describe('check-review-record.sh: a stage output that is cut short is exit 2, wh
     ['two sections', `${record()}\n${record()}`, 1],
   ];
   let counter = 0;
-  /** Runs the body with `tool` shimmed: its call number `n` loses its last `k` lines (n = 0: no cut, only counted). Returns the result and how many times the tool was called. */
+  /** Runs the body with `tool` shimmed: its call number `n` loses its last `k` lines (n = 0: no cut, only counted). Returns the result, how many times the tool was called, and whether the cut really changed what that call handed on (the shim compares the two). */
   const run = (tool, n, k, body) => {
     const cnt = path.join(root, `cnt-${counter++}`);
     const real = tool === 'awk' ? which('awk') : which(tool);
-    const cut = k === 'all' ? ':' : `${which('head')} -n -${k} "$T"`;
+    const cut = k === 'all' ? ': > "$U"' : `${which('head')} -n -${k} "$T" > "$U"`;
     const shim = `c=0\n[ ! -f ${cnt} ] || read c < ${cnt}\nc=$((c+1))\necho $c > ${cnt}\n`
-      + `if [ "$c" = ${n} ]; then\n  T=$(${which('mktemp')}) || exit 3\n  ${real} "$@" > "$T" || { rc=$?; ${which('rm')} -f "$T"; exit $rc; }\n  ${cut}\n  ${which('rm')} -f "$T"\n  exit 0\nfi\nexec ${real} "$@"`;
+      + `if [ "$c" = ${n} ]; then\n  T=$(${which('mktemp')}) || exit 3\n  ${real} "$@" > "$T" || { rc=$?; ${which('rm')} -f "$T"; exit $rc; }\n  U=$(${which('mktemp')}) || exit 3\n  ${cut}\n  ${which('cmp')} -s "$T" "$U" || echo changed > ${cnt}.chg\n  ${which('cat')} "$U"\n  ${which('rm')} -f "$T" "$U"\n  exit 0\nfi\nexec ${real} "$@"`;
     toolPath = makeBin(root, { shim: { [tool]: shim } });
     const r = check(body);
     let calls = 0;
     try { calls = Number(readFileSync(cnt, 'utf8').trim()); } catch { /* the tool was not called */ }
-    return { ...r, calls };
+    return { ...r, calls, changed: existsSync(`${cnt}.chg`) };
   };
   let runs = 0;
-  const refused = Object.fromEntries(SWEPT.map((t) => [t, 0]));
+  const cutCalls = Object.fromEntries(SWEPT.map((t) => [t, new Set()]));
+  const allCalls = Object.fromEntries(SWEPT.map((t) => [t, new Set()]));
   const started = Date.now();
   for (const tool of SWEPT) {
     for (const [what, body, truth] of BODIES) {
@@ -315,23 +317,29 @@ describe('check-review-record.sh: a stage output that is cut short is exit 2, wh
             runs += 1;
             const r = run(tool, n, k, body);
             const label = `${tool} call ${n} of ${base.calls}, last ${k} line(s) dropped`;
-            if (r.status === 2) {
-              refused[tool] += 1;
+            allCalls[tool].add(`${what}#${n}`);
+            if (r.changed) {
+              cutCalls[tool].add(`${what}#${n}`);
+              assert.equal(r.status, 2, `${label}: the output of the call was cut, and the result is not exit 2: ${r.out}`);
               assert.ok(r.out.includes('could not run'), `${label}: ${r.out}`);
               assert.ok(!r.out.includes('matches the head') && !r.out.includes('review record: FAILED'), `${label}: ${r.out}`);
             } else {
-              assert.equal(r.status, truth, `${label}: the verdict changed: ${r.out}`);
-              assert.equal(r.out, base.out, `${label}: the output changed (a cut that is not exit 2 must have had nothing to cut)`);
+              assert.equal(r.status, truth, `${label}: nothing was cut, and the verdict changed: ${r.out}`);
+              assert.equal(r.out, base.out, `${label}: nothing was cut, and the output changed`);
             }
           }
         }
       });
     }
   }
-  it('(guard) the sweep ran, and for every tool at least one cut was refused (a shim that cuts nothing would pass everything)', () => {
+  it('(guard) the sweep ran, and every call of every tool had its output really cut at least once (a shim that cuts nothing would pass everything)', () => {
     assert.ok(runs > 100, `only ${runs} shimmed runs`);
-    for (const tool of SWEPT) assert.ok(refused[tool] >= 1, `no cut of ${tool} gave exit 2: the shim does not cut`);
-    console.log(`sweep: ${runs} shimmed runs in ${Date.now() - started} ms, refused ${JSON.stringify(refused)}`);
+    for (const tool of SWEPT) {
+      const never = [...allCalls[tool]].filter((c) => !cutCalls[tool].has(c));
+      assert.deepEqual(never, [], `${tool}: these calls were never really cut (the call prints nothing, or the shim does not cut)`);
+      assert.ok(cutCalls[tool].size >= 1, `${tool}: no call was cut`);
+    }
+    console.log(`sweep: ${runs} shimmed runs in ${Date.now() - started} ms, calls cut ${JSON.stringify(Object.fromEntries(SWEPT.map((t) => [t, cutCalls[t].size])))}`);
   });
 });
 

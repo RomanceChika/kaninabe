@@ -14,8 +14,10 @@
 #                           stops if the commits it would scan are another list
 #   --head <sha>            the commit that is being pushed (the hook passes it); the gate stops if HEAD is another commit
 #   --all                   every commit reachable from HEAD
-# Steps: (1) gitleaks over those commits; (2) scripts/scan-public.sh over the same commits; (3) every workflow file of
-# HEAD (.github/workflows) must parse and pass actionlint. An empty range passes (1) and (2), and (3) still runs.
+# Steps: (1) every workflow file of HEAD (.github/workflows) must parse and pass actionlint; (2) gitleaks over those commits, over their
+# texts, and over the tree of HEAD (read as one synthetic root commit); (3) files that cannot be read as text are red unless
+# scripts/scan-exclusions.tsv names them; (4) scripts/scan-public.sh over the same commits. An empty range passes (2) for the commits
+# and (4), but the tree of HEAD is still read in (2) and (3), and (1) still runs.
 # Fail closed: a missing gitleaks or actionlint, a missing word list in words mode, and any step that errors (as opposed
 # to finding something) stop the gate. Exit 0 = passed, 1 = a step found something, 2 = the gate could not run.
 # Output is limited to step names, counts, commit short ids, file paths and line numbers. It never prints a matched word,
@@ -131,7 +133,7 @@ if [ -n "$want_list" ] && [ "$(range_list_id "$head_sha" "$tmp/commits")" != "$w
   die "the commits to scan are not the list the range id was computed from"
 fi
 # The files of HEAD, exactly as committed (see neutral-git.sh: git archive would honour export-ignore and export-subst
-# attributes of the tree). Both the tree scan and the workflow check read this export.
+# attributes of the tree). Only the workflow check reads this export.
 neutral_export "$head_sha" "$tmp/head" || die "could not export HEAD"
 failed=
 
@@ -190,8 +192,8 @@ fi
 # .gitleaks.toml of the tree, not GITLEAKS_CONFIG / GITLEAKS_CONFIG_TOML); the ignore file is a path that does not exist
 # (not the default ".", where a .gitleaksignore of the tree would be read); inline `gitleaks:allow` comments are not
 # honoured; no baseline is given. The environment is not the caller's (see clean above), so no GITLEAKS_* variable gets in.
-# gitleaks also reads <source>/.gitleaksignore whatever --gitleaks-ignore-path says, so the history is scanned with the neutral
-# git directory as the source (it holds no such file) and the exported tree has every .gitleaksignore taken out before the scan.
+# gitleaks also reads <source>/.gitleaksignore whatever --gitleaks-ignore-path says, so every run reads the neutral git directory as the
+# source (it holds no such file): the tree of HEAD is not exported for gitleaks and not read by `gitleaks dir`.
 gl_config="$here/push-gate.gitleaks.toml"
 [ -f "$gl_config" ] && [ -r "$gl_config" ] || die "push-gate.gitleaks.toml is missing next to the gate"
 # gl <subcommand> <arguments...>: gitleaks with the fixed flags; every path is one quoted argument (spaces are fine).
@@ -207,7 +209,7 @@ gl_check() {
     *) die "step gitleaks could not run (exit $1)" ;;
   esac
 }
-# gl_secs adds up the time of the gitleaks parts (the unreadable-files step runs between them and has its own time).
+# (gl_secs adds up the time of the gitleaks parts: the unreadable-files step runs between them and has its own time)
 printf '%s\n' '{{ range . }}x{{ "\n" }}{{ end }}' > "$tmp/gitleaks.tpl"
 # a history run reports where each finding is (`x TAB commit TAB file`), so that a `keys` entry can silence one blob at one path (keys_count)
 printf '%s\n' '{{ range . }}x{{ "\t" }}{{ .Commit }}{{ "\t" }}{{ .File }}{{ "\n" }}{{ end }}' > "$tmp/gitleaks.tpl.f"

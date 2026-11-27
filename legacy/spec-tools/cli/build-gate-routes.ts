@@ -62,7 +62,9 @@ function lineOf(finding: Finding): string {
 }
 
 const repoRoot = repoRootOrExit(NAME, process.argv.slice(2));
-const { model: product, uses, implemented } = loadProductRoots(repoRoot);
+const { model: product, uses, implemented, findings: productFindings } = loadProductRoots(repoRoot);
+const productErrors = productFindings.filter((finding) => finding.severity === 'error');
+if (productErrors.length > 0) stop(['製品の根の宣言にエラーがあります。壊れた宣言のまま範囲を決めません', ...productErrors.map((finding) => `${finding.verifier} ${lineOf(finding)}`)]);
 const roots = product.roots;
 if (roots === null || roots.app === null || uses === null) stop([`製品の根の宣言から実装の木を読めません(${repoRoot})。読めないまま通しません`]);
 

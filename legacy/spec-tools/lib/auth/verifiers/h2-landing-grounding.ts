@@ -243,7 +243,7 @@ function checkGateImplementations(flow: AuthFlowSpec, repoRoot: string): Finding
         grounding: 'implementation',
       });
       // 印は、書き方が正しいのにファイルが無い純粋な不在だけ(`パス::関数名` の形でない書き方の誤りは、範囲で外さない)。
-      const wellFormed = file !== undefined && file !== '' && symbol !== undefined && symbol !== '';
+      const wellFormed = gate.implementation.split('::').length === 2 && file !== undefined && file !== '' && symbol !== undefined && symbol !== '';
       return [wellFormed ? absentFor({ kind: 'catalog', id: AUTH_FLOW_ID }, missing) : missing];
     }
     if (!readText(absolute).includes(symbol)) {

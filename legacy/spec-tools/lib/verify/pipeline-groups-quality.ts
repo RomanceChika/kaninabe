@@ -78,7 +78,7 @@ export function runUx(
  * 入力はトークン仕様と実装の CSS の 2 つで、どちらの位置も specs/domain から導く。
  * 実行状況の文言は run.ts が組み立てる(この層に「何件見たか」の知識を置かないため)。
  */
-export function runDesign(domainRoot: string, roots: ProductRoots, layout: ProductLayout, log: ProgressLog): Finding[] {
+export function runDesign(domainRoot: string, roots: ProductRoots, layout: ProductLayout, log: ProgressLog): { readonly findings: readonly Finding[]; readonly tokensLoaded: boolean } {
   const repoRoot = detectRepoRoot(domainRoot);
   const appRoot = appPath(roots);
   const result = runDesignVerification({
@@ -91,7 +91,7 @@ export function runDesign(domainRoot: string, roots: ProductRoots, layout: Produ
   log(result.summary);
   // 配置にアプリの既定のアイコンの役割が無いなら、G8 の既定の残骸の検査は見ていない(黙って緑にしない。語は未実施と同じ)。
   if (result.defaultIconUnplaced) log(describeMissingRole('G8', 'app-icon(アプリの既定のアイコン)', '既定のアイコンの残骸'));
-  return [...result.findings];
+  return { findings: [...result.findings], tokensLoaded: result.tokensLoaded };
 }
 
 /**

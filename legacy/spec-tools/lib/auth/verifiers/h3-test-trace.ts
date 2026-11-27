@@ -49,7 +49,7 @@ export function verifyAuthTestTrace(
   return [
     ...findings,
     ...entries.flatMap((entry) =>
-      checkTestCaseTrace(entry, byTcId.get(entry.tcId) ?? [], testFiles, VERIFIER_ID),
+      checkTestCaseTrace(entry, byTcId.get(entry.tcId) ?? [], testFiles, VERIFIER_ID, { kind: 'catalog', id: AUTH_FLOW_ID }),
     ),
   ];
 }

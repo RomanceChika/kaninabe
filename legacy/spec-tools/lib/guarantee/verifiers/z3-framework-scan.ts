@@ -114,7 +114,7 @@ function checkEntryTrace(registry: TcRegistry, scan: FrameworkScan): Finding[] {
   const files = new Set(scan.testFiles);
   return registry.entries
     .filter((entry) => ownerOf(entry) === 'framework' && isUnderFrameworkTestRoots(entry.implementation.file))
-    .flatMap((entry) => checkTestCaseTrace(entry, byTcId.get(entry.tcId) ?? [], files, VERIFIER_ID));
+    .flatMap((entry) => checkTestCaseTrace(entry, byTcId.get(entry.tcId) ?? [], files, VERIFIER_ID, null));
 }
 
 /**

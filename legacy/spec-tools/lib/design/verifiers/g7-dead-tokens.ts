@@ -17,6 +17,8 @@
  */
 
 import type { Finding } from '../../kernel/finding.js';
+import { absentFor } from '../../kernel/scope-owner.js';
+import { DESIGN_TOKENS_ID } from '../../model/design/catalog-id.js';
 import { scanVarUses } from '../css-scan.js';
 import type { DesignInput } from '../../model/design/types.js';
 import { designFinding, type DesignVerifier } from '../verifier.js';
@@ -42,17 +44,16 @@ export const g7DeadTokens: DesignVerifier = {
     const findings: Finding[] = [];
     for (const token of spec.tokens) {
       if (used.has(token.name)) continue;
-      findings.push(
-        designFinding(ID, {
-          message: `トークン --${token.name} をどの実装 CSS からも参照していません(死語彙)`,
-          file: spec.file,
-          pointer: `groups.${token.group}.${token.name}`,
-          suggestion:
-            '使う画面が無いなら tokens.md からこのトークンを削除する(値域の主張は「使われている語だけがある」ことで初めて成り立つ)。' +
-            '使う予定があるだけで実装がまだなら、先に var(--…) で引いてから検証をやり直す',
-          counterexample: { token: token.name, group: token.group },
-        }),
-      );
+      const dead = designFinding(ID, {
+        message: `トークン --${token.name} をどの実装 CSS からも参照していません(死語彙)`,
+        file: spec.file,
+        pointer: `groups.${token.group}.${token.name}`,
+        suggestion:
+          '使う画面が無いなら tokens.md からこのトークンを削除する(値域の主張は「使われている語だけがある」ことで初めて成り立つ)。' +
+          '使う予定があるだけで実装がまだなら、先に var(--…) で引いてから検証をやり直す',
+        counterexample: { token: token.name, group: token.group },
+      });
+      findings.push(absentFor({ kind: 'catalog', id: DESIGN_TOKENS_ID }, dead));
     }
     return findings;
   },

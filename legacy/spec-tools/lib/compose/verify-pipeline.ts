@@ -21,10 +21,10 @@
  *   H 群: docs/rules/process/backend/specification/standards/auth-spec-writing.md
  *   M 群: docs/rules/meta/standards/ の各ポリシー(M7〜M9 = 用語の台帳: term-ledger-writing.md)
  *   W 群: docs/rules/process/common/specification/playbooks/dsl-extension-triage.md §軸と語
- *         (W5 = 拡張候補の台帳 legacy/spec-tools/extension-candidates.md。他の全群の結果を見るので最後に実行する)
+ *         (W5 = 拡張候補の台帳 legacy/spec-tools/extension-candidates.md。他の全群の結果を見るので、群の中では最後に実行する。そのあとに実装の範囲の P13・P14 と仕分けを 1 回だけ行う)
  *
  * @oversize 全群の読み込みと実行を、1 本の流れ(P 群 → 仕様種の読み込み → 入力の状態の組み立て → V 群 → 各群 → W5)で上から下へ読み通せるようにする配線。
- *   順序が意味を持つ(P 群の宣言が読めなければ以降を飛ばす・A 群の入力の状態を T / J / S / Y / U 群へ同じ値で配る・W5 は最後)ので、`runAllVerifications` の
+ *   順序が意味を持つ(P 群の宣言が読めなければ以降を飛ばす・A 群の入力の状態を T / J / S / Y / U 群へ同じ値で配る・W5 は群の最後・実装の範囲の仕分けはそのあと)ので、`runAllVerifications` の
  *   1 関数の中に並べてある。
  * @split-review 割る案は 2 つ。(1) 読み込み(各仕様種のローダーの呼び出しと入力の状態の組み立て)と実行(各群の呼び出し)を 2 ファイルに割る案: 実行の側が
  *   読み込みの結果(入力の状態 10 本ほか・台帳・テストの走査結果)を全部引数で受ける形になり、1 つの流れを 2 枚の間で行き来して読むことになる。
@@ -95,6 +95,11 @@ import { logSinkAcceptances } from '../config/verifiers/k5-log-sink.js';
 import { bearerAcceptances } from '../risk/verifiers/r16-bearer.js';
 import { notBoundaryAcceptances } from '../verify/verifiers/tenant-not-boundary.js';
 import type { ExtensionLedgerModel } from '../model/extension/types.js';
+import type { ScopeOwner } from '../kernel/scope-owner.js';
+import { cleanLoad, scopeUniverseOf } from '../scope/universe.js';
+import { scopeOwnerInputOf } from './scope-owner-input.js';
+import { partitionByScope, type ScopeReport } from '../scope/partition.js';
+import { runImplementedScope } from '../scope/run.js';
 
 /** runAllVerifications の入力。 */
 export interface PipelineOptions {
@@ -120,6 +125,8 @@ export interface PipelineOptions {
    * 呼び手は指摘を `generatedTreeCheckIds()` の ID で絞る。省略は全部の段(CLI の verify)。
    */
   readonly generatedTreeOnly?: boolean;
+  /** 基準の `product.md`(`--implemented-base`)。あれば、実装の範囲が広がる向きにしか動かないこと(P14)を見る。省略は比べない。 */
+  readonly implementedBase?: string;
 }
 
 /** runAllVerifications の結果。 */
@@ -138,7 +145,16 @@ export interface PipelineResult {
   readonly skipNotes: readonly string[];
   /** 拡張候補の台帳(警告の区分に使う。製品に依らないので、モデルを構築できなかった実行でも載る)。 */
   readonly extensionLedger: ExtensionLedgerModel;
+  /** 実装の範囲の持ち主の一覧(印の持ち主と `implemented` に書ける id の正。読めなかった仕様の持ち主は載らない)。 */
+  readonly scopeOwners: readonly ScopeOwner[];
+  /** 実装の範囲による仕分けの報告(宣言が無ければ null)。 */
+  readonly scopeReport: ScopeReport | null;
+  /** 範囲の外として外した指摘(`findings` には入らない。宣言が無ければ空)。 */
+  readonly relieved: readonly Finding[];
 }
+
+/** 仕分けをしない(読み込みの前で止まった)結果の欄。 */
+const NO_SCOPE = { scopeOwners: [], scopeReport: null, relieved: [] } as const;
 
 /** 何もしない報告先。 */
 const SILENT: ProgressLog = () => undefined;
@@ -178,13 +194,13 @@ export async function runAllVerifications(options: PipelineOptions): Promise<Pip
   const uses = product.uses;
   if (roots === null || uses === null) {
     log(`P 群(製品の根の宣言): ${PRODUCT_DECL_FILE} を読めないため以降の群はスキップしました。`);
-    return { findings, modelBuilt: false, skipNotes: collector.notes, extensionLedger };
+    return { findings, modelBuilt: false, skipNotes: collector.notes, extensionLedger, ...NO_SCOPE };
   }
   log(`P 群(製品の根の宣言): ${PRODUCT_DECL_FILE} の根を読みました(実装の木 ${roots.app ?? '(宣言なし)'})。`);
 
   const { model, findings: loadFindings } = loadSpecModel(domainRoot);
   findings.push(...loadFindings);
-  if (model === null) return { findings, modelBuilt: false, skipNotes: collector.notes, extensionLedger };
+  if (model === null) return { findings, modelBuilt: false, skipNotes: collector.notes, extensionLedger, ...NO_SCOPE };
 
   const applicationRefScan = scanApplicationRefs(repoRoot, roots, options.layout);
   // A0 は読み込んだ側がここで 1 回だけ全体へ足す。V 群・A 群の入力の状態(`actionsInput`)には同じ診断を別に渡す。
@@ -227,7 +243,9 @@ export async function runAllVerifications(options: PipelineOptions): Promise<Pip
   const authLoaded = loadAuth(domainRoot, authLoadFindings);
   const auth = authLoaded.model;
   findings.push(...authLoadFindings);
-  const guarantees = loadGuarantees(domainRoot, findings);
+  const guaranteeLoadFindings: Finding[] = [];
+  const guarantees = loadGuarantees(domainRoot, guaranteeLoadFindings);
+  findings.push(...guaranteeLoadFindings);
   // 仕組みの保証台帳は製品の `uses` に依らず読む(製品が外せない義務)。Z0 は読み込んだ側がここで 1 回だけ全体へ足す。
   const frameworkLedger = loadFrameworkGuaranteeLedger(options.frameworkRoot);
   if (frameworkLedger.state !== 'not_requested') findings.push(...frameworkLedger.findings);
@@ -436,13 +454,36 @@ export async function runAllVerifications(options: PipelineOptions): Promise<Pip
   findings.push(
     ...runUx(model, screens, uxPrinciples, ctx.guards, { catalogs: { dataTables, notifications, jobs }, actions: actionsInput }, log),
   );
-  findings.push(...runDesign(domainRoot, roots, options.layout, log));
+  const design = runDesign(domainRoot, roots, options.layout, log);
+  findings.push(...design.findings);
   findings.push(...runGenerality(model, notifications, jobs, config, domainRoot, roots, options.layout, log));
   findings.push(...runDocs(domainRoot, roots, log));
   findings.push(...runTerms(domainRoot, roots, log));
   // W5 は他の全群の結果を見るので最後。受け入れた危険の宣言(警告の acceptance の突合相手)は読めた仕様から集める
   findings.push(...runExtension(extension, findings, knownCheckIds(), [...mfaAcceptances(auth.flow), ...bearerAcceptances(model), ...logSinkAcceptances(config), ...notBoundaryAcceptances(model)], log));
-  return { findings, modelBuilt: true, skipNotes: collector.notes, extensionLedger };
+  // 実装の範囲: 持ち主の一覧と読み込みの成否(読めた全部の仕様から)→ P13・P14 → 仕分け(最後に 1 回)。宣言が無ければ何も外れず、報告も無い。
+  const universe = scopeUniverseOf({
+    ...scopeOwnerInputOf(uses, model, actions, queries, screens, dataTables, usecases, jobs, auth, guarantees, external, config, design.tokensLoaded),
+    domainClean: cleanLoad(true, loadFindings, 0),
+    clean: {
+      actions: cleanLoad(actions !== null, actionLoadFindings, actionsLoaded.dropped),
+      queries: cleanLoad(queries.available, queryLoadFindings, queriesLoaded.dropped),
+      screens: cleanLoad(screens.available, screenLoadFindings, screensLoaded.dropped),
+      data_tables: cleanLoad(dataTables.available, dataTableLoadFindings, dataTablesLoaded.dropped),
+      usecases: cleanLoad(usecases.available, usecaseLoadFindings, usecasesLoaded.dropped),
+      jobs: cleanLoad(jobs.available, jobLoadFindings, jobsLoaded.dropped),
+      auth: cleanLoad(auth.available, authLoadFindings, authLoaded.dropped),
+      guarantees: cleanLoad(guarantees.available, guaranteeLoadFindings, 0),
+      external: cleanLoad(external.available, externalLoadFindings, externalLoaded.dropped),
+      config: cleanLoad(config.available, configLoadFindings, configLoaded.dropped),
+    },
+  });
+  const owners = universe.owners;
+  const scope = runImplementedScope({ scope: product.implemented, uses, owners, unloaded: universe.unloaded, invariantsUnloaded: universe.invariantsUnloaded, ...(options.implementedBase === undefined ? {} : { implementedBase: options.implementedBase }) });
+  findings.push(...scope.findings);
+  for (const note of scope.notes) log(note);
+  const partition = partitionByScope(findings, product.implemented, owners);
+  return { findings: [...partition.kept], modelBuilt: true, skipNotes: collector.notes, extensionLedger, scopeOwners: owners, scopeReport: partition.report, relieved: partition.relieved };
 }
 
 /**

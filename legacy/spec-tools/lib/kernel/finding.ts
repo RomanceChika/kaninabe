@@ -11,6 +11,7 @@
  * 下の層が検証器の契約(check)を読むと向きが逆になる。
  */
 
+import type { ScopeOwner } from './scope-owner.js';
 import type { SourceLocation } from './source-location.js';
 
 /** 検証結果の 1 件。「何が・どこで・どう直すか」を必ず揃える。 */
@@ -48,6 +49,11 @@ export interface Finding {
    * 付けてよいのは宣言から導いた警告だけで、宣言の実在と理由が空でないことは W5 が見る(検査が勝手に付けて門を抜けないように)。
    */
   readonly acceptance?: AcceptedRiskDecl;
+  /**
+   * この指摘が「仕様 X が名指す Y が無い」という**純粋な不在の error**であり、X の持ち主が `owner` であること(あれば)。
+   * `kernel/scope-owner.ts` の関数 `absentFor` だけが書く。実装の範囲(`implemented`)の外の持ち主の印つき error だけが、最後の仕分けで報告へ移る。
+   */
+  readonly absentFor?: ScopeOwner;
 }
 
 /**

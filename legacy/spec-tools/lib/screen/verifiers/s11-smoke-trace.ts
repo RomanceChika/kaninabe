@@ -18,6 +18,7 @@
 
 import type { Finding, ScreenVerifier } from '../verifier.js';
 import { screenFinding } from '../verifier.js';
+import { absentFor } from '../../kernel/scope-owner.js';
 import type { ScreenInput } from '../../model/screen/types.js';
 import type { ScreenSmoke } from '../../model/screen/types.js';
 
@@ -54,14 +55,13 @@ function checkEntry(
 ): Finding[] {
   const { file, testName, raw } = entry.implementation;
   if (!testFiles.has(file)) {
-    return [
-      screenFinding('S11', {
-        message: `${screenId} の smoke の implementation が指すファイル(${file})がありません`,
-        location: entry.location,
-        suggestion: `${file} を作るか、implementation のパスを実在する app/e2e/*.spec.mts へ直す`,
-        counterexample: { screen: screenId, implementation: raw },
-      }),
-    ];
+    const missing = screenFinding('S11', {
+      message: `${screenId} の smoke の implementation が指すファイル(${file})がありません`,
+      location: entry.location,
+      suggestion: `${file} を作るか、implementation のパスを実在する app/e2e/*.spec.mts へ直す`,
+      counterexample: { screen: screenId, implementation: raw },
+    });
+    return [absentFor({ kind: 'screen', id: screenId }, missing)];
   }
   const key = `${file}::${testName}`;
   if (!resolved.has(key)) {

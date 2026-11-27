@@ -23,6 +23,7 @@
 
 import type { Finding, PartialInputTraceVerifier, PartialRun } from '../verifier.js';
 import { traceFinding } from '../verifier.js';
+import { absentFor } from '../../kernel/scope-owner.js';
 import type { ActionTestCase, TcRegistryEntry } from '../../testcase/types.js';
 import { checkTestCaseTrace, groupByTcId } from '../../testcase/index.js';
 import type { ScanDecl, UnscannedDecl } from '../../model/trace/types.js';
@@ -119,7 +120,7 @@ function scanTestCaseFindings(input: TraceInput): Finding[] {
   for (const scan of input.actions.scans) {
     for (const testCase of scan.testCases ?? []) {
       const entry = toRegistryEntry(scan, testCase);
-      findings.push(...checkTestCaseTrace(entry, byTcId.get(entry.tcId) ?? [], testFiles, 'A10'));
+      findings.push(...checkTestCaseTrace(entry, byTcId.get(entry.tcId) ?? [], testFiles, 'A10', { kind: 'scan', id: scan.event }));
     }
   }
   return findings;
@@ -167,16 +168,15 @@ function missingImplementations(
 
   for (const decl of scans.values()) {
     if (files.has(decl.implementation)) continue;
-    findings.push(
-      traceFinding('A10', {
-        message: `${decl.event} の走査として宣言された ${decl.implementation} が存在しません`,
-        location: decl.location,
-        suggestion:
-          `implementation にはリポジトリルートからの相対パスで operation のモジュールを書く` +
-          `(例: app/src/operation/{aggregate}/{event}.ts)。移動したなら宣言を追随させる`,
-        counterexample: { event: decl.event, implementation: decl.implementation },
-      }),
-    );
+    const missing = traceFinding('A10', {
+      message: `${decl.event} の走査として宣言された ${decl.implementation} が存在しません`,
+      location: decl.location,
+      suggestion:
+        `implementation にはリポジトリルートからの相対パスで operation のモジュールを書く` +
+        `(例: app/src/operation/{aggregate}/{event}.ts)。移動したなら宣言を追随させる`,
+      counterexample: { event: decl.event, implementation: decl.implementation },
+    });
+    findings.push(absentFor({ kind: 'scan', id: decl.event }, missing));
   }
   return findings;
 }

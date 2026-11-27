@@ -8,6 +8,7 @@
 import type { Finding } from '../kernel/finding.js';
 import { loadProductRoots } from '../model/product/loader.js';
 import { PRODUCT_STEPS } from './checks.js';
+import type { ProductImplemented } from '../model/product/implemented.js';
 import type { ProductRootsModel } from '../model/product/types.js';
 import type { ProductUses } from '../model/product/uses.js';
 
@@ -19,6 +20,8 @@ export interface ProductRunResult {
   readonly product: ProductRootsModel;
   /** 製品が採ると宣言した仕様の種類(宣言が読めなかったときは null。そのとき `product.roots` も null)。 */
   readonly uses: ProductUses | null;
+  /** 製品が宣言した実装の範囲(キーが無い・壊れている・宣言が読めないときは `{ declared: false }` = 全部が範囲)。 */
+  readonly implemented: ProductImplemented;
 }
 
 /**
@@ -36,5 +39,6 @@ export function runProduct(repoRoot: string): ProductRunResult {
     ],
     product: loaded.model,
     uses: loaded.uses,
+    implemented: loaded.implemented,
   };
 }

@@ -45,7 +45,7 @@ export function verifyExternalTestTrace(
   return [
     ...findings,
     ...entries.flatMap((entry) =>
-      checkTestCaseTrace(entry, byTcId.get(entry.tcId) ?? [], testFiles, VERIFIER_ID),
+      checkTestCaseTrace(entry, byTcId.get(entry.tcId) ?? [], testFiles, VERIFIER_ID, { kind: 'catalog', id: EXTERNAL_CATALOG_ID }),
     ),
   ];
 }

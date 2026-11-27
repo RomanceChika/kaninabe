@@ -22,6 +22,8 @@ import path from 'node:path';
 import { appGrounded, isFile } from '../../io/paths.js';
 import { readText } from '../../io/read-text.js';
 import type { Finding } from '../../kernel/finding.js';
+import { absentFor } from '../../kernel/scope-owner.js';
+import { AUTH_FLOW_ID } from '../../model/auth/parse-auth.js';
 import { inputValue, type CatalogInput } from '../../kernel/input-state.js';
 import { dynamicParams } from '../../model/screen/route-syntax.js';
 import type { ScreenSpec, ScreenSpecModel } from '../../model/screen/types.js';
@@ -233,15 +235,16 @@ function checkGateImplementations(flow: AuthFlowSpec, repoRoot: string): Finding
     const [file, symbol] = gate.implementation.split('::');
     const absolute = file === undefined ? '' : path.join(repoRoot, file);
     if (file === undefined || symbol === undefined || !isFile(absolute)) {
-      return [
-        h2({
-          message: `関門 ${gate.id} の implementation ${gate.implementation} が実在しません`,
-          location: gate.location,
-          suggestion: '"リポジトリルート相対パス::関数名" の形で、実在するモジュールと関数を指す',
-          counterexample: { gate: gate.id, implementation: gate.implementation },
-          grounding: 'implementation',
-        }),
-      ];
+      const missing = h2({
+        message: `関門 ${gate.id} の implementation ${gate.implementation} が実在しません`,
+        location: gate.location,
+        suggestion: '"リポジトリルート相対パス::関数名" の形で、実在するモジュールと関数を指す',
+        counterexample: { gate: gate.id, implementation: gate.implementation },
+        grounding: 'implementation',
+      });
+      // 印は、書き方が正しいのにファイルが無い純粋な不在だけ(`パス::関数名` の形でない書き方の誤りは、範囲で外さない)。
+      const wellFormed = gate.implementation.split('::').length === 2 && file !== undefined && file !== '' && symbol !== undefined && symbol !== '';
+      return [wellFormed ? absentFor({ kind: 'catalog', id: AUTH_FLOW_ID }, missing) : missing];
     }
     if (!readText(absolute).includes(symbol)) {
       return [

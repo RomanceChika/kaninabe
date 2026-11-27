@@ -34,6 +34,7 @@ const RUNNER_GROUPS: Readonly<Record<string, readonly string[]>> = {
   runDocs: ['ルール文書(M0〜M6)'],
   runTerms: ['用語の台帳(M7〜M12)'],
   runExtension: ['拡張候補の台帳(W5)'],
+  runImplementedScope: ['実装の範囲(P13・P14)'],
 };
 
 /** `runAllVerifications` の本文から、`run` で始まる実行口の呼び出しの名前を集める。 */

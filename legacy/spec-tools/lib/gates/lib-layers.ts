@@ -131,7 +131,7 @@ export const LAYER_ROWS: readonly LayerRow[] = [
   },
   {
     pattern:
-      /^lib\/(api|auth|config|data|deps|design|docs|extension|external|generality|guarantee|inbound|job|notification|query|reach|results|risk|screen|spec-index|sql|terms|trace|usecase|ux|ux-principles)\//,
+      /^lib\/(api|auth|config|data|deps|design|docs|extension|external|generality|guarantee|inbound|job|notification|query|reach|results|risk|screen|scope|spec-index|sql|terms|trace|usecase|ux|ux-principles)\//,
     layer: 'derive',
     reason: '仕様種ごとのディレクトリの既定: 前段(`lib/model/<種類>/`)でも検証器でもなければ、仕様から期待される成果物・計画・結果表を純関数で導くもの(解析の補助)',
   },

@@ -27,6 +27,7 @@ import { NOTIFICATION_CHECKS } from '../notification/checks.js';
 import { PRODUCT_CHECKS } from '../product/checks.js';
 import { RISK_CHECKS } from '../risk/checks.js';
 import { QUERY_CHECKS } from '../query/checks.js';
+import { SCOPE_CHECKS } from '../scope/checks.js';
 import { SCREEN_CHECKS } from '../screen/checks.js';
 import { SPEC_INDEX_CHECKS } from '../spec-index/checks.js';
 import { TERM_CHECKS } from '../terms/checks.js';
@@ -60,6 +61,7 @@ export const ALL_CHECK_GROUPS: readonly CheckGroup[] = [
   { group: 'ルール文書(M0〜M6)', checks: DOC_CHECKS },
   { group: '用語の台帳(M7〜M12)', checks: TERM_CHECKS },
   { group: '拡張候補の台帳(W5)', checks: EXTENSION_CHECKS },
+  { group: '実装の範囲(P13・P14)', checks: SCOPE_CHECKS },
 ];
 
 /** 全検査の表(群の順・群の中の順。群の中で同じ ID は 1 本に畳んである)。 */

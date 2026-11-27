@@ -21,7 +21,7 @@ import { isSpecKind, RETIRED_SPEC_KINDS, SPEC_KINDS, type ProductUses, type Spec
 export const PRODUCT_ROOTS_DOC_TYPE = 'product_roots';
 
 /** 宣言のフロントマターに書いてよいキー。 */
-const ALLOWED_KEYS: readonly string[] = ['doc_type', 'scope', 'id', 'norms', 'decisions', 'name', 'summary', 'roots', 'uses', 'term_scan'];
+const ALLOWED_KEYS: readonly string[] = ['doc_type', 'scope', 'id', 'norms', 'decisions', 'name', 'summary', 'roots', 'uses', 'implemented', 'term_scan'];
 
 /** 根の値の 1 要素の綴り(許可表): 英数字・`_` で始まり、英数字・`_` `.` `-` が続く。`.` で始まる名前(`.git` `.github` `.env` …)は置けない。 */
 const SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/;

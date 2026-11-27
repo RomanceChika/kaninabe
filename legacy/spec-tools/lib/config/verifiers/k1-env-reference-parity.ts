@@ -11,6 +11,8 @@
  */
 
 import type { Finding } from '../../kernel/finding.js';
+import { absentFor } from '../../kernel/scope-owner.js';
+import { CONFIG_CATALOG_ID } from '../../model/config/parse-config.js';
 import type { ConfigSpecModel } from '../../model/config/types.js';
 import type { EnvScanResult, TargetScanResult } from '../env-scan.js';
 import { envScanRoots } from '../env-scan.js';
@@ -80,17 +82,16 @@ export function verifyEnvReferenceParity(input: EnvParityInput): Finding[] {
   const used = new Set(references.map((reference) => reference.name));
   for (const decl of catalog.variables) {
     if (used.has(decl.id)) continue;
-    findings.push(
-      k1Finding({
-        message: `カタログの設定 ${decl.id} を読んでいる実装がありません`,
-        location: decl.location,
-        suggestion:
-          `${envScanRoots(input.roots, input.layout).join(' / ')} か、置き場の read_by が指す場所のどこかで読むか、` +
-          '使わなくなったなら行を消す' +
-          '(誰も読まない設定を雛形に残すと、引き継いだ人が埋めようとして時間を溶かす)',
-        counterexample: { variable: decl.id },
-      }),
-    );
+    const unread = k1Finding({
+      message: `カタログの設定 ${decl.id} を読んでいる実装がありません`,
+      location: decl.location,
+      suggestion:
+        `${envScanRoots(input.roots, input.layout).join(' / ')} か、置き場の read_by が指す場所のどこかで読むか、` +
+        '使わなくなったなら行を消す' +
+        '(誰も読まない設定を雛形に残すと、引き継いだ人が埋めようとして時間を溶かす)',
+      counterexample: { variable: decl.id },
+    });
+    findings.push(absentFor({ kind: 'catalog', id: CONFIG_CATALOG_ID }, unread));
   }
   return findings;
 }

@@ -19,6 +19,7 @@
  */
 
 import { makeFinding, type Finding } from '../kernel/finding.js';
+import { absentFor, type ScopeOwner } from '../kernel/scope-owner.js';
 import type { TcRegistryEntry, TestAnnotation } from './types.js';
 
 /**
@@ -46,6 +47,9 @@ export function groupByTcId(
  * @param annotations その ID を持つアノテーション(0 件でもよい)
  * @param testFiles 実在するテストファイル(リポジトリルート相対)
  * @param verifier 指摘に付ける検証器 ID("A6" / "Q6")
+ * @param owner 実装の範囲の持ち主。**必須**(省略して印を外さない)。`null` は仕組み自身の見張りテストの台帳で、印を付けない。
+ *   持ち主があるとき、`@tc` がどこにも無い純粋な不在(ファイルが無い・ファイルはあるが `@tc` が無い)の error にだけ印を付ける。
+ *   `@tc` が 1 つでもあれば(別のファイル・名前の食い違い・`spec_ids`)印は付けず、突合の全部を行う
  * @returns 違反のリスト。突合できていれば空
  */
 export function checkTestCaseTrace(
@@ -53,14 +57,18 @@ export function checkTestCaseTrace(
   annotations: readonly TestAnnotation[],
   testFiles: ReadonlySet<string>,
   verifier: string,
+  owner: ScopeOwner | null,
 ): Finding[] {
   const impl = testCase.implementation;
+  // 印は「その tc の `@tc` がどこにも無い」ときだけ(1 つでもあれば、範囲の外でも突合の全部を行う)。
+  const pureAbsence = owner !== null && annotations.length === 0;
+  const tag = (finding: Finding): Finding => (pureAbsence ? absentFor(owner, finding) : finding);
   if (!testFiles.has(impl.file)) {
-    return [missingFileFinding(testCase, verifier)];
+    return [tag(missingFileFinding(testCase, verifier))];
   }
   const inFile = annotations.filter((annotation) => annotation.file === impl.file);
   if (inFile.length === 0) {
-    return [uncoveredFinding(testCase, annotations, verifier)];
+    return [tag(uncoveredFinding(testCase, annotations, verifier))];
   }
   return inFile.flatMap((annotation) => checkAnnotation(testCase, annotation, verifier));
 }

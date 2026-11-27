@@ -90,7 +90,7 @@ export const CANDIDATE_ROWS: readonly CandidateRow[] = [
   },
   { pattern: /^lib\/(sql|data)\//, candidate: 'db', reason: 'SQL の翻訳(DDL・RLS・RPC 本文・GRANT・API のビュー)とテーブル仕様の検査(T 群)' },
   {
-    pattern: /^lib\/(check-api|verify|trace|screen|ux|job|query|notification|auth|guarantee|external|config|design|docs|terms|generality|spec-index|ux-principles|extension|risk|product)\//,
+    pattern: /^lib\/(check-api|verify|trace|screen|ux|job|query|notification|auth|guarantee|external|config|design|docs|terms|generality|scope|spec-index|ux-principles|extension|risk|product)\//,
     candidate: 'check',
     reason: '検査の契約・検証の器(`verify/`)と種類ごとの検査(仕様種ごとのディレクトリ)と、製品の根の宣言の検査(`lib/product/`。P1 / P2。種類のローダーを値で読む)',
   },

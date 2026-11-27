@@ -40,6 +40,8 @@ export interface DesignRunResult {
    * 黙って緑にせず、呼び手(配線)が「未実施」と名指す。
    */
   readonly defaultIconUnplaced: boolean;
+  /** トークン仕様を読めたか(実装の範囲の持ち主 `design-tokens` が居るか)。 */
+  readonly tokensLoaded: boolean;
 }
 
 /**
@@ -58,6 +60,7 @@ export function runDesignVerification(options: DesignRunOptions): DesignRunResul
       available: false,
       summary: 'G 群(視覚層): specs/frontend/design が無いためスキップしました。',
       defaultIconUnplaced: false,
+      tokensLoaded: false,
     };
   }
 
@@ -76,6 +79,7 @@ export function runDesignVerification(options: DesignRunOptions): DesignRunResul
     available: true,
     summary: summarize(model.spec, css.files.length, css.available, brand.appGrounded),
     defaultIconUnplaced: options.roots.app !== null && brand.faviconIcoPath === null,
+    tokensLoaded: model.spec !== null,
   };
 }
 

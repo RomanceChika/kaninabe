@@ -26,6 +26,8 @@
  */
 
 import type { Finding } from '../../kernel/finding.js';
+import { absentFor } from '../../kernel/scope-owner.js';
+import { DESIGN_TOKENS_ID } from '../../model/design/catalog-id.js';
 import type { BrandFileCheck, DesignInput, DesignTokenSpec } from '../../model/design/types.js';
 import { designFinding, type DesignVerifier } from '../verifier.js';
 
@@ -151,19 +153,19 @@ function fileFindings(
   if (declaredPath === null) return [];
   const pointer = `brand.${field}`;
   if (check === null || !check.exists) {
-    return [
-      designFinding(
-        ID,
-        {
-          message: `brand.${field} が指すファイル ${declaredPath} が実在しません`,
-          file: spec.file,
-          pointer,
-          suggestion: '宣言したパスにファイルを置くか、パスを実在するファイルに直す',
-          counterexample: { [field]: declaredPath },
-        },
-        severity,
-      ),
-    ];
+    const missing = designFinding(
+      ID,
+      {
+        message: `brand.${field} が指すファイル ${declaredPath} が実在しません`,
+        file: spec.file,
+        pointer,
+        suggestion: '宣言したパスにファイルを置くか、パスを実在するファイルに直す',
+        counterexample: { [field]: declaredPath },
+      },
+      severity,
+    );
+    // 印は「不在の error」専用。仮のアイコンを宣言した(brand.placeholder)ときは warning で、印は付けない(付けると仕分けが throw する)。
+    return [severity === 'error' ? absentFor({ kind: 'catalog', id: DESIGN_TOKENS_ID }, missing) : missing];
   }
   if (check.sha256 === DEFAULT_FAVICON_SHA256) {
     return [

@@ -94,7 +94,7 @@ now_secs() { now_t=$(date +%s 2>/dev/null) || return 1; case $now_t in '' | *[!0
 # grep_q <grep arguments...>: grep for a condition: 0 = found, 1 = not found, and any other status (a bad pattern, an unreadable
 # input, an I/O error) calls grep_failed, which the caller defines and which does not return: a search that failed is never
 # "nothing found". (Output of grep is the caller's: the -q or -c is among the arguments.)
-grep_q() { gq_rc=0; grep "$@" || gq_rc=$?; case $gq_rc in 0 | 1) return "$gq_rc" ;; *) grep_failed "$gq_rc" ;; esac; }
+grep_q() { gq_rc=0; grep "$@" || gq_rc=$?; case $gq_rc in 0 | 1) return "$gq_rc" ;; *) grep_failed "$gq_rc" ;; esac; }   # GATE-EXCEPTION: the one helper that runs grep itself, and checks its status
 # x_count <file>: prints the number of lines of a gitleaks report (an "x" per finding; blank lines are ignored). Fails (status 1)
 # for an empty report, a line that is not "x", or an awk that does not run: a result that cannot be read is never a count.
 x_count() { LC_ALL=C awk -v who=x_count '$0 == "" { next } $0 != "x" { bad = 1 } { n++ } END { if (bad || !n) exit 1; print n }' "$1"; }
@@ -112,14 +112,14 @@ word_list_read() {
   wc_num -c "$wl_t" || return 1
   if [ "$wl_a" != "$wc_v" ]; then wl_err="contains a carriage return"; return 1; fi
   wl_bom=$(printf '\357\273\277') || return 1
-  wl_rc=0; (LC_ALL=C; export LC_ALL; grep -qa "^$wl_bom" "$1") || wl_rc=$?
+  wl_rc=0; (LC_ALL=C; export LC_ALL; grep_q -qa "^$wl_bom" "$1") || wl_rc=$?
   case $wl_rc in 0) wl_err="begins a line with a byte order mark"; return 1 ;; 1) ;; *) return 1 ;; esac
   # in C.UTF-8 a line that is not valid UTF-8 is not matched by '^.*$': with -v -a it is the one that is selected. A self-test
   # first, so that a system without that locale (where every byte is a character) does not pass everything.
   printf 'caf\351\n' > "$wl_t" || return 1
-  wl_rc=0; (LC_ALL=C.UTF-8; export LC_ALL; grep -qav '^.*$' "$wl_t") || wl_rc=$?
+  wl_rc=0; (LC_ALL=C.UTF-8; export LC_ALL; grep_q -qav '^.*$' "$wl_t") || wl_rc=$?
   if [ "$wl_rc" != 0 ]; then wl_err="cannot be checked for UTF-8 here"; return 1; fi
-  wl_rc=0; (LC_ALL=C.UTF-8; export LC_ALL; grep -qav '^.*$' "$1") || wl_rc=$?
+  wl_rc=0; (LC_ALL=C.UTF-8; export LC_ALL; grep_q -qav '^.*$' "$1") || wl_rc=$?
   case $wl_rc in 0) wl_err="is not valid UTF-8"; return 1 ;; 1) ;; *) return 1 ;; esac
   LC_ALL=C awk -v who=WORDLIST-READ '!/^#/ && !/^$/ && !/^@/' "$1" > "$2" 2>/dev/null || return 1
   LC_ALL=C awk -v who=WORDLIST-READ '/^@/' "$1" > "$3" 2>/dev/null || return 1
@@ -132,8 +132,16 @@ log_has_error() {
   { tr -d '\033' < "$1" > "$1.n1" && sed 's/\[[0-9;]*m//g' "$1.n1" > "$1.n2"; } 2>/dev/null || grep_failed 1
   grep_q -Eq '^[^ ]+ (ERR|FTL|PNC) ' "$1.n2"
 }
-# gl_scanned <log>: the number in gitleaks' "N commits scanned." line (colour codes removed), or nothing. The log is private.
-gl_scanned() { tr -d '\033' < "$1" | sed 's/\[[0-9;]*m//g' | sed -n 's/.*[^0-9]\([0-9][0-9]*\) commits scanned.*/\1/p' | tail -1; }
+# gl_scanned <log>: sets $gl_n to the number in gitleaks' "N commits scanned." line (colour codes removed). Each stage writes a file
+# (<log>.g1 .. .g3) and its status is checked: returns 1 when any stage fails or no number comes out (the count is then unknown).
+gl_scanned() {
+  gl_n=
+  tr -d '\033' < "$1" > "$1.g1" 2>/dev/null || return 1
+  sed 's/\[[0-9;]*m//g' "$1.g1" > "$1.g2" 2>/dev/null || return 1
+  sed -n 's/.*[^0-9]\([0-9][0-9]*\) commits scanned.*/\1/p' "$1.g2" > "$1.g3" 2>/dev/null || return 1
+  gl_n=$(tail -n 1 "$1.g3" 2>/dev/null) || return 1
+  case $gl_n in '' | *[!0-9]*) return 1 ;; esac
+}
 # scan_history <list> <template-file> <tmp>: why one commit at a time: gitleaks cuts large input (`stdin`, `dir`) into chunks and
 # loses a secret that straddles a boundary; `git` reads a patch whole. Each commit is also checked on its own, so that "the patch
 # was readable and gitleaks read it" is confirmed per commit: (a) neutral_adds_text (status checked); (b) gitleaks git with
@@ -156,8 +164,8 @@ scan_history() {
       sh_x=$(x_count "$3/hist.out") || { hist_err="could not read the result"; return 2; }
       hist_n=$((hist_n + sh_x))
     fi
-    sh_n=$(gl_scanned "$3/hist.log")
-    case $sh_n in '' | *[!0-9]*) hist_err="could not confirm what it scanned"; return 2 ;; esac
+    gl_scanned "$3/hist.log" || { hist_err="could not confirm what it scanned"; return 2; }
+    sh_n=$gl_n
     if [ "$sh_t" = 0 ]; then [ "$sh_n" -eq 1 ] || { hist_err="could not confirm what it scanned"; return 2; }
     else [ "$sh_n" -le 1 ] || { hist_err="could not confirm what it scanned"; return 2; }; fi
   done < "$1"

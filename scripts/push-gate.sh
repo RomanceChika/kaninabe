@@ -54,7 +54,7 @@ case $mode in words | general) ;; *) die "unknown mode \"$mode\" (words or gener
 [ "$n_ranges" = 1 ] || die "exactly one of --base, --not-on, --all is required"
 if [ -n "$want_list" ]; then range_is_id "$want_list" || die "--list-id needs a sha256 id"; fi
 if [ -n "$want_head" ]; then
-  printf '%s\n' "$want_head" | grep -Eq '^([0-9a-f]{40}|[0-9a-f]{64})$' || die "--head needs a full commit id"
+  is_commit_id "$want_head" || die "--head needs a full commit id"
 fi
 
 # The repository is decided here, in the caller's environment (GIT_DIR, --git-dir/--work-tree, the current directory),
@@ -105,11 +105,14 @@ case $range_kind in
   noton)
     # The commits that the destination is known to have (push-range.sh decides which): everything reachable from HEAD
     # except what is reachable from them.
-    printf '%s\n' "$range_val" | grep -Eq '^([0-9a-f]{40}(,[0-9a-f]{40})*|[0-9a-f]{64}(,[0-9a-f]{64})*)$' || die "--not-on needs full commit ids, comma separated"
-    for sha in $(printf '%s' "$range_val" | tr ',' ' '); do
+    # (split at the commas with IFS: no pipe; an empty piece, a leading or a trailing comma is refused)
+    case $range_val in '' | ,* | *, | *,,*) die "--not-on needs full commit ids, comma separated" ;; esac
+    old_ifs=$IFS; IFS=,; set -f; set -- $range_val; set +f; IFS=$old_ifs
+    for sha in "$@"; do is_commit_id "$sha" || die "--not-on needs full commit ids, comma separated"; done
+    for sha in "$@"; do
       neutral_git rev-parse --verify -q "$sha^{commit}" >/dev/null || die "--not-on is not a commit of this repository"
     done
-    revs="$head_sha --not $(printf '%s' "$range_val" | tr ',' ' ')" ;;
+    revs="$head_sha --not $*" ;;
   all) revs="$head_sha" ;;
 esac
 
@@ -249,15 +252,18 @@ else
   ( cd "$tmp/tree" && clean actionlint -no-color -shellcheck= -pyflakes= \
       -format '{{range $e := .}}{{$e.Filepath}}:{{$e.Line}}: [{{$e.Kind}}]|{{end}}' $files ) > "$tmp/actionlint.raw" 2>/dev/null || rc=$?
   # (actionlint cannot be given a line feed or a \n escape in the template; entries are cut at '|' here.)
-  tr '|' '\n' < "$tmp/actionlint.raw" | grep . > "$tmp/actionlint.out" || true
+  tr '|' '\n' < "$tmp/actionlint.raw" > "$tmp/actionlint.lines" || die "step workflows could not read the result"
+  grep_q -E . "$tmp/actionlint.lines" > "$tmp/actionlint.out" || [ $? = 1 ]
   case $rc in
     0) elapsed "$t_step"; echo "push-gate: step workflows: ok ($nfiles file(s)) in $el s" ;;
     1)
-      [ -s "$tmp/actionlint.out" ] && ! grep -qvE '^.+:[0-9]+: \[.*\]$' "$tmp/actionlint.out" || die "step workflows could not read the result"
+      [ -s "$tmp/actionlint.out" ] || die "step workflows could not read the result"
+      al_rc=0; grep_q -qvE '^.+:[0-9]+: \[.*\]$' "$tmp/actionlint.out" || al_rc=$?
+      [ "$al_rc" = 1 ] || die "step workflows could not read the result"
       wc_num -l "$tmp/actionlint.out" || die "step workflows could not read the result"
       elapsed "$t_step"; echo "push-gate: step workflows: FAILED ($wc_v problem(s)) in $el s"
       # In CI (a public log) the count only; anywhere else, the places.
-      if [ -z "${CI:-}" ]; then sed 's/^/  at /' "$tmp/actionlint.out" | head -50; fi
+      if [ -z "${CI:-}" ]; then sed -n '1,50s/^/  at /p' "$tmp/actionlint.out" || die "step workflows could not read the result"; fi
       failed="${failed:+$failed, }workflows" ;;
     *) die "step workflows could not run (exit $rc)" ;;
   esac

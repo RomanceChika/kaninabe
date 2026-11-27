@@ -16,8 +16,14 @@
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/../scripts/range-id.sh"   # range_is_id: the one shape check for an id (64 lowercase hex)
-head=$(GIT_NO_REPLACE_OBJECTS=1 git rev-parse --verify -q 'HEAD^{commit}' || true)   # replace refs are ignored, as push ignores them
-short() { printf '%s' "$1" | cut -c1-8; }
+head=   # (a failing rev-parse leaves it empty, and an empty head is refused below)
+head=$(GIT_NO_REPLACE_OBJECTS=1 git rev-parse --verify -q 'HEAD^{commit}') || head=   # replace refs are ignored, as push ignores them
+short() { short_tail=${1#????????}; printf '%s' "${1%"$short_tail"}"; }
+# cfg_get <key>: sets $cfg_v to the value, empty when the key is not set (git config exit 1); any other status is exit 2.
+cfg_get() {
+  cfg_rc=0; cfg_v=$(git config --get "$1") || cfg_rc=$?
+  case $cfg_rc in 0 | 1) ;; *) echo "pre-push: could not read git config $1" >&2; exit 2 ;; esac
+}
 refuse() { echo "pre-push: $*" >&2; exit 1; }
 
 pushing=0
@@ -36,7 +42,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   if [ -z "$head" ] || [ "$local_sha" != "$head" ]; then
     refuse "refusing to push $(short "$local_sha"): it is not the checked-out commit; check it out first"
   fi
-  reviewed=$(git config --get kaninabe.contentReviewed || true)
+  cfg_get kaninabe.contentReviewed; reviewed=$cfg_v
   if [ "${reviewed%% *}" != "$head" ]; then
     echo "pre-push: the content review record (kaninabe.contentReviewed) does not name $(short "$head")" >&2
     refuse "have the push read for publication: run sh scripts/push-range.sh <remote or URL>, read those commits, and record the value it prints"
@@ -51,11 +57,11 @@ done
 [ "$pushing" = 1 ] || exit 0
 
 if [ -z "${SCAN_WORDS_FILE:-}" ]; then
-  w=$(git config --get kaninabe.scanWords || true)
+  cfg_get kaninabe.scanWords; w=$cfg_v
   [ -z "$w" ] || SCAN_WORDS_FILE=$w
 fi
 if [ -z "${SCAN_OWNER:-}" ]; then
-  o=$(git config --get kaninabe.scanOwner || true)
+  cfg_get kaninabe.scanOwner; o=$cfg_v
   [ -z "$o" ] || SCAN_OWNER=$o
 fi
 [ -z "${SCAN_WORDS_FILE:-}" ] || export SCAN_WORDS_FILE
@@ -67,9 +73,16 @@ fi
 url=${2:-}
 [ -n "$url" ] || refuse "git did not pass the URL of the destination"
 range_out=$(sh "$here/../scripts/push-range.sh" --gate-args --head "$head" "$url" $remote_shas) || exit 1
-range_args=$(printf '%s\n' "$range_out" | sed -n 1p)
-range_id=$(printf '%s\n' "$range_out" | sed -n 2p | sed 's/^range-id=//')
-range_n=$(printf '%s\n' "$range_out" | sed -n 3p | sed 's/^commits=//')
+# (the three lines are cut with parameter expansion, no pipe; an output with fewer than three lines leaves the later ones empty,
+# and an empty range id is refused below)
+nl='
+'
+range_args=${range_out%%"$nl"*}; range_id=; range_n=
+case $range_out in
+  *"$nl"*)
+    range_rest=${range_out#*"$nl"}; range_id=${range_rest%%"$nl"*}; range_id=${range_id#range-id=}
+    case $range_rest in *"$nl"*) range_n=${range_rest#*"$nl"}; range_n=${range_n%%"$nl"*}; range_n=${range_n#commits=} ;; esac ;;
+esac
 # The review was of one destination, one head and one list of commits: the record is "<head> <range id>". If any of them
 # changed since (the destination's branch was deleted or moved, another URL, a new commit), the review must be redone.
 range_is_id "$range_id" || { echo "pre-push: push-range did not print a valid range id (64 lowercase hex digits): the push cannot be checked against the review" >&2; exit 2; }

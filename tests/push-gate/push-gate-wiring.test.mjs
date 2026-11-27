@@ -1095,9 +1095,9 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
       });
     });
     describe('one trap per script, holding the cleanup and the exit guard (review round 19, X2)', () => {
-      it('scan-public: a command that fails with exit 1 late in the run (cut) is exit 2, and so is the gate that runs it', () => {
+      it('scan-public: a command that fails with exit 1 late in the run (sed) is exit 2, and so is the gate that runs it', () => {
         writeWords(sb);
-        shimFail('cut', '-c1-8', 1);
+        shimFail('sed', '[^:]*:', 1);
         const p = spawnSync('/bin/sh', [scanPublic], { cwd: sb.repo, encoding: 'utf8', env: sb.env({ SCAN_WORDS_FILE: sb.words }) });
         assert.equal(p.status, 2, p.stdout + p.stderr);
         stops(runGate(sb, ['--mode', 'words', '--all'], { SCAN_WORDS_FILE: sb.words }), 2, 'push-gate: step scan-public could not run');

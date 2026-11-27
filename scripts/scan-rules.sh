@@ -19,11 +19,14 @@ scan_ident_ok='^(([0-9]+\+)?[A-Za-z0-9_-]+@users\.noreply\.github\.com|noreply@g
 # scan_grep ARGS...: grep, but an error (exit 2: bad pattern, unreadable file) is recorded in $scan_err and fails the
 # scan at scan_finish. A pipeline runs it in a subshell, where `exit` alone would only end that subshell.
 scan_err=$(mktemp)
+scan_dir=$(mktemp -d)
+# scan_io_failed: a stage file could not be written or read; recorded and stopped like a failed grep.
+scan_io_failed() { echo "scan: could not read a result"; echo x >> "$scan_err"; echo "${scan_name:-scan}: ERROR"; exit 2; }
 . "$(dirname "$0")/neutral-git.sh"
 # scan_cleanup: the cleanup of the ONE EXIT trap of a scan script, `trap 'rc=$?; scan_cleanup; guard_exit "$rc"' EXIT` (a second trap
 # on EXIT replaces the first, so it would drop guard_exit or part of the cleanup). Names a script has not set yet are empty.
 scan_cleanup() {
-  for sc_f in "${pat:-}" "${scoped:-}" "${commits:-}" "${gg_out:-}" "${ng_work:-}" "${scan_err:-}"; do
+  for sc_f in "${scan_dir:-}" "${pat:-}" "${scoped:-}" "${commits:-}" "${gg_out:-}" "${ng_work:-}" "${scan_err:-}"; do
     [ -z "$sc_f" ] || rm -rf "$sc_f" "$sc_f".*
   done
 }
@@ -43,18 +46,21 @@ scan_finish() {
 # scan_check_patterns FILE: every line must be a valid extended regex.
 scan_check_patterns() {
   [ -s "$1" ] || return 0
-  scan_grep -qE -f "$1" /dev/null || true
+  scan_grep -qE -f "$1" /dev/null || [ $? = 1 ]
 }
 
 # scan_attribution: reads text on stdin; succeeds (and so means "found") when an attribution line is present
 # other than the owner's own co-author trailer.
 scan_attribution() {
-  t=$(cat)
-  printf '%s\n' "$t" | scan_grep -iE "$scan_attrib" > /dev/null || return 1
+  # (every stage is a file in $scan_dir with its status checked: no pipe)
+  cat > "$scan_dir/attr.in" || scan_io_failed
+  scan_grep -iE "$scan_attrib" "$scan_dir/attr.in" > "$scan_dir/attr.1" || return 1
   if [ -n "$scan_owner" ]; then
     ok="^co-authored-by: [^<@]*<([0-9]+\\+)?$scan_owner@users\\.noreply\\.github\\.com>\$"
-    printf '%s\n' "$t" | scan_grep -iE "$scan_attrib" | { scan_grep -viE "$ok" || true; } | scan_grep -q . && return 0
-    printf '%s\n' "$t" | scan_grep -iE '^co-authored-by:' | scan_grep -qiE "$scan_ai" && return 0
+    scan_grep -viE "$ok" "$scan_dir/attr.1" > "$scan_dir/attr.2" || [ $? = 1 ]
+    if scan_grep -q . "$scan_dir/attr.2"; then return 0; fi
+    scan_grep -iE '^co-authored-by:' "$scan_dir/attr.in" > "$scan_dir/attr.3" || [ $? = 1 ]
+    if scan_grep -qiE "$scan_ai" "$scan_dir/attr.3"; then return 0; fi
     return 1
   fi
   return 0
@@ -62,5 +68,8 @@ scan_attribution() {
 
 # scan_bad_email: reads text on stdin; succeeds when an email-like string outside the allowed shapes is present.
 scan_bad_email() {
-  { scan_grep -oE "$scan_email" || true; } | { scan_grep -vE "$scan_email_ok" || true; } | scan_grep -q .
+  cat > "$scan_dir/mail.in" || scan_io_failed
+  scan_grep -oE "$scan_email" "$scan_dir/mail.in" > "$scan_dir/mail.1" || [ $? = 1 ]
+  scan_grep -vE "$scan_email_ok" "$scan_dir/mail.1" > "$scan_dir/mail.2" || [ $? = 1 ]
+  scan_grep -q . "$scan_dir/mail.2"
 }

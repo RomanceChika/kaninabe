@@ -71,11 +71,15 @@ scan_wc_failed() { echo "scan: could not count lines"; echo "scan-public: ERROR"
 # lines: sets $n to the number of lines of the last gg
 lines() { wc_num -l "$gg_out" || scan_wc_failed; n=$wc_v; }
 # show_at: the places (path:line) of the last gg -n; not printed when SCAN_QUIET is set (a public log: counts only).
-show_at() { [ -n "${SCAN_QUIET:-}" ] || { cut -d: -f2,3 "$gg_out" | head -50 | sed "s|^|  at |"; }; }
+show_at() {
+  [ -z "${SCAN_QUIET:-}" ] || return 0
+  cut -d: -f2,3 "$gg_out" > "$ng_work/at.1" || scan_io_failed
+  sed -n '1,50s|^|  at |p' "$ng_work/at.1" || scan_io_failed
+}
 text=$ng_work/text; text_mail=$ng_work/text-mail
 commit_ids=$(cat "$commits") || { echo "scan: could not read the list of commits"; echo "scan-public: ERROR"; exit 2; }
 for c in $commit_ids; do
-  short=$(echo "$c" | cut -c1-8)
+  short=${c%"${c#????????}"}
   # The text of a commit is the raw object with NUL as a line break (neutral_commit_text); a commit that cannot be read stops the scan.
   neutral_commit_text "$c" "$text" || { echo "scan: could not read a commit"; echo "scan-public: ERROR"; exit 2; }
   # The mail rule reads the same text, except that from the first `author` and the first `committer` line only the one <...> that the
@@ -103,7 +107,9 @@ for c in $commit_ids; do
     || { echo "scan: could not read a commit"; echo "scan-public: ERROR"; exit 2; }
   # An address that is empty (no <...>, or one that is not closed) is not a noreply address: every line must match, so it is red.
   wc_num -l "$ng_work/addrs" || scan_wc_failed; naddrs=$wc_v
-  bad_addrs=$({ scan_grep -cvE "$scan_ident_ok" "$ng_work/addrs" || true; })
+  scan_grep -cvE "$scan_ident_ok" "$ng_work/addrs" > "$ng_work/bad.n" || [ $? = 1 ]
+  bad_addrs=$(cat "$ng_work/bad.n") || scan_io_failed
+  case $bad_addrs in '' | *[!0-9]*) scan_io_failed ;; esac
   if scan_grep -qiE "$scan_ai" "$ng_work/names" || [ "${bad_addrs:-0}" != 0 ] || [ "$naddrs" != 2 ]; then
     echo "author or committer not allowed in $short"; fail=1
   fi

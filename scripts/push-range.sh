@@ -37,14 +37,14 @@ dest=${1:-}
 [ -n "$dest" ] || die "usage: push-range.sh [--gate-args] [--head <sha>] <remote name or URL> [<remote sha>...]"
 shift
 case $dest in -*) die "the destination looks like an option" ;; esac
-if [ -n "$want_head" ]; then
-  printf '%s\n' "$want_head" | grep -Eq '^([0-9a-f]{40}|[0-9a-f]{64})$' || die "--head needs a full commit id"
-fi
 
 # The repository is decided here, in the caller's environment, and handed on explicitly.
 . "$(dirname "$0")/repo-context.sh"
 . "$(dirname "$0")/neutral-git.sh"
 . "$(dirname "$0")/range-id.sh"
+if [ -n "$want_head" ]; then
+  is_commit_id "$want_head" || die "--head needs a full commit id"
+fi
 repo_resolve_top || die "$repo_error"
 cd "$repo_top"
 
@@ -85,10 +85,11 @@ done
 
 # Only what is here as a commit counts; an advertised commit that we do not have is simply not subtracted.
 : > "$tmp/confirmed"
-sort -u "$tmp/shas" | while IFS= read -r s; do
+sort -u "$tmp/shas" > "$tmp/shas.u" || die "could not sort the advertised commits"
+while IFS= read -r s; do
   [ -n "$s" ] || continue
   if neutral_git cat-file -e "$s^{commit}" 2>/dev/null; then printf '%s\n' "$s" >> "$tmp/confirmed"; fi
-done
+done < "$tmp/shas.u"
 
 confirmed=$(tr '\n' ' ' < "$tmp/confirmed")
 if [ -n "$confirmed" ]; then
@@ -107,14 +108,18 @@ if grep_q -q '^?' "$tmp/objects"; then die "objects are missing here, so the his
 wc_num -l "$tmp/commits" || die "could not count the commits"; n=$wc_v
 # The identity of this range: the URL contacted, the head and the exact ordered list (range-id.sh). Computed here, from the
 # same resolved inputs the list came from; the gate is handed the list id and checks it against the list it scans.
-list_id=$(range_list_id "$head_sha" "$tmp/commits")
-rid=$(range_id "$dest" "$list_id")
+list_id=$(range_list_id "$head_sha" "$tmp/commits") || die "could not compute the range id (sha256sum is needed)"
+rid=$(range_id "$dest" "$list_id" "$tmp/rid") || die "could not compute the range id (sha256sum is needed)"
 range_is_id "$list_id" && range_is_id "$rid" || die "could not compute the range id (sha256sum is needed)"
-echo "push-range: $n commit(s) not on the destination ($(grep -c . "$tmp/confirmed" || true) of its commit(s) known here)" >&2
+wc_num -l "$tmp/confirmed" || die "could not count the known commits"; known_n=$wc_v
+echo "push-range: $n commit(s) not on the destination ($known_n of its commit(s) known here)" >&2
 if [ "$gate_args" = 1 ]; then
   # line 1: the gate arguments; line 2: the range id; line 3: the number of commits
   if [ -z "$confirmed" ]; then printf -- '--all --list-id %s\n' "$list_id"
-  else printf -- '--not-on %s --list-id %s\n' "$(tr '\n' ',' < "$tmp/confirmed" | sed 's/,$//')" "$list_id"; fi
+  else
+    comma=; for s in $confirmed; do comma="${comma:+$comma,}$s"; done
+    printf -- '--not-on %s --list-id %s\n' "$comma" "$list_id"
+  fi
   printf 'range-id=%s\ncommits=%s\n' "$rid" "$n"
 else
   cat "$tmp/commits"

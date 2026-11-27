@@ -904,7 +904,7 @@ describe('classify-paths.sh: the same bytes under other shells', () => {
     const rng = run(['--list', list, '--range', a, b, '--out', o2], { cwd: d, shell });
     const bad = run(['--list', writeRaw('basis\tx\n', root), '--paths', paths], { shell });
     const own = run(['--list', path.join(repoRoot, 'basis-paths.tsv'), '--range', 'HEAD~1', 'HEAD', '--quiet'], { cwd: repoRoot, shell });
-    const idDir = path.join(root, `id-${tag}`); mkdirSync(idDir);
+    const idDir = path.join(root, `id-${tag}-${seq++}`); mkdirSync(idDir);
     writeFileSync(path.join(idDir, 'l2.tsv'), `${L('basis', 'x/*', 'r')}\n`); writeFileSync(path.join(idDir, 'p2.bin'), 'a\0');
     const ident = run(['--list', 'l2.tsv', '--paths', 'p2.bin', '--out', './l2.tsv'], { cwd: idDir, shell });
     const identKept = existsSync(path.join(idDir, 'l2.tsv'));

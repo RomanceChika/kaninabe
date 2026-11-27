@@ -23,7 +23,7 @@
 #   every commit of P has one parent (a merge commit is red; a commit with no parent means no shared history); the origin is the parent
 #   of the oldest one;
 #   F, each basis-prev and S are on P, in strictly increasing order;
-#   up to F no commit touches an implementation path, and at least one touches a basis path;
+#   up to F no commit touches an implementation path, and F itself touches a basis path;
 #   from F to S no commit touches both;   S itself touches a basis path;   after S no commit touches a basis path.
 # basis-opus and basis-codex must name S, and their links must be of this repository and this pull request, with two different ids.
 # A generated path (class `generated`) is neither basis nor implementation here. The classes are counted from the summary line of
@@ -298,7 +298,6 @@ else
 
   # the per-commit rules need single-parent commits and records that are on the path in order
   if [ "$nfind" = 0 ]; then
-    anyb=0
     k=0
     while read -r kc kp kn; do
       k=$((k + 1))
@@ -309,8 +308,7 @@ else
       s8 "$kc"
       if [ "$k" -le "$F_i" ]; then
         if [ "$ti" = 1 ]; then find "commit $s8r up to the first record changes implementation path(s)"; fi
-        if [ "$tb" = 1 ]; then anyb=1; fi
-        if [ "$k" = "$F_i" ] && [ "$anyb" = 0 ]; then find "the first record changes no basis path"; fi
+        if [ "$k" = "$F_i" ] && [ "$tb" = 0 ]; then find "the first record changes no basis path"; fi
       elif [ "$k" -le "$S_i" ]; then
         if [ "$tb" = 1 ] && [ "$ti" = 1 ]; then find "commit $s8r between the first record and basis changes basis and implementation paths"; fi
       fi

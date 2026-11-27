@@ -30,7 +30,7 @@
 # What passes is therefore a visible `Review` heading as the last thing on the page, holding the two lines that name the
 # head (and, when there are basis lines, their values in a fixed form: see --emit).
 # With `--emit FILE` the values of the basis lines are written to FILE, only when the verdict is "matches", all or nothing, mode 0600
-# (made in FILE's directory and moved into place), never over the body, and any old FILE is removed first. The form is one line each,
+# (made in FILE's directory and moved into place), never over the body, and any old FILE is removed first (once the arguments are valid and FILE is not the body: before the body is read, so that every exit other than 0 from there on leaves no file). The form is one line each,
 # in this order, and a last line `end`: `basis-first SHA`, `basis-prev SHA` (each), `basis SHA`, `basis-opus SHA OWNER/REPO N ID`,
 # `basis-codex SHA OWNER/REPO N ID`. It is the only reading of the basis lines that the check of the basis record uses. A look-alike of an old record before it (character references, letters from other scripts) is not caught:
 # it does not count, and the record that counts is the last section.
@@ -55,13 +55,14 @@ if [ $# -gt 2 ]; then
   [ $# -eq 4 ] && [ "$3" = --emit ] && [ -n "$4" ] || could_not "usage: check-review-record.sh <body-file> <head-sha> [--emit <file>]"
   emit=$4
 fi
-[ -f "$f" ] && [ -r "$f" ] || { echo "review record: cannot read the pull request body"; exit 2; }
 if [ -n "$emit" ]; then
   # by identity, not by spelling (a symbolic or hard link names the same file): checked before anything is removed
   if [ "$emit" -ef "$f" ]; then could_not "usage: the emit file is the body"; fi
-  # an old file is removed first, so that no exit 2 leaves a stale one (a directory or an unremovable file is exit 2)
+  # an old file is removed first, before the body is read, so that no exit other than 0 leaves a stale one from here on
+  # (a directory or an unremovable file is exit 2); a usage error above does not touch the path
   rm -f "$emit" || could_not "the old emit file could not be removed"
 fi
+[ -f "$f" ] && [ -r "$f" ] || { echo "review record: cannot read the pull request body"; exit 2; }
 case $head in *[!0-9a-f]*) bad=1 ;; *) bad=0 ;; esac
 [ "$bad" -eq 0 ] && [ "${#head}" -eq 40 ] || { echo "review record: the head is not a full commit sha"; exit 2; }
 tmp=$(mktemp -d) || could_not "no temporary directory"

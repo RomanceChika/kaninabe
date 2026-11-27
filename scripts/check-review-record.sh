@@ -39,7 +39,9 @@ case $head in *[!0-9a-f]*) bad=1 ;; *) bad=0 ;; esac
 [ "$bad" -eq 0 ] && [ "${#head}" -eq 40 ] || { echo "review record: the head is not a full commit sha"; exit 2; }
 tmp=$(mktemp -d) || could_not "no temporary directory"
 [ -n "$tmp" ] && [ -d "$tmp" ] || could_not "no temporary directory"
-# One line per finding: "E <rule>" for a broken rule, "V <who> <value>" for a record value (never printed as is).
+# One line per finding: "E <rule>" for a broken rule, "V <who> <value>" for a record value (never printed as is), and a last line
+# "D" that only a program that ran to its end prints: a file without it was cut short (a write error that nobody saw), so no
+# result is read from it. The same last line (as "~D", which sorts after every finding) is carried through the next stages.
 LC_ALL=C awk '
   function run(s, c,   n) { n = 0; while (substr(s, n + 1, 1) == c) n++; return n }
   BEGIN { fence = 0; seen = 0; o = 0; c = 0 }
@@ -70,16 +72,30 @@ LC_ALL=C awk '
     }
   }
   END {
-    if (stop) exit
-    if (!seen) print "E need one ## Review section (found none outside fenced code)"
-    else { if (o != 1) print "E need exactly one - opus: line under ## Review"; if (c != 1) print "E need exactly one - codex: line under ## Review" }
-  }' "$f" > "$tmp/out" || could_not "the body could not be read"
-sed -n 's/^E //p' "$tmp/out" > "$tmp/e1" || could_not "the findings could not be read"
-sort -u "$tmp/e1" > "$tmp/e2" || could_not "the findings could not be read"
+    if (!stop) {
+      if (!seen) print "E need one ## Review section (found none outside fenced code)"
+      else { if (o != 1) print "E need exactly one - opus: line under ## Review"; if (c != 1) print "E need exactly one - codex: line under ## Review" }
+    }
+    print "D"
+  }' < "$f" > "$tmp/out" || could_not "the body could not be read"
+# last_is <file> <line>: the last line of <file> is exactly <line>
+last_is() {
+  sed -n '$p' "$1" > "$1.last" || return 1
+  li=$(cat "$1.last") || return 1
+  [ "$li" = "$2" ]
+}
+last_is "$tmp/out" D || could_not "the result was cut short"
+sed -n -e 's/^E //p' -e 's/^D$/~D/p' "$tmp/out" > "$tmp/e1" || could_not "the findings could not be read"
+LC_ALL=C sort -u "$tmp/e1" > "$tmp/e2" || could_not "the findings could not be read"
+last_is "$tmp/e2" '~D' || could_not "the findings were cut short"
+# findings exist when the first line of the sorted file is not the sentinel (decided on the checked file, not on a later stage's output)
+sed -n '1p' "$tmp/e2" > "$tmp/e2.first" || could_not "the findings could not be read"
+first=$(cat "$tmp/e2.first") || could_not "the findings could not be read"
 fail=0
-if [ -s "$tmp/e2" ]; then
-  sed 's/^/review record: /' "$tmp/e2" > "$tmp/e3" || could_not "the findings could not be written"
-  cat "$tmp/e3" || could_not "the findings could not be written"
+if [ "$first" != '~D' ]; then
+  sed '$d' "$tmp/e2" > "$tmp/e3" || could_not "the findings could not be written"
+  sed 's/^/review record: /' "$tmp/e3" > "$tmp/e4" || could_not "the findings could not be written"
+  cat "$tmp/e4" || could_not "the findings could not be written"
   fail=1
 else
   for who in opus codex; do

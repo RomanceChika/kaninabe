@@ -6,7 +6,7 @@
  */
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -268,5 +268,64 @@ describe('check-review-record.sh: a result that was cut short, or a body named l
     assert.equal(r.status, 1, r.out);
     assert.ok(r.out.includes('reviewed bbbbbbbb'), r.out);
   });
+});
+
+// ---- the class: every output the script reads must be proven complete before it is used ----
+// A mechanical sweep: for each external tool the script calls, for each call index n of that tool (counted per body, since the path
+// differs), a shim runs the real tool and hands on its standard output without the last k lines (k = 1, 2 and all) with status 0.
+// Whatever it cuts, the result is exit 2 (could not run), or it is the untruncated run exactly (the cut had nothing to cut).
+describe('check-review-record.sh: a stage output that is cut short is exit 2, whatever the tool and whichever call', () => {
+  let root;
+  before(() => { root = mkdtempSync(path.join(tmpdir(), 'review-record-sweep-')); });
+  after(() => { toolPath = null; rmSync(root, { recursive: true, force: true }); });
+  const SWEPT = ['awk', 'sed', 'sort', 'cat', 'mktemp'];
+  const BODIES = [
+    ['a matching record', record(), 0],
+    ['a stale record', record(OLD), 1],
+    ['a record followed by another section', `${record()}\n## 後書き\n`, 1],
+    ['an HTML tag before the record', `<div>\n${record()}`, 1],
+    ['no section', 'no record\n', 1],
+    ['two sections', `${record()}\n${record()}`, 1],
+  ];
+  let counter = 0;
+  /** Runs the body with `tool` shimmed: its call number `n` loses its last `k` lines (n = 0: no cut, only counted). Returns the result and how many times the tool was called. */
+  const run = (tool, n, k, body) => {
+    const cnt = path.join(root, `cnt-${counter++}`);
+    const real = tool === 'awk' ? which('awk') : which(tool);
+    const cut = k === 'all' ? ':' : `${which('head')} -n -${k} "$T"`;
+    const shim = `c=0\n[ ! -f ${cnt} ] || read c < ${cnt}\nc=$((c+1))\necho $c > ${cnt}\n`
+      + `if [ "$c" = ${n} ]; then\n  T=$(${which('mktemp')}) || exit 3\n  ${real} "$@" > "$T" || { rc=$?; ${which('rm')} -f "$T"; exit $rc; }\n  ${cut}\n  ${which('rm')} -f "$T"\n  exit 0\nfi\nexec ${real} "$@"`;
+    toolPath = makeBin(root, { shim: { [tool]: shim } });
+    const r = check(body);
+    let calls = 0;
+    try { calls = Number(readFileSync(cnt, 'utf8').trim()); } catch { /* the tool was not called */ }
+    return { ...r, calls };
+  };
+  let runs = 0;
+  const started = Date.now();
+  for (const tool of SWEPT) {
+    for (const [what, body, truth] of BODIES) {
+      it(`${tool}: every call cut by 1, 2 or all lines: ${what} is exit 2 or unchanged`, () => {
+        const base = run(tool, 0, 1, body);
+        assert.equal(base.status, truth, `the untruncated run: ${base.out}`);
+        assert.ok(base.calls >= 1, `${tool} is not called for ${what}`);
+        for (let n = 1; n <= base.calls; n += 1) {
+          for (const k of [1, 2, 'all']) {
+            runs += 1;
+            const r = run(tool, n, k, body);
+            const label = `${tool} call ${n} of ${base.calls}, last ${k} line(s) dropped`;
+            if (r.status === 2) {
+              assert.ok(r.out.includes('could not run'), `${label}: ${r.out}`);
+              assert.ok(!r.out.includes('matches the head') && !r.out.includes('review record: FAILED'), `${label}: ${r.out}`);
+            } else {
+              assert.equal(r.status, truth, `${label}: the verdict changed: ${r.out}`);
+              assert.equal(r.out, base.out, `${label}: the output changed (a cut that is not exit 2 must have had nothing to cut)`);
+            }
+          }
+        }
+      });
+    }
+  }
+  it('(guard) the sweep ran', () => { assert.ok(runs > 100, `only ${runs} shimmed runs`); console.log(`sweep: ${runs} shimmed runs in ${Date.now() - started} ms`); });
 });
 

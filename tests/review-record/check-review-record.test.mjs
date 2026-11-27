@@ -216,7 +216,7 @@ function cases() {
   it('fails when the link of an answer is not exactly https://github.com/OWNER/REPO/pull/N#issuecomment-ID', () => {
     const bad = ['http://github.com/o/r/pull/7#issuecomment-101', 'https://github.com/o/r/issues/7#issuecomment-101', 'https://github.com/o/r/pull/7',
       'https://github.com/o/r/pull/7#issuecomment-', 'https://github.com/o/r/pull/7#issuecomment-10x', 'https://github.com/o/r/pull/7#issuecomment-101 trailing',
-      'https://github.com/o/r/pull/7#issuecomment-101#x', 'https://github.com/o/r/pull/7#discussion_r101', 'https://example.org/o/r/pull/7#issuecomment-101',
+      'https://github.com/o/r/pull/7#issuecomment-101#x', 'https://github.com/o/r/pull/07#issuecomment-101', 'https://github.com/o/r/pull/0#issuecomment-101', 'https://github.com/o/r/pull/7#issuecomment-0101', 'https://github.com/o/r/pull/7#discussion_r101', 'https://example.org/o/r/pull/7#issuecomment-101',
       'https://github.com/o/pull/7#issuecomment-101', 'https://github.com/o/r/pull/#issuecomment-101', 'https://github.com/o/r/pull/7/files#issuecomment-101',
       'HTTPS://github.com/o/r/pull/7#issuecomment-101', '', 'see the comment'];
     for (const u of bad) {
@@ -353,7 +353,7 @@ const SYSTEM = ['/usr/bin', '/bin', '/usr/local/bin'];
 const which = (name) => SYSTEM.map((d) => path.join(d, name)).find((p) => spawnSync('/bin/sh', ['-c', `test -x ${p}`]).status === 0) ?? null;
 const TOOLS = ['mktemp', 'rm', 'sed', 'sort', 'cat'];
 // tools that are always put in the private PATH but are not swept (the `--emit` file may need them to be made and moved into place)
-const EXTRA = ['mv', 'cmp', 'chmod', 'wc', 'tr', 'head', 'ls', 'dirname', 'basename', 'ln'];
+const EXTRA = ['mv', 'cmp', 'wc', 'tr'];
 /** A directory with only the tools the script needs: `awk` is the given program (a path, or ['busybox', 'awk']); `omit` names tools left out; `shim` maps a tool to a shell body; `extra` names more tools that are put in besides EXTRA. */
 function makeBin(root, { awk = which('awk'), omit = [], shim = {}, extra = [] } = {}) {
   const bin = path.join(root, `bin-${Math.random().toString(36).slice(2)}`);

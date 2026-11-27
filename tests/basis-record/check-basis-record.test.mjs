@@ -147,11 +147,13 @@ function red(r, ...messages) {
   assert.equal(r.lines.at(-1), FAILED, r.all);
   for (const m of messages) assert.ok(r.lines.includes(`basis record: ${m}`), `should say "${m}": ${r.all}`);
   assert.ok(!r.lines.some((l) => /^basis record: (matches|not needed)/.test(l)), r.all);
+  assert.ok(r.lines.every((l) => l.startsWith('basis record: ')), `a line that is not a finding: ${r.all}`);
 }
 function couldNotRun(r, secrets = []) {
   assert.equal(r.status, 2, r.all);
   assert.ok(r.lines.some((l) => COULD_NOT.test(l)), `no fixed message: ${r.all}`);
   assert.ok(!r.lines.some((l) => VERDICT.test(l)), `a verdict was printed: ${r.all}`);
+  assert.ok(r.lines.filter((l) => l.startsWith('basis record: ')).every((l) => COULD_NOT.test(l)), `a finding was printed with exit 2: ${r.all}`);
   for (const s of secrets) assert.ok(!r.all.includes(s), `echoed ${s}: ${r.all}`);
 }
 
@@ -374,6 +376,34 @@ describe('check-basis-record.sh: with a record, the findings', () => {
     u.side('x1', () => u.B());
     const um = u.merge('x1');
     red(run(u, { rec: { basis: ub } }), `merge commit ${s8(um)} is on the path (rebuild on the new base and record again)`);
+  });
+
+  it('a merge commit before the first record, or between the first record and basis, is red as well', () => {
+    const w = world();
+    const b1 = w.B();
+    w.onMain(() => w.B());
+    const m = w.merge('main');
+    const b2 = w.B();
+    w.I();
+    const msg = (x) => `merge commit ${s8(x)} is on the path (rebuild on the new base and record again)`;
+    red(run(w, { rec: { basis: b2 } }), msg(m));
+    red(run(w, { rec: { first: b1, basis: b2 } }), msg(m));
+    const v = world();
+    const first = v.B();
+    v.onMain(() => v.B());
+    const vm = v.merge('main');
+    const vb = v.B();
+    red(run(v, { rec: { first, basis: vb } }), msg(vm));
+  });
+
+  it('a history that holds several merge bases (the base and the pull request merged each other) is red in both modes', () => {
+    const w = world();
+    w.I();
+    const b1 = w.onMain(() => { const x = w.B(); w.merge('pr'); return x; });
+    const m = w.merge(b1);
+    const several = 'the pull request has several merge bases with the base (rebuild on the base)';
+    red(run(w), several);
+    red(run(w, { rec: { basis: m } }), `merge commit ${s8(m)} is on the path (rebuild on the new base and record again)`);
   });
 
   it('an implementation commit before the first record (or before basis, with no first): red', () => {
@@ -703,6 +733,7 @@ describe('check-basis-record.sh: a tool that fails, is missing or hands on a cut
     assert.equal(r.status, 2, `${why}: ${r.all}`);
     assert.ok(r.lines.some((l) => COULD_NOT.test(l)), `${why}: no fixed message: ${r.all}`);
     assert.ok(!r.lines.some((l) => VERDICT.test(l)), `${why}: a verdict was printed: ${r.all}`);
+    assert.ok(r.lines.filter((l) => l.startsWith('basis record: ')).every((l) => COULD_NOT.test(l)), `${why}: a finding was printed with exit 2: ${r.all}`);
   };
 
   const prepare = (sc) => {
@@ -771,25 +802,61 @@ describe('check-basis-record.sh: a tool that fails, is missing or hands on a cut
         assert.ok(allowed, `${tool}: the call ${key} was never really cut, and it is not a status question (it printed nothing in: ${empties.join(' | ') || 'no run'})`);
       }
     }
-    for (const tool of ['git', 'env', 'mktemp', 'cat', 'wc', 'tr', 'classify']) assert.ok(cutCalls[tool].size >= 1, `${tool}: no call was cut`);
+    for (const tool of ['git', 'env', 'mktemp', 'cat', 'wc', 'tr', 'classify', 'review']) assert.ok(cutCalls[tool].size >= 1, `${tool}: no call was cut`);
     console.log(`sweep: ${runs} shimmed runs in ${Date.now() - started} ms, calls cut ${JSON.stringify(Object.fromEntries(SWEPT.map((t) => [t, cutCalls[t].size])))}`);
   });
 });
 
-// the siblings are the ones next to the script, not whatever the caller's PATH or directory holds
-describe('check-basis-record.sh: the siblings are found next to the script', () => {
-  it('a copy of the scripts with a sibling that cannot run is exit 2, and with the real ones it matches', () => {
+// the siblings are the ones next to the script, and what they hand on is proven: the check reads the emit file of the review check and nothing else
+describe('check-basis-record.sh: the siblings are found next to the script, and their answers are proven', () => {
+  const REAL = ['check-basis-record.sh', 'check-review-record.sh', 'classify-paths.sh'];
+  /** A copy of the scripts directory in which `stubs` (name -> text) replace the siblings; runs the copy on the pull request of `w`. */
+  function withStubs(w, stubs, rec) {
+    const dir = fresh('scripts');
+    for (const n of REAL) writeFileSync(path.join(dir, n), stubs[n] ?? readFileSync(path.join(path.dirname(script), n)));
+    const f = path.join(fresh('body'), 'body'); writeFileSync(f, bodyOf(w.head(), rec, w.mark));
+    const r = spawnSync('/bin/sh', [path.join(dir, 'check-basis-record.sh'), ...usual(f, w.head(), w.base()).flat()], { cwd: w.d, encoding: 'utf8', env: cleanEnv });
+    const all = r.stdout + r.stderr;
+    return { status: r.status, all, lines: all.split('\n').filter((x) => x !== '') };
+  }
+  // a review check that says "matches the head" and writes the emit file named after --emit with `emit` as its text (none: no file)
+  const reviewStub = (emit, code = 0, say = 'review record: matches the head') => `${emit === null ? '' : `while [ $# -gt 0 ]; do if [ "$1" = --emit ]; then printf '%s' '${emit}' > "$2"; fi; shift; done\n`}echo "${say}"\nexit ${code}\n`;
+  const emitOf = (basis, { end = true } = {}) => `basis ${basis}\nbasis-opus ${basis} o/r 7 101\nbasis-codex ${basis} o/r 7 102\n${end ? 'end\n' : ''}`;
+
+  it('with the real siblings it matches, and a classifier that cannot run is exit 2', () => {
     const w = world();
     const b = w.B(); w.I();
-    const dir = fresh('scripts');
-    for (const n of ['check-basis-record.sh', 'check-review-record.sh', 'classify-paths.sh']) writeFileSync(path.join(dir, n), readFileSync(path.join(path.dirname(script), n)));
-    const f = path.join(fresh('body'), 'body'); writeFileSync(f, bodyOf(w.head(), { basis: b }));
-    const go = () => spawnSync('/bin/sh', [path.join(dir, 'check-basis-record.sh'), ...usual(f, w.head(), w.base()).flat()], { cwd: w.d, encoding: 'utf8', env: cleanEnv });
-    const ok = go();
-    assert.equal(ok.status, 0, ok.stdout + ok.stderr);
-    writeFileSync(path.join(dir, 'classify-paths.sh'), 'echo "classify-paths: could not run (a stub)"\nexit 2\n');
-    const r = go();
-    assert.equal(r.status, 2, r.stdout + r.stderr);
-    assert.ok(!/basis record: (matches|not needed|FAILED)/.test(r.stdout + r.stderr), r.stdout + r.stderr);
+    green({ ...withStubs(w, {}, { basis: b }) }, matches(w.fork, b));
+    for (const code of [2, 3]) couldNotRun(withStubs(w, { 'classify-paths.sh': `echo "classify-paths: could not run (a stub)"\nexit ${code}\n` }, { basis: b }));
+  });
+
+  it('a review check that exits 2 or 3, or that says it matches but leaves no emit file, or an emit file without its last line, is exit 2', () => {
+    const w = world();
+    const b = w.B(); w.I();
+    const cases = {
+      'exit 2': reviewStub(null, 2, 'review record: could not run (a stub)'),
+      'exit 3': reviewStub(null, 3, 'review record: could not run (a stub)'),
+      'matches, no emit file': reviewStub(null),
+      'an emit file without end': reviewStub(emitOf(b, { end: false })),
+      'an empty emit file': reviewStub(''),
+    };
+    for (const [name, text] of Object.entries(cases)) {
+      const r = withStubs(w, { 'check-review-record.sh': text }, { basis: b });
+      assert.equal(r.status, 2, `${name}: ${r.all}`);
+      couldNotRun(r);
+    }
+    green(withStubs(w, { 'check-review-record.sh': reviewStub(emitOf(b)) }, { basis: b }), matches(w.fork, b));
+  });
+
+  it('what is judged is the emit file, not the body: an emit that names another commit of the path decides the verdict', () => {
+    const w = world();
+    const b1 = w.B(); const b2 = w.B(); w.I();
+    green(withStubs(w, { 'check-review-record.sh': reviewStub(emitOf(b2)) }, { basis: b1 }), matches(w.fork, b2));
+    const x = w.side('other', () => w.B());
+    red(withStubs(w, { 'check-review-record.sh': reviewStub(emitOf(x)) }, { basis: b1 }), NOT_ON_PATH(x));
+    // an emit with no basis line at all is the no-record mode, whatever the body says
+    const r = withStubs(w, { 'check-review-record.sh': reviewStub('end\n') }, { basis: b1 });
+    assert.equal(r.status, 1, r.all);
+    red(r, 'record the basis');
   });
 });

@@ -92,68 +92,12 @@ scan_bad_email() {
   scan_grep -q . "$scan_dir/mail.2"
 }
 
-# SHA-256 in awk (the entries of a `mail` kind in scan-exclusions.tsv are `sha256:<hex>` of the exact string, and the tools of the gate are
-# only the ones every system has: no sha256sum is assumed). Functions and BEGIN only; a caller adds the main rule. Checked against the
-# standard test strings in tests; strings are bytes (run it with LC_ALL=C), at most a few hundred at a time.
-scan_sha_awk='
-function nib(op, a, b,    r, i, p) {
-  r = 0; p = 1
-  for (i = 0; i < 8; i++) { r += T[op, a % 16, b % 16] * p; a = int(a / 16); b = int(b / 16); p *= 16 }
-  return r
-}
-function xor(a, b) { return nib(1, a, b) }
-function and(a, b) { return nib(2, a, b) }
-function rotr(x, n) { return int(x / P[n]) + (x % P[n]) * P[32 - n] }
-function shr(x, n) { return int(x / P[n]) }
-function sha256(s,    n, i, j, m, len, k, h0, h1, h2, h3, h4, h5, h6, h7, a, b, c, d, e, f, g, h, t1, t2, w, s0, s1, bits) {
-  n = length(s)
-  for (i = 0; i < n; i++) m[i] = O[substr(s, i + 1, 1)]
-  len = n; m[len++] = 128
-  while (len % 64 != 56) m[len++] = 0
-  bits = n * 8
-  for (i = 7; i >= 0; i--) { m[len + i] = bits % 256; bits = int(bits / 256) }
-  len += 8
-  h0 = H0[0]; h1 = H0[1]; h2 = H0[2]; h3 = H0[3]; h4 = H0[4]; h5 = H0[5]; h6 = H0[6]; h7 = H0[7]
-  for (k = 0; k < len; k += 64) {
-    for (j = 0; j < 16; j++) w[j] = ((m[k + 4*j] * 256 + m[k + 4*j + 1]) * 256 + m[k + 4*j + 2]) * 256 + m[k + 4*j + 3]
-    for (j = 16; j < 64; j++) {
-      s0 = xor(xor(rotr(w[j-15], 7), rotr(w[j-15], 18)), shr(w[j-15], 3))
-      s1 = xor(xor(rotr(w[j-2], 17), rotr(w[j-2], 19)), shr(w[j-2], 10))
-      w[j] = (w[j-16] + s0 + w[j-7] + s1) % 4294967296
-    }
-    a = h0; b = h1; c = h2; d = h3; e = h4; f = h5; g = h6; h = h7
-    for (j = 0; j < 64; j++) {
-      s1 = xor(xor(rotr(e, 6), rotr(e, 11)), rotr(e, 25))
-      t1 = (h + s1 + xor(and(e, f), and(4294967295 - e, g)) + K[j] + w[j]) % 4294967296
-      s0 = xor(xor(rotr(a, 2), rotr(a, 13)), rotr(a, 22))
-      t2 = (s0 + xor(xor(and(a, b), and(a, c)), and(b, c))) % 4294967296
-      h = g; g = f; f = e; e = (d + t1) % 4294967296; d = c; c = b; b = a; a = (t1 + t2) % 4294967296
-    }
-    h0 = (h0 + a) % 4294967296; h1 = (h1 + b) % 4294967296; h2 = (h2 + c) % 4294967296; h3 = (h3 + d) % 4294967296
-    h4 = (h4 + e) % 4294967296; h5 = (h5 + f) % 4294967296; h6 = (h6 + g) % 4294967296; h7 = (h7 + h) % 4294967296
-  }
-  return sprintf("%08x%08x%08x%08x%08x%08x%08x%08x", h0, h1, h2, h3, h4, h5, h6, h7)
-}
-BEGIN {
-  for (a = 0; a < 16; a++) for (b = 0; b < 16; b++) {
-    x = 0; y = 0; p = 1; u = a; v = b
-    for (i = 0; i < 4; i++) { if ((u % 2) != (v % 2)) x += p; if ((u % 2) && (v % 2)) y += p; u = int(u / 2); v = int(v / 2); p *= 2 }
-    T[1, a, b] = x; T[2, a, b] = y
-  }
-  P[0] = 1; for (i = 1; i <= 32; i++) P[i] = P[i - 1] * 2
-  for (i = 1; i < 256; i++) O[sprintf("%c", i)] = i
-  split("1116352408 1899447441 3049323471 3921009573 961987163 1508970993 2453635748 2870763221 3624381080 310598401 607225278 1426881987 1925078388 2162078206 2614888103 3248222580 3835390401 4022224774 264347078 604807628 770255983 1249150122 1555081692 1996064986 2554220882 2821834349 2952996808 3210313671 3336571891 3584528711 113926993 338241895 666307205 773529912 1294757372 1396182291 1695183700 1986661051 2177026350 2456956037 2730485921 2820302411 3259730800 3345764771 3516065817 3600352804 4094571909 275423344 430227734 506948616 659060556 883997877 958139571 1322822218 1537002063 1747873779 1955562222 2024104815 2227730452 2361852424 2428436474 2756734187 3204031479 3329325298", kk, " ")
-  for (i = 1; i <= 64; i++) K[i - 1] = kk[i] + 0
-  split("1779033703 3144134277 1013904242 2773480762 1359893119 2600822924 528734635 1541459225", hh, " ")
-  for (i = 1; i <= 8; i++) H0[i - 1] = hh[i] + 0
-}
-'
 # mail_allowed <commit>: sets $ma_n to the number of address hits (after the allowed set) that `mail` entries of the list allow at their
 # paths in <commit>: for each listed path that is a regular blob in the commit, the hits in that one file are counted by distinct string,
 # and a string counts when the list has a `mail` line for that path with exactly its sha256. The list is $scan_dir/excl.mail (`path TAB
 # sha256:<hex>` per line). Returns 1 if a step cannot be done (the caller stops).
 mail_allowed() {
-  ma_n=0
+  ma_n=0; ma_tab=$(printf '\t') || return 1
   LC_ALL=C awk -F'\t' '{ print $1 }' "$scan_dir/excl.mail" > "$scan_dir/ma.paths.a" || return 1
   LC_ALL=C sort -u "$scan_dir/ma.paths.a" > "$scan_dir/ma.paths" || return 1
   wc_lines "$scan_dir/ma.paths" || return 1; ma_expect=$wc_v; ma_seen=0
@@ -165,9 +109,19 @@ mail_allowed() {
     case $ma_rc in 0 | 1) ;; *) return 1 ;; esac
     sed 's/^[^:]*://' "$scan_dir/ma.hits" > "$scan_dir/ma.hits.s" || return 1
     scan_filter "$scan_dir/ma.hits.s" "$scan_dir/ma.red" -vE "$scan_email_ok"
-    LC_ALL=C awk "$scan_sha_awk"'{ c[$0]++ } END { for (s in c) print "sha256:" sha256(s) "\t" c[s] }' "$scan_dir/ma.red" > "$scan_dir/ma.hashed" || return 1
-    ma_k=$(P=$ma_p LC_ALL=C awk -F'\t' 'FILENAME == ARGV[1] { if ($1 == ENVIRON["P"]) ok[$2] = 1; next } ($1 in ok) { n += $2 } END { print n + 0 }' "$scan_dir/excl.mail" "$scan_dir/ma.hashed") || return 1
-    case $ma_k in '' | *[!0-9]*) return 1 ;; esac
+    # the distinct hit strings with their counts (awk only counts), then one `sha256sum` of each string's exact bytes (no line break)
+    LC_ALL=C awk '{ c[$0]++ } END { for (s in c) print c[s] "\t" s }' "$scan_dir/ma.red" > "$scan_dir/ma.counts" || return 1
+    ma_k=0
+    while IFS=$ma_tab read -r ma_c ma_s; do
+      case $ma_c in '' | *[!0-9]*) return 1 ;; esac
+      printf '%s' "$ma_s" > "$scan_dir/ma.str" || return 1
+      sha256sum < "$scan_dir/ma.str" > "$scan_dir/ma.sum" || return 1
+      read -r ma_h ma_rest < "$scan_dir/ma.sum" || return 1
+      case $ma_h in '' | *[!0-9a-f]*) return 1 ;; esac
+      [ "${#ma_h}" = 64 ] || return 1
+      printf '%s\tsha256:%s\n' "$ma_p" "$ma_h" > "$scan_dir/ma.want" || return 1
+      if grep_q -qxFf "$scan_dir/ma.want" "$scan_dir/excl.mail"; then ma_k=$((ma_k + ma_c)); fi
+    done < "$scan_dir/ma.counts"
     ma_n=$((ma_n + ma_k))
   done < "$scan_dir/ma.paths"
   [ "$ma_seen" = "$ma_expect" ] || return 1

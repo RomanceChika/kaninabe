@@ -17,7 +17,7 @@
 #   --range   `git diff --no-renames --name-only -z <a> <b>` in the repository of the current directory: a rename is the delete of the
 #             old path and the add of the new one, and both are classified; a delete, a mode change, a type change and a submodule
 #             gitlink are one path each. Nothing is classified by its content. Each of <a> and <b> must resolve to ONE COMMIT
-#             (`rev-parse --verify <x>^{commit}`, resolved once, to a full sha; a branch, a tag that peels to a commit, an abbreviated
+#             (`rev-parse --verify <x>^{commit}`, resolved once, to a full sha of 40 hex digits, or 64 in a SHA-256 repository; a branch, a tag that peels to a commit, an abbreviated
 #             sha and HEAD~1 do; a tree, a blob, a range and `B:path` are exit 2), and the two shas are what is diffed.
 #             git runs under `env -i` with only PATH, a HOME and XDG_CONFIG_HOME that do not exist, GIT_CONFIG_NOSYSTEM,
 #             GIT_CONFIG_GLOBAL=/dev/null, GIT_ATTR_NOSYSTEM and GIT_NO_REPLACE_OBJECTS=1, and with `--no-replace-objects`. That
@@ -26,11 +26,11 @@
 #             the user's and the system's git configuration, and replace refs; and the diff options fix rename detection, relative paths,
 #             hidden submodules and the external diff. It does NOT neutralise what belongs to the repository itself: its own
 #             configuration, its object directory and the alternates it records, and git refusing a repository owned by another user
-#             (safe.directory is not read, so that is exit 2). The repository is found from the current directory, never from GIT_DIR.
+#             (a global safe.directory is not read under `env -i`, so in a repository owned by another user, for example a container job, the range mode is exit 2). The repository is found from the current directory, never from GIT_DIR.
 #   --out     one `<class><TAB><path>` per path, in the order given. All or nothing: a file already at --out is removed first, the result is
 #             written to a temporary file in the same directory and moved into place as the very last step (after the cleanup), so a
-#             file at --out exists only after exit 0 or 1, and an exit 2 leaves no stale, partial or temporary file. --out may not be the
-#             list or the paths file. Without --out and without --quiet the rows go to standard output instead.
+#             file at --out exists only after exit 0 or 1, and an exit 2 leaves no stale, partial or temporary file. The file has mode 0600
+#             (mktemp makes it and mv keeps it). --out may not be the list or the paths file, under any spelling (checked by identity). Without --out and without --quiet the rows go to standard output instead.
 #   --quiet   no row on standard output (counts only)
 #   --require basis-only: no implementation path; no-basis: no basis path; any (the default). Generated paths satisfy both.
 # Standard output ends with `classify-paths: N path(s): B basis, G generated, I implementation`, then, when --require is violated,
@@ -102,7 +102,9 @@ case $out in -*) could_not "usage: a file name starts with -" ;; esac
 [ "$((paths_set + range_set))" = 1 ] || could_not "usage: exactly one of --paths and --range"
 if [ "$out_set" = 1 ]; then
   [ -n "$out" ] || could_not "usage: --out needs a file"
-  [ "$out" != "$list" ] && [ "$out" != "$paths" ] || could_not "usage: --out is the list or the paths file"
+  # by identity, not by spelling (./name, a symlink and a hard link name the same file): checked before anything is removed
+  if [ "$out" -ef "$list" ]; then could_not "usage: --out is the list or the paths file"; fi
+  if [ "$paths_set" = 1 ] && [ "$out" -ef "$paths" ]; then could_not "usage: --out is the list or the paths file"; fi
   # a result that an earlier run left is removed first, so that no exit 2 leaves a stale one (a directory or an unremovable file is exit 2)
   rm -f "$out" || could_not "the old output file could not be removed"
 fi
@@ -134,12 +136,12 @@ gitc() {
     GIT_ATTR_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 git --no-replace-objects "$@"
 }
 # resolve_commit <revision> <file>: sets $r_sha to the full sha of the commit that <revision> names (a tag is peeled); fails for anything
-# that is not one commit (a tree, a blob, a range, an unknown name, an empty answer, a cut-short answer, a name that is not 40 hex digits)
+# that is not one commit (a tree, a blob, a range, an unknown name, a refused repository, an empty answer, a cut-short answer, a name that is not 40 hex digits, or 64 in a SHA-256 repository)
 resolve_commit() {
   gitc rev-parse --verify --quiet --end-of-options "$1^{commit}" > "$2" 2> "$tmp/git.err" || return 1
   read -r r_sha < "$2" || return 1
   case $r_sha in '' | *[!0-9a-f]*) return 1 ;; esac
-  [ "${#r_sha}" = 40 ]
+  [ "${#r_sha}" = 40 ] || [ "${#r_sha}" = 64 ]
 }
 
 # ---- the list: read whole, every line judged, then proven complete ----
@@ -203,9 +205,9 @@ else
   # Then two runs of git: the names, and the raw form that holds the same names with two NUL bytes per path; the second is the count
   # that proves the first complete. The options fix what a configuration could change: no rename detection, no relative paths, no
   # hidden submodule change, no external diff. git's own messages go to a file and are never shown.
-  resolve_commit "$ra" "$tmp/sha.a" || could_not "range: the first argument is not a commit"
+  resolve_commit "$ra" "$tmp/sha.a" || could_not "range: not a commit, or git refused the repository"
   sha_a=$r_sha
-  resolve_commit "$rb" "$tmp/sha.b" || could_not "range: the second argument is not a commit"
+  resolve_commit "$rb" "$tmp/sha.b" || could_not "range: not a commit, or git refused the repository"
   sha_b=$r_sha
   gitc diff --no-renames --no-relative --ignore-submodules=none --no-ext-diff --name-only -z "$sha_a" "$sha_b" -- > "$tmp/diff.names" 2> "$tmp/diff.err" || could_not "range: git diff failed"
   gitc diff --no-renames --no-relative --ignore-submodules=none --no-ext-diff --raw -z "$sha_a" "$sha_b" -- > "$tmp/diff.raw" 2> "$tmp/diff.err2" || could_not "range: git diff failed"

@@ -10,47 +10,76 @@ scan_attrib="co-?authored|claude-session|generated[[:space:]]+(with|by)|claude\\
 # (owner from $SCAN_OWNER, else the Actions variable GITHUB_REPOSITORY_OWNER; with neither, none is allowed).
 scan_owner=${SCAN_OWNER:-${GITHUB_REPOSITORY_OWNER:-}}
 scan_email='[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+'
-scan_email_ok='(\.example|@example\.(com|org|net)|@users\.noreply\.github\.com|^git@github\.com|@(types|kaninabe|supabase|vitest|next|axiomhq)[./]|@[0-9]|@127\.0\.0\.1|@registry\.npmjs\.org|@api\.axiom\.co|@auth\.external|^evil|\.(ts|tsx|js|mjs|json|md|png|svg)$)'
+scan_email_ok='(\.example$|@example\.(com|org|net)$|@users\.noreply\.github\.com$|^git@github\.com|@(types|kaninabe|supabase|vitest|next|axiomhq)[./]|@[0-9]|@127\.0\.0\.1|@registry\.npmjs\.org|@api\.axiom\.co|@auth\.external|^evil|\.(ts|tsx|js|mjs|json|md|png|svg)$)'
 # Author and committer addresses allowed in history: GitHub noreply addresses, and GitHub's own web-flow committer.
-scan_ident_ok='(@users\.noreply\.github\.com|^noreply@github\.com)$'
+# Both ends are anchored, and the pattern is applied to one address per line (an address from %ae / %ce holds no line break): a login is
+# letters, digits, '-' and '_' (GitHub's own rule, plus the underscore of managed accounts), after an optional numeric id and '+'.
+scan_ident_ok='^(([0-9]+\+)?[A-Za-z0-9_-]+@users\.noreply\.github\.com|noreply@github\.com)$'
 
 # scan_grep ARGS...: grep, but an error (exit 2: bad pattern, unreadable file) is recorded in $scan_err and fails the
 # scan at scan_finish. A pipeline runs it in a subshell, where `exit` alone would only end that subshell.
 scan_err=$(mktemp)
-scan_grep() {
-  rc=0; grep "$@" || rc=$?
-  if [ "$rc" -gt 1 ]; then echo "scan: grep failed (exit $rc): an invalid pattern or an unreadable input"; echo x >> "$scan_err"; exit 2; fi
-  return "$rc"
+scan_dir=$(mktemp -d)
+# scan_io_failed: a stage file could not be written or read; recorded and stopped like a failed grep.
+scan_io_failed() { echo "scan: could not read a result"; echo x >> "$scan_err"; echo "${scan_name:-scan}: ERROR"; exit 2; }
+. "$(dirname "$0")/neutral-git.sh"
+# scan_cleanup: the cleanup of the ONE EXIT trap of a scan script, `trap 'rc=$?; scan_cleanup; guard_exit "$rc"' EXIT` (a second trap
+# on EXIT replaces the first, so it would drop guard_exit or part of the cleanup). Names a script has not set yet are empty.
+scan_cleanup() {
+  for sc_f in "${scan_dir:-}" "${pat:-}" "${scoped:-}" "${commits:-}" "${gg_out:-}" "${ng_work:-}" "${scan_err:-}"; do
+    [ -z "$sc_f" ] || rm -rf "$sc_f" "$sc_f".*
+  done
 }
+grep_failed() { echo "scan: grep failed (exit $1): an invalid pattern or an unreadable input"; echo x >> "$scan_err"; echo "${scan_name:-scan}: ERROR"; exit 2; }
+scan_grep() { grep_q "$@"; }
+# scan_filter <in> <out> <grep arguments...>: the lines of <in> that grep selects, into <out>; "no line" (status 1) is a result, a failed
+# grep stops the scan (see scan_grep). Used instead of a pipe, so that no stage can fail unseen.
+# The output is created first (a redirect that fails would give status 1 in one shell and 2 in another, and 1 is "no line"): once it
+# exists the redirect cannot fail, and the input is read by grep itself, whose failure is status 2 (scan_grep stops the scan).
+scan_filter() {
+  sf_in=$1; sf_out=$2; shift 2
+  : > "$sf_out" || scan_io_failed
+  scan_grep "$@" "$sf_in" > "$sf_out" || [ $? = 1 ]
+}
+# scan_input_ok <file>: the input of a scan function is a path, not a redirect on the call (a redirect that fails before the function
+# runs would read as "no finding" in an `if`): it must be a readable file, or the scan stops.
+scan_input_ok() { [ -f "$1" ] && [ -r "$1" ] || scan_io_failed; }
 
 # scan_finish NAME FAIL: the one exit of a scan. A recorded grep error wins over a clean result.
 scan_finish() {
   if [ -s "$scan_err" ]; then rm -f "$scan_err"; echo "$1: ERROR"; exit 2; fi
   rm -f "$scan_err"
-  [ "$2" -eq 0 ] && echo "$1: clean" || { echo "$1: FAILED"; exit 1; }
+  [ "$2" -eq 0 ] && echo "$1: clean" || { echo "$1: FAILED"; verdict_exit=1; exit 1; }
 }
 
 # scan_check_patterns FILE: every line must be a valid extended regex.
 scan_check_patterns() {
   [ -s "$1" ] || return 0
-  scan_grep -qE -f "$1" /dev/null || true
+  scan_grep -qE -f "$1" /dev/null || [ $? = 1 ]
 }
 
-# scan_attribution: reads text on stdin; succeeds (and so means "found") when an attribution line is present
+# scan_attribution <file>: reads the text in <file>; succeeds (and so means "found") when an attribution line is present
 # other than the owner's own co-author trailer.
 scan_attribution() {
-  t=$(cat)
-  printf '%s\n' "$t" | scan_grep -iE "$scan_attrib" > /dev/null || return 1
+  # (every stage is a file in $scan_dir with its status checked: no pipe)
+  scan_input_ok "$1"
+  scan_filter "$1" "$scan_dir/attr.1" -iE "$scan_attrib"
+  [ -s "$scan_dir/attr.1" ] || return 1
   if [ -n "$scan_owner" ]; then
     ok="^co-authored-by: [^<@]*<([0-9]+\\+)?$scan_owner@users\\.noreply\\.github\\.com>\$"
-    printf '%s\n' "$t" | scan_grep -iE "$scan_attrib" | { scan_grep -viE "$ok" || true; } | scan_grep -q . && return 0
-    printf '%s\n' "$t" | scan_grep -iE '^co-authored-by:' | scan_grep -qiE "$scan_ai" && return 0
+    scan_filter "$scan_dir/attr.1" "$scan_dir/attr.2" -viE "$ok"
+    if scan_grep -q . "$scan_dir/attr.2"; then return 0; fi
+    scan_filter "$1" "$scan_dir/attr.3" -iE '^co-authored-by:'
+    if scan_grep -qiE "$scan_ai" "$scan_dir/attr.3"; then return 0; fi
     return 1
   fi
   return 0
 }
 
-# scan_bad_email: reads text on stdin; succeeds when an email-like string outside the allowed shapes is present.
+# scan_bad_email <file>: reads the text in <file>; succeeds when an email-like string outside the allowed shapes is present.
 scan_bad_email() {
-  { scan_grep -oE "$scan_email" || true; } | { scan_grep -vE "$scan_email_ok" || true; } | scan_grep -q .
+  scan_input_ok "$1"
+  scan_filter "$1" "$scan_dir/mail.1" -oE "$scan_email"
+  scan_filter "$scan_dir/mail.1" "$scan_dir/mail.2" -vE "$scan_email_ok"
+  scan_grep -q . "$scan_dir/mail.2"
 }

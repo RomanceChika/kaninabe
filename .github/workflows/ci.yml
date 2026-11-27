@@ -24,9 +24,10 @@ jobs:
           echo "79a3ab579b53f71efd634f3aaf7e04a0fa0cf206b7ed434638d1547a2470a66e  gl.tgz" | sha256sum -c -
           tar -xzf gl.tgz gitleaks
       - name: Scan the whole tree and the history
+        # The scans are the same; only the output changes: a count, never gitleaks' own messages (a public log).
         run: |
-          ./gitleaks dir . --no-banner --redact
-          ./gitleaks git . --no-banner --redact
+          GL_BIN=./gitleaks sh scripts/gitleaks-public.sh dir .
+          GL_BIN=./gitleaks sh scripts/gitleaks-public.sh git .
       # Product words, personal data and local paths, over every commit. The word list is the Actions secret SCAN_WORDS:
       # it is read only in this step, written to a temp file, never echoed, and the script prints only
       # a short commit id, a file path, a line number and counts (the logs of a public repository are public).
@@ -46,7 +47,7 @@ jobs:
           else
             echo "SCAN_WORDS is not set"; exit 1
           fi
-          sh scripts/scan-public.sh
+          SCAN_QUIET=1 sh scripts/scan-public.sh
           # The squash commit on the base branch is made at merge time from this title and body, so it is checked here,
           # before the merge (scan-public.sh above sees only the commits that already exist).
           # Read from the event file, not from env: the log prints a step's env, and the text is never printed.
@@ -55,6 +56,42 @@ jobs:
             sh scripts/scan-pr-text.sh "$RUNNER_TEMP/pr-text"
           fi
           rm -f "$words"
+      # The push-before gate (scripts/push-gate.sh), run here as well: the same script that the pre-push hook runs.
+      # It is added next to the scans above, which stay until this step has been seen passing in a run on the main
+      # branch (development-flow.md, "検査を入れ替えるとき"). The two steps below differ in the mode and in the secret.
+      - name: Install actionlint (pinned, checksum verified) and put the scanners on PATH
+        run: |
+          curl -sSfL -o al.tgz https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          echo "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757  al.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf al.tgz -C "$RUNNER_TEMP/bin" actionlint
+          cp gitleaks "$RUNNER_TEMP/bin/gitleaks"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # (1) Every event, no secret in this step's environment: the general mode (gitleaks, the generic rules, the workflow
+      # check). A pull request or a branch runs workflow definitions that have not been reviewed, so only the push to the
+      # main branch (2) is given the word list.
+      - name: Push gate, general mode
+        run: sh scripts/push-gate.sh --mode general --all
+      # (2) The word list is the Actions secret, written to a temp file, never echoed. The `if` below only keeps this step from
+      # running by mistake. IT IS NOT A BOUNDARY: a branch or a pull request from this repository can change this file
+      # and still read the secret. The boundary (the word list readable only by reviewed definitions that run from the
+      # base branch, for example an environment secret restricted to the main branch) comes with the CI rework and needs
+      # a repository setting that only the owner can make (docs/known-gaps.md, 15). Until then the word list is readable
+      # by any workflow run of this repository.
+      - name: Push gate, words mode (main branch only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        env:
+          SCAN_WORDS: ${{ secrets.SCAN_WORDS }}
+        run: |
+          words="$RUNNER_TEMP/scan-words"
+          umask 077
+          [ -n "$SCAN_WORDS" ] || { echo "SCAN_WORDS is not set"; exit 1; }
+          printf '%s\n' "$SCAN_WORDS" > "$words"
+          export SCAN_WORDS_FILE="$words"
+          rc=0
+          sh scripts/push-gate.sh --mode words --all || rc=$?
+          rm -f "$words"
+          exit "$rc"
 
   checks:
     runs-on: ubuntu-latest
@@ -74,6 +111,11 @@ jobs:
       - run: npm run typecheck:spec-tools
       - run: npm run lint:spec-tools
       - run: npm run check:fence
+      # The tests of the push gate use the real gitleaks and actionlint (no sudo: a directory of the job, put on PATH).
+      - name: Install gitleaks and actionlint (pinned, checksum verified)
+        run: |
+          sh scripts/setup-dev-env.sh --bin-dir "$RUNNER_TEMP/bin" --no-hooks --no-path-check
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - run: npm run test:bin
       - run: npm run verify -- --fail-on-unclassified
       - run: npm run test:unit

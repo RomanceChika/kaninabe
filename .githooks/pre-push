@@ -1,0 +1,95 @@
+#!/bin/sh
+# Push-before gate (docs/rules/process/common/development-flow.md, "security"). Install: sh scripts/setup-dev-env.sh
+# Git passes <remote name> <url> as arguments and one line per ref on stdin: <local ref> <local sha> <remote ref> <remote sha>.
+#   - a deletion (local sha all zeros) has nothing to scan and passes;
+#   - anything but the checked-out commit is refused, so that what is scanned and read is what is pushed (the pushed object
+#     itself is compared with HEAD, not what it points to: an annotated tag object is not a commit);
+#   - only refs/heads/* may be pushed to (a branch deletion passes): the message of a tag, a note and any other non-branch
+#     object is not scanned, and the object reaches the destination even if the ref update is refused afterwards;
+#   - the content review record (git config kaninabe.contentReviewed = "<head> <range id>", see scripts/range-id.sh) must name that
+#     commit and the range id the push has now (destination URL, head, exact commit list): it is written after the
+#     push has been read for publication, and must be written again after any new commit;
+#   - every push of a tag is refused, a deletion included (tags are made and deleted by the tag workflow only);
+#   - then the gate runs, always in words mode (no way to ask for general mode here), over the commits that the destination does
+#     not itself say it has (scripts/push-range.sh prints exactly that set, which is also what the content reviewer reads). The word list is $SCAN_WORDS_FILE or git config kaninabe.scanWords; the owner is $SCAN_OWNER or
+#     kaninabe.scanOwner. Skipping this hook (--no-verify, no hooksPath) is forbidden by rule; it cannot be prevented.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+. "$here/../scripts/range-id.sh"   # range_is_id: the one shape check for an id (64 lowercase hex)
+head=   # (a failing rev-parse leaves it empty, and an empty head is refused below)
+head=$(GIT_NO_REPLACE_OBJECTS=1 git rev-parse --verify -q 'HEAD^{commit}') || head=   # replace refs are ignored, as push ignores them
+short() { short_tail=${1#????????}; printf '%s' "${1%"$short_tail"}"; }
+# cfg_get <key>: sets $cfg_v to the value, empty when the key is not set (git config exit 1); any other status is exit 2.
+cfg_get() {
+  cfg_rc=0; cfg_v=$(git config --get "$1") || cfg_rc=$?
+  case $cfg_rc in 0 | 1) ;; *) echo "pre-push: could not read git config $1" >&2; exit 2 ;; esac
+}
+refuse() { echo "pre-push: $*" >&2; exit 1; }
+
+pushing=0
+remote_shas=
+# (`|| [ -n "$local_ref" ]`: git's last line is processed even when it has no line break)
+while read -r local_ref local_sha remote_ref remote_sha || [ -n "$local_ref" ]; do
+  [ -n "${local_sha:-}" ] || continue
+  case "$local_ref $remote_ref" in
+    *refs/tags/*) refuse "refusing to push a tag ($remote_ref): tags are created and deleted only by the tag workflow, and a tag message is not scanned" ;;
+  esac
+  case $remote_ref in
+    refs/heads/?*) ;;
+    *) refuse "refusing to push to $remote_ref: only branches (refs/heads/*) are pushed; tags, notes, remote-tracking and pull request refs can carry objects that no scan has read" ;;
+  esac
+  case $local_sha in *[!0]*) ;; *) continue ;; esac
+  # The object itself, not what it points to: an annotated tag object peels to a commit and would pass as HEAD.
+  if [ -z "$head" ] || [ "$local_sha" != "$head" ]; then
+    refuse "refusing to push $(short "$local_sha"): it is not the checked-out commit; check it out first"
+  fi
+  cfg_get kaninabe.contentReviewed; reviewed=$cfg_v
+  if [ "${reviewed%% *}" != "$head" ]; then
+    echo "pre-push: the content review record (kaninabe.contentReviewed) does not name $(short "$head")" >&2
+    refuse "have the push read for publication: run sh scripts/push-range.sh <remote or URL>, read those commits, and record the value it prints"
+  fi
+  case $reviewed in
+    *" "*) ;;
+    *) refuse "the review record has the old form (a commit id only): run sh scripts/push-range.sh <remote or URL>, read those commits, and record the value it prints (git config kaninabe.contentReviewed \"<head> <range id>\")" ;;
+  esac
+  case $remote_sha in *[!0]*) remote_shas="$remote_shas $remote_sha" ;; esac
+  pushing=1
+done
+[ "$pushing" = 1 ] || exit 0
+
+if [ -z "${SCAN_WORDS_FILE:-}" ]; then
+  cfg_get kaninabe.scanWords; w=$cfg_v
+  [ -z "$w" ] || SCAN_WORDS_FILE=$w
+fi
+if [ -z "${SCAN_OWNER:-}" ]; then
+  cfg_get kaninabe.scanOwner; o=$cfg_v
+  [ -z "$o" ] || SCAN_OWNER=$o
+fi
+[ -z "${SCAN_WORDS_FILE:-}" ] || export SCAN_WORDS_FILE
+[ -z "${SCAN_OWNER:-}" ] || export SCAN_OWNER
+
+# Which commits: the ones the destination does not itself say it has (push-range.sh asks it now, with the URL git
+# passes as $2 and the remote shas of the refs being pushed; remote-tracking refs are never consulted). If the destination
+# cannot be asked, or the history cannot be read to the end, push-range.sh stops with a reason and so does the push.
+url=${2:-}
+[ -n "$url" ] || refuse "git did not pass the URL of the destination"
+range_out=$(sh "$here/../scripts/push-range.sh" --gate-args --head "$head" "$url" $remote_shas) || exit 1
+# (the three lines are cut with parameter expansion, no pipe; an output with fewer than three lines leaves the later ones empty,
+# and an empty range id is refused below)
+nl='
+'
+range_args=${range_out%%"$nl"*}; range_id=; range_n=
+case $range_out in
+  *"$nl"*)
+    range_rest=${range_out#*"$nl"}; range_id=${range_rest%%"$nl"*}; range_id=${range_id#range-id=}
+    case $range_rest in *"$nl"*) range_n=${range_rest#*"$nl"}; range_n=${range_n%%"$nl"*}; range_n=${range_n#commits=} ;; esac ;;
+esac
+# The review was of one destination, one head and one list of commits: the record is "<head> <range id>". If any of them
+# changed since (the destination's branch was deleted or moved, another URL, a new commit), the review must be redone.
+range_is_id "$range_id" || { echo "pre-push: push-range did not print a valid range id (64 lowercase hex digits): the push cannot be checked against the review" >&2; exit 2; }
+range_is_id "${reviewed#* }" || refuse "the review record is malformed (the range id after the commit id must be 64 lowercase hex digits): run sh scripts/push-range.sh $url, read those commits, and record the value it prints"
+if [ "${reviewed#* }" != "$range_id" ]; then
+  refuse "the push range changed since the review (${range_n:-?} commit(s) now): the review must be redone on the new range: run sh scripts/push-range.sh $url, read those commits, and record the value it prints"
+fi
+# shellcheck disable=SC2086
+exec sh "$here/../scripts/push-gate.sh" --mode words --head "$head" $range_args

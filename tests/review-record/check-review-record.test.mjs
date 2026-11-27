@@ -294,12 +294,15 @@ describe('check-review-record.sh: a stage output that is cut short is exit 2, wh
     const cnt = path.join(root, `cnt-${counter++}`);
     const real = tool === 'awk' ? which('awk') : which(tool);
     const cut = k === 'all' ? ': > "$U"' : `${which('head')} -n -${k} "$T" > "$U"`;
-    const shim = `c=0\n[ ! -f ${cnt} ] || read c < ${cnt}\nc=$((c+1))\necho $c > ${cnt}\n`
-      + `if [ "$c" = ${n} ]; then\n  T=$(${which('mktemp')}) || exit 3\n  ${real} "$@" > "$T" || { rc=$?; ${which('rm')} -f "$T"; exit $rc; }\n  U=$(${which('mktemp')}) || exit 3\n  ${cut}\n  ${which('cmp')} -s "$T" "$U" || echo changed > ${cnt}.chg\n  ${which('cat')} "$U"\n  ${which('rm')} -f "$T" "$U"\n  exit 0\nfi\nexec ${real} "$@"`;
+    // every command of the shim itself is checked: a failure of the test's own I/O is written to `.err` and fails the test, so that
+    // it is never counted as "the script noticed the cut"; cmp is read as 0 (same), 1 (changed) or anything else (could not compare)
+    const shim = `bad() { echo "$1" >> ${cnt}.err; exit 3; }\nc=0\nif [ -f ${cnt} ]; then read c < ${cnt} || bad count-read; fi\nc=$((c+1))\necho $c > ${cnt} || bad count-write\n`
+      + `if [ "$c" = ${n} ]; then\n  T=$(${which('mktemp')}) || bad mktemp\n  U=$(${which('mktemp')}) || bad mktemp\n  ${real} "$@" > "$T" || bad real-tool\n  ${cut} || bad cut\n  rc=0; ${which('cmp')} -s "$T" "$U" || rc=$?\n  case $rc in 0) ;; 1) echo changed > ${cnt}.chg || bad mark ;; *) bad cmp ;; esac\n  ${which('cat')} "$U" || bad hand-on\n  ${which('rm')} -f "$T" "$U" || bad rm\n  exit 0\nfi\nexec ${real} "$@"`;
     toolPath = makeBin(root, { shim: { [tool]: shim } });
     const r = check(body);
     let calls = 0;
     try { calls = Number(readFileSync(cnt, 'utf8').trim()); } catch { /* the tool was not called */ }
+    assert.ok(!existsSync(`${cnt}.err`), `the shim's own command failed (${tool} call ${n}, k=${k}): ${existsSync(`${cnt}.err`) ? readFileSync(`${cnt}.err`, 'utf8') : ''}`);
     return { ...r, calls, changed: existsSync(`${cnt}.chg`) };
   };
   let runs = 0;

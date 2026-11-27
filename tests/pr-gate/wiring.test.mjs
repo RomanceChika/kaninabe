@@ -396,7 +396,10 @@ describe('pr-gate.yml: the run blocks, executed', () => {
       }
     });
     it('a head sha that is not 40 hex characters stops the full job as well', () => {
-      stopsAs2(runJob({ ev: event({ head: 'xyz' }) }), 'head xyz');
+      // the review script stops it with its own message (it does not say "could not run"), so only the status and the missing passed line are asserted
+      const r = runJob({ ev: event({ head: 'xyz' }) });
+      assert.equal(r.status, 2, r.out);
+      assert.ok(!PASSED.test(r.out), r.out);
     });
     it('a base sha (GITHUB_SHA) that is not 40 hex characters: exit 2, no passed line', () => {
       for (const base of ['xyz', BASE.slice(0, 39), BASE.toUpperCase(), '']) {

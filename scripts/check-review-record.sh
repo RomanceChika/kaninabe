@@ -30,7 +30,9 @@
 set -eu
 tmp=
 # one EXIT trap: the cleanup, and the guard that turns a status that nobody chose (a command that failed under `set -e`) into 2
-trap 'rc=$?; if [ -n "$tmp" ]; then rm -rf "$tmp" || rm_failed=1; fi; if [ "$rc" != 0 ] && [ "$rc" != 2 ] && [ -z "${verdict_exit:-}" ]; then exit 2; fi' EXIT
+# (a verdict is printed only after the temporary directory is gone, so the cleanup here runs only on a path that is already exit 2,
+# or on one that this trap makes exit 2; a cleanup that fails here is exit 2 as well)
+trap 'rc=$?; if [ -n "$tmp" ]; then rm -rf "$tmp" || rc=2; fi; if [ "$rc" != 0 ] && [ -z "${verdict_exit:-}" ]; then exit 2; fi' EXIT
 could_not() { echo "review record: could not run ($1)"; exit 2; }
 f=${1:?usage: check-review-record.sh <body-file> <head-sha>}
 head=${2:?usage: check-review-record.sh <body-file> <head-sha>}
@@ -125,5 +127,8 @@ else
     elif [ "$v" != "$head" ]; then echo "review record: $who reviewed $(printf '%.8s' "$v"), the head is $(printf '%.8s' "$head") (review the new diff, then update the record)"; fail=1; fi
   done
 fi
+# the cleanup is a step like the others: no verdict is printed while the temporary directory cannot be removed
+rm -rf "$tmp" || could_not "the temporary directory could not be removed"
+tmp=
 if [ "$fail" -eq 0 ]; then echo "review record: matches the head"; exit 0; fi
 echo "review record: FAILED"; verdict_exit=1; exit 1

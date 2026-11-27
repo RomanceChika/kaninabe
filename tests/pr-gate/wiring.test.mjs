@@ -17,9 +17,23 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { inspect } from '../push-gate/no-pipes.test.mjs';
 
 const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
+
+/**
+ * The detector of tests/push-gate/no-pipes.test.mjs, taken from its source so that there is one detector and no copy that can drift
+ * (the import fence lets a test import only node: built-ins, bin/ and scripts/, so the file is read, not imported). It throws if
+ * the source no longer has the shape this expects.
+ */
+const inspect = (() => {
+  const src = readFileSync(path.join(repoRoot, 'tests/push-gate/no-pipes.test.mjs'), 'utf8');
+  const from = src.indexOf("const MARKER = ");
+  const to = src.indexOf("describe('no pipelines");
+  if (from < 0 || to < from) throw new Error('no-pipes.test.mjs no longer has the shape the detector is cut from');
+  const body = src.slice(from, to).replace('export function inspect', 'function inspect');
+  if (body.includes('import ') || body.includes('export ')) throw new Error('the detector part of no-pipes.test.mjs has an import or export');
+  return new Function(`${body}\nreturn inspect;`)();
+})();
 const workflowText = readFileSync(path.join(repoRoot, '.github/workflows/pr-gate.yml'), 'utf8');
 
 // ---- a parser for the YAML subset the workflow uses ----
@@ -207,6 +221,7 @@ function logicalLines(run) {
 describe('pr-gate.yml: the class rule on every run block', () => {
   it('has run blocks to look at', () => {
     assert.ok(runs.length >= 4, `${runs.length} run blocks`);
+    assert.ok(inspect('x=$(a | b)').problems.length > 0 && inspect('a || true').problems.length > 0, 'the detector is live');
   });
 
   it('has no pipeline, no `|| true`, no bare grep and none of the other constructs the detector names', () => {

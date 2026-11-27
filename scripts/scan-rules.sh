@@ -112,7 +112,9 @@ mail_allowed() {
     # the distinct hit strings with their counts (awk only counts), then one `sha256sum` of each string's exact bytes (no line break)
     LC_ALL=C awk '{ c[$0]++ } END { for (s in c) print c[s] "\t" s }' "$scan_dir/ma.red" > "$scan_dir/ma.counts" || return 1
     ma_k=0
+    wc_lines "$scan_dir/ma.counts" || return 1; mc_expect=$wc_v; mc_seen=0
     while IFS=$ma_tab read -r ma_c ma_s; do
+      mc_seen=$((mc_seen + 1))
       case $ma_c in '' | *[!0-9]*) return 1 ;; esac
       printf '%s' "$ma_s" > "$scan_dir/ma.str" || return 1
       sha256sum < "$scan_dir/ma.str" > "$scan_dir/ma.sum" || return 1
@@ -122,6 +124,7 @@ mail_allowed() {
       printf '%s\tsha256:%s\n' "$ma_p" "$ma_h" > "$scan_dir/ma.want" || return 1
       if grep_q -qxFf "$scan_dir/ma.want" "$scan_dir/excl.mail"; then ma_k=$((ma_k + ma_c)); fi
     done < "$scan_dir/ma.counts"
+    [ "$mc_seen" = "$mc_expect" ] || return 1
     ma_n=$((ma_n + ma_k))
   done < "$scan_dir/ma.paths"
   [ "$ma_seen" = "$ma_expect" ] || return 1

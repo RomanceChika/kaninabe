@@ -422,6 +422,13 @@ describe('check-basis-record.sh: with a record, the findings', () => {
     const w = world();
     const e = w.E(); w.I(); const b = w.B();
     red(run(w, { rec: { first: e, basis: b } }), 'the first record changes no basis path');
+    // the commit named as the first record must itself change a basis path: an earlier commit that did does not make up for it
+    const t = world();
+    t.B(); const te = t.E(); t.I(); const tb = t.B();
+    red(run(t, { rec: { first: te, basis: tb } }), 'the first record changes no basis path');
+    const g = world();
+    g.B(); const gg = g.G(); g.I(); const gb = g.B();
+    red(run(g, { rec: { first: gg, basis: gb } }), 'the first record changes no basis path');
     const v = world();
     v.B(); const ve = v.E();
     red(run(v, { rec: { basis: ve } }), `basis ${s8(ve)} changes no basis path`);

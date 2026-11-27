@@ -294,6 +294,39 @@ function cases() {
     assert.equal(existsSync(path.join(tmpdir(), 'never-written-emit')), false);
   });
 
+  it('--emit: from the validated arguments on, every exit other than 0 leaves no file at the emit path; a usage error does not touch it', () => {
+    const stale = (dir) => writeFileSync(path.join(dir, 'emit'), 'STALE\n');
+    // the body cannot be read: exit 2 and the old file is gone
+    const dir = mkdtempSync(path.join(tmpdir(), 'review-emit-'));
+    try {
+      writeFileSync(path.join(dir, 'emit'), 'STALE\n');
+      const missing = spawnSync('/bin/sh', [script, path.join(dir, 'no-body'), HEAD, '--emit', path.join(dir, 'emit')], { encoding: 'utf8', env: envOf() });
+      assert.equal(missing.status, 2, missing.stdout + missing.stderr);
+      assert.equal(existsSync(path.join(dir, 'emit')), false, 'an old emit file is left after a missing body');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+    // the head is not a sha: exit 2, the old file is gone
+    const head = check(FULL, 'xyz', EMIT, { before: stale });
+    assert.equal(head.status, 2, head.out);
+    assert.equal(head.emit, null);
+    // a usage error is before that point: the file is untouched
+    for (const [name, extra] of Object.entries({ 'a word after the file': (dir) => ['--emit', path.join(dir, 'emit'), 'b'], 'another option': (dir) => ['--emitx', path.join(dir, 'emit')], 'an empty file name': () => ['--emit', ''] })) {
+      const r = check(FULL, HEAD, extra, { before: stale });
+      assert.equal(r.status, 2, `${name}: ${r.out}`);
+      assert.equal(r.emit, 'STALE\n', `${name}: the old file was touched by a usage error`);
+    }
+    // the emit path is the body: refused, the body is not changed (and nothing is removed)
+    const same = check(FULL, HEAD, (dir, file) => ['--emit', file]);
+    assert.equal(same.status, 2);
+    assert.equal(same.bodyAfter, FULL);
+    // a verdict of 1 removes it; a verdict of 0 replaces it with exactly the new content
+    const red = check(record(OLD), HEAD, EMIT, { before: stale });
+    assert.equal(red.status, 1, red.out);
+    assert.equal(red.emit, null);
+    const ok = check(FULL, HEAD, EMIT, { before: stale });
+    assert.equal(ok.status, 0, ok.out);
+    assert.equal(ok.emit, `basis-first ${B1}\nbasis-prev ${B2}\nbasis-prev ${B3}\nbasis ${B4}\nbasis-opus ${B4} o/r 7 101\nbasis-codex ${B4} o/r 7 102\nend\n`);
+  });
+
   it('--emit: the file has mode 0600, whatever the umask', () => {
     for (const umask of [false, true]) {
       const r = check(FULL, HEAD, EMIT, { umask });

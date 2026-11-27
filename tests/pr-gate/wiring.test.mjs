@@ -534,6 +534,14 @@ describe('pr-gate.yml: the run blocks, executed', () => {
     }
   });
 
+  describe('cmp (the byte comparison of the hash record)', () => {
+    for (const [what, body] of [['says the files differ', 'exit 1'], ['cannot compare', 'exit 2'], ['is not there', 'exit 127']]) {
+      it(`${what}: exit 2, could not run, no passed line`, () => {
+        stopsAs2Fixed(runJob({ shims: { cmp: body } }), what);
+      });
+    }
+  });
+
   describe('jq', () => {
     it('fails on any one of its calls: exit 2, could not run, no passed line', () => {
       // first, an uncut good run counts the calls; then every one of them 1..count is made to fail

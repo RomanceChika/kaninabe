@@ -80,7 +80,7 @@ neutral_adds_text() {
 neutral_commit_text() {
   neutral_git cat-file commit "$1" > "$2.raw" 2>/dev/null || return 1
   LC_ALL=C tr '\000' '\n' < "$2.raw" > "$2" || return 1
-  rm -f "$2.raw"
+  rm -f "$2.raw" || return 1
 }
 # wc_num <-l|-c> <file>: sets $wc_v to the lines or bytes of <file>, from ONE `wc` (no pipe), status checked, leading blanks
 # dropped, digits only. Returns 1 when wc fails or prints anything else: a count that cannot be read is never a number, so the
@@ -112,18 +112,18 @@ word_list_read() {
   wc_num -c "$wl_t" || return 1
   if [ "$wl_a" != "$wc_v" ]; then wl_err="contains a carriage return"; return 1; fi
   wl_bom=$(printf '\357\273\277') || return 1
-  wl_rc=0; (LC_ALL=C; export LC_ALL; grep_q -qa "^$wl_bom" "$1") || wl_rc=$?
+  wl_rc=0; (LC_ALL=C && export LC_ALL && grep_q -qa "^$wl_bom" "$1") || wl_rc=$?
   case $wl_rc in 0) wl_err="begins a line with a byte order mark"; return 1 ;; 1) ;; *) return 1 ;; esac
   # in C.UTF-8 a line that is not valid UTF-8 is not matched by '^.*$': with -v -a it is the one that is selected. A self-test
   # first, so that a system without that locale (where every byte is a character) does not pass everything.
   printf 'caf\351\n' > "$wl_t" || return 1
-  wl_rc=0; (LC_ALL=C.UTF-8; export LC_ALL; grep_q -qav '^.*$' "$wl_t") || wl_rc=$?
+  wl_rc=0; (LC_ALL=C.UTF-8 && export LC_ALL && grep_q -qav '^.*$' "$wl_t") || wl_rc=$?
   if [ "$wl_rc" != 0 ]; then wl_err="cannot be checked for UTF-8 here"; return 1; fi
-  wl_rc=0; (LC_ALL=C.UTF-8; export LC_ALL; grep_q -qav '^.*$' "$1") || wl_rc=$?
+  wl_rc=0; (LC_ALL=C.UTF-8 && export LC_ALL && grep_q -qav '^.*$' "$1") || wl_rc=$?
   case $wl_rc in 0) wl_err="is not valid UTF-8"; return 1 ;; 1) ;; *) return 1 ;; esac
   LC_ALL=C awk -v who=WORDLIST-READ '!/^#/ && !/^$/ && !/^@/' "$1" > "$2" 2>/dev/null || return 1
   LC_ALL=C awk -v who=WORDLIST-READ '/^@/' "$1" > "$3" 2>/dev/null || return 1
-  rm -f "$wl_t"
+  rm -f "$wl_t" || return 1
 }
 # guard_exit <status>: for an EXIT trap. A command that failed under `set -e` can exit 1, which these scripts use for "found
 # something"; unless the script said so (verdict_exit set just before its own exit 1), any status but 0 or 2 becomes 2.
@@ -155,7 +155,8 @@ scan_history() {
     [ -n "$sh_c" ] || continue
     sh_t=0; neutral_adds_text "$sh_c" || sh_t=$?
     [ "$sh_t" != 2 ] || { hist_err="could not run (could not read the patch of a commit)"; return 2; }
-    rm -f "$3/hist.out"; sh_rc=0; gl_level=info
+    rm -f "$3/hist.out" || { hist_err="could not run (could not clear a result file)"; return 2; }
+    sh_rc=0; gl_level=info
     gl git --report-format template --report-template "$2" --report-path "$3/hist.out" --log-opts="-1 -m $sh_c" "$ng_dir" > /dev/null 2> "$3/hist.log" || sh_rc=$?
     gl_level=error
     case $sh_rc in 0 | 99) ;; *) hist_err="could not run (exit $sh_rc)"; return 2 ;; esac

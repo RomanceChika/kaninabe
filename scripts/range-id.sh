@@ -11,7 +11,7 @@
 # (no pipe: each stage writes a file and its status is checked; the work files are <file>.idin / <work>.idin in the caller's private dir.
 # Both print the id and return 0, or print nothing and return 1.)
 range_list_id() {
-  { printf 'head %s\n' "$1"; cat "$2"; } > "$2.idin" || return 1
+  { printf 'head %s\n' "$1" && cat "$2"; } > "$2.idin" || return 1   # (both must succeed: the status of a group is its last command's)
   rl_h=$(sha256sum < "$2.idin") || return 1
   rl_h=${rl_h%% *}
   range_is_id "$rl_h" || return 1

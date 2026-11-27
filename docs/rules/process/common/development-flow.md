@@ -194,7 +194,7 @@ PR をどう切るか、どの順に書くか、review で何を読むかを決�
 
 時間は実測で直す(product の `db` と `full` は、実装の木ができてから測る)。`scan` は `light` 以上のどの段にも含まれる。
 
-pr-gate は段とは別の workflow で、PR が merge で書き込むもの(題と本文 = squash commit の message)と、review の記録と head の一致を確かめ、検査した題と本文の hash を出力に残す。base 側の定義で動く。起動は、framework では PR の作成・push・題と本文の編集・ready・reopen のたび、product では draft でない PR の ready・題と本文の編集・base の変更・reopen のたびである(product で draft のあいだ起動しないのは分数のため)。
+pr-gate は段とは別の workflow で、PR が merge で書き込むもの(題と本文 = squash commit の message)と、review の記録と head の一致を確かめ、検査した題と本文の hash を出力に残す。base 側の定義で動く。起動は、framework では PR の作成・push・題と本文の編集・ready・reopen のたび、product では draft でない PR の ready・題と本文の編集・base の変更・reopen のたびである(product で draft のあいだ起動しないのは分数のため)。 **pr-gate の shell も、merge を許すかどうかを決める script と同じ決まりの下にある**(pipeline も `|| true` も使わず、外のコマンドの status を 1 つずつ見る。合格の行に入れる値は、変数に受けて status を見たうえで、形(番号は数字、sha は 16 進 40 桁、hash は 16 進 64 桁)を確かめてから使う)。走れなかったときは固定の文言 `pr-gate: could not run (…)` と exit 2 で止まり(語の一覧が無いときもそうで、「見つけた」の exit 1 にはしない)、合格の行は出さない。語の一覧を書いた一時 file は、走査が通っても落ちても消し、消せなければ走れなかったことにする。workflow の組み方と、この決まりは、`tests/pr-gate/wiring.test.mjs` が workflow を実際に動かして確かめる。
 
 #### いつ回すか
 

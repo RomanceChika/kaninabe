@@ -54,7 +54,7 @@ scan_check_patterns() {
 scan_attribution() {
   # (every stage is a file in $scan_dir with its status checked: no pipe)
   cat > "$scan_dir/attr.in" || scan_io_failed
-  scan_grep -iE "$scan_attrib" "$scan_dir/attr.in" > "$scan_dir/attr.1" || return 1
+  scan_grep -iE "$scan_attrib" "$scan_dir/attr.in" > "$scan_dir/attr.1" || { [ $? = 1 ] || scan_io_failed; return 1; }
   if [ -n "$scan_owner" ]; then
     ok="^co-authored-by: [^<@]*<([0-9]+\\+)?$scan_owner@users\\.noreply\\.github\\.com>\$"
     scan_grep -viE "$ok" "$scan_dir/attr.1" > "$scan_dir/attr.2" || [ $? = 1 ]

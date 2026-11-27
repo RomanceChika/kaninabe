@@ -62,8 +62,11 @@ else
   head_rc=0; ng_real git rev-parse -q --verify 'HEAD^{commit}' >> "$tmp/tips" 2>/dev/null || head_rc=$?
   case $head_rc in 0 | 1) ;; *) could_not_run 2 ;; esac
   sort -u "$tmp/tips" > "$tmp/tips.u"
+  wc_num -l "$tmp/tips.u" || could_not_run 2
+  tips_n=$wc_v; tips_seen=0
   : > "$tmp/commit-tips"
   while IFS= read -r t; do
+    tips_seen=$((tips_seen + 1))
     [ -n "$t" ] || continue
     type=$(neutral_git cat-file -t "$t" 2>/dev/null) || could_not_run 2
     case $type in
@@ -73,6 +76,7 @@ else
            [ "$ptype" != commit ] || printf '%s\n' "$peeled" >> "$tmp/commit-tips" ;;
     esac
   done < "$tmp/tips.u"
+  [ "$tips_seen" = "$tips_n" ] || could_not_run 2
   if [ -s "$tmp/commit-tips" ]; then
     sort -u "$tmp/commit-tips" > "$tmp/commit-tips.u"
     # shellcheck disable=SC2046

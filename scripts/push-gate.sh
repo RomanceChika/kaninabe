@@ -178,7 +178,9 @@ if [ "$count" -gt 0 ]; then
     : > "$tmp/batch"; batch_bytes=0
   }
   commit_ids=$(cat "$tmp/commits") || die "step gitleaks could not run (could not read the list of commits)"
+  c_seen=0
   for c in $commit_ids; do
+    c_seen=$((c_seen + 1))
     neutral_commit_text "$c" "$tmp/text" || die "step gitleaks could not run (could not read the text of a commit)"
     # every text is followed by one separator line break, whatever the text ends with, and that byte counts toward the bound
     wc_num -c "$tmp/text" || die "step gitleaks could not run (could not measure the text of a commit)"
@@ -188,6 +190,7 @@ if [ "$count" -gt 0 ]; then
     { cat "$tmp/text" && printf '\n'; } >> "$tmp/batch" || die "step gitleaks could not run (could not make a batch)"
     batch_bytes=$((batch_bytes + text_bytes))
   done
+  [ "$c_seen" = "$count" ] || die "step gitleaks could not run (the commit texts read are not all the commits of the list)"
   flush_batch
   find "$tmp/head" -name .gitleaksignore -exec rm -f {} + || die "step gitleaks could not run (could not prepare the export of HEAD)"
   rm -f "$tmp/gitleaks.out"; rc=0; tree_n=0

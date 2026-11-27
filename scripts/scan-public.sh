@@ -43,7 +43,11 @@ if [ -n "${SCAN_WORDS_FILE:-}" ]; then
   word_list_read "$SCAN_WORDS_FILE" "$pat" "$scoped" || { echo "scan: the word list $wl_err"; echo "scan-public: ERROR"; exit 2; }
 fi
 scan_check_patterns "$pat"
-while IFS= read -r line; do printf '%s\n' "${line#* }" > "$pat.one"; scan_check_patterns "$pat.one"; done < "$scoped"; rm -f "$pat.one"
+wc_num -l "$scoped" || scan_io_failed
+scoped_n=$wc_v; sc_seen=0
+while IFS= read -r line; do sc_seen=$((sc_seen + 1)); printf '%s\n' "${line#* }" > "$pat.one"; scan_check_patterns "$pat.one"; done < "$scoped"
+[ "$sc_seen" = "$scoped_n" ] || scan_io_failed
+rm -f "$pat.one"
 fail=0
 generic='/Users/[A-Za-z]|/home/[a-z]+/|C:\\Users|BEGIN [A-Z ]*PRIVATE KEY'
 email=$scan_email
@@ -78,7 +82,10 @@ show_at() {
 }
 text=$ng_work/text; text_mail=$ng_work/text-mail
 commit_ids=$(cat "$commits") || { echo "scan: could not read the list of commits"; echo "scan-public: ERROR"; exit 2; }
+wc_num -l "$commits" || scan_io_failed
+commits_n=$wc_v; commits_seen=0
 for c in $commit_ids; do
+  commits_seen=$((commits_seen + 1))
   short=${c%"${c#????????}"}
   # The text of a commit is the raw object with NUL as a line break (neutral_commit_text); a commit that cannot be read stops the scan.
   neutral_commit_text "$c" "$text" || { echo "scan: could not read a commit"; echo "scan-public: ERROR"; exit 2; }
@@ -95,11 +102,14 @@ for c in $commit_ids; do
     # matches a byte that is not valid UTF-8 only in the second run). A word in an encoding that is not UTF-8 does not match.
     if scan_grep -qiE -f "$pat" "$text" || (LC_ALL=C && export LC_ALL && scan_grep -qiE -f "$pat" "$text"); then echo "word list: commit message or author of $short"; fail=1; fi
   fi
+  sc_seen=0
   while IFS= read -r line; do
+    sc_seen=$((sc_seen + 1))
     prefix=${line%% *}; prefix=${prefix#@}; re=${line#* }
     gg -IlE "$re" "$c" -- "$prefix"; lines
     if [ "$n" != "0" ]; then if [ -n "${SCAN_QUIET:-}" ]; then echo "scoped word list: $n file(s) in $short"; else echo "scoped word list: $n file(s) under $prefix in $short"; fi; gg -InE "$re" "$c" -- "$prefix"; show_at; fail=1; fi
   done < "$scoped"
+  [ "$sc_seen" = "$scoped_n" ] || scan_io_failed
   if scan_attribution < "$text"; then echo "attribution line in $short"; fail=1; fi
   # Author and committer: a GitHub noreply address naming no AI. A squash merge turns each into a co-author trailer.
   # (These stay on the identity fields: the AI words are about who the author is, not about anything written in a message.)
@@ -128,4 +138,5 @@ for c in $commit_ids; do
   wc_num -l "$ng_work/hits.f" || scan_wc_failed; m=$wc_v
   if [ "$m" != "0" ]; then echo "email-like string: $m hit(s) in $short"; fail=1; fi
 done
+[ "$commits_seen" = "$commits_n" ] || scan_io_failed
 scan_finish scan-public "$fail"

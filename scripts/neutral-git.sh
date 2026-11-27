@@ -151,7 +151,14 @@ gl_scanned() {
 # not fit returns 2 with the reason in $hist_err.
 scan_history() {
   hist_n=0; hist_err=
+  # This function is called under `||`, where set -e is off: a list that cannot be opened would make the loop below not run and
+  # the function return 0 ("no findings"). So the list is checked first, and the lines the loop processed are counted against
+  # the lines of the list (a read that fails midway, or a last line without a line break, is a difference).
+  [ -f "$1" ] && [ -r "$1" ] || { hist_err="could not run (the list of commits cannot be read)"; return 2; }
+  wc_num -l "$1" || { hist_err="could not run (could not count the list of commits)"; return 2; }
+  sh_expect=$wc_v; sh_seen=0
   while IFS= read -r sh_c; do
+    sh_seen=$((sh_seen + 1))
     [ -n "$sh_c" ] || continue
     sh_t=0; neutral_adds_text "$sh_c" || sh_t=$?
     [ "$sh_t" != 2 ] || { hist_err="could not run (could not read the patch of a commit)"; return 2; }
@@ -170,5 +177,6 @@ scan_history() {
     if [ "$sh_t" = 0 ]; then [ "$sh_n" -eq 1 ] || { hist_err="could not confirm what it scanned"; return 2; }
     else [ "$sh_n" -le 1 ] || { hist_err="could not confirm what it scanned"; return 2; }; fi
   done < "$1"
+  [ "$sh_seen" = "$sh_expect" ] || { hist_err="could not run (the list of commits was not read to the end)"; return 2; }
   return 0
 }

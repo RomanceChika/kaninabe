@@ -26,6 +26,8 @@ import path from 'node:path';
 import { appGrounded, isDirectory, toRelative, walkFiles } from '../../../io/paths.js';
 import { tryReadText } from '../../../io/read-text.js';
 import type { Finding } from '../../../kernel/finding.js';
+import { absentFor } from '../../../kernel/scope-owner.js';
+import { JOB_CATALOG_ID } from '../../../model/job/parse-jobs.js';
 import type { JobDecl, JobSpecModel } from '../../../model/job/types.js';
 import type { ProductRoots } from '../../../model/product/types.js';
 import { specPath } from '../../../model/product/paths.js';
@@ -137,16 +139,15 @@ export function verifyPgCronParity(input: PgCronParityInput): Finding[] {
     declaredNames.add(decl.id);
     const match = registered.find((entry) => entry.name === decl.id);
     if (match === undefined) {
-      findings.push(
-        j3Finding({
-          message: `ジョブ ${decl.id}(scheduler: database)が ${input.roots.migrations} の cron.schedule に登録されていません`,
-          location: decl.location,
-          suggestion:
-            `新しい migration に select cron.schedule('${decl.id}', '${cron}', $$ ... $$) を書く` +
-            '(job-spec-writing.md §scheduler。pg_cron はトリガのみ・業務ロジックを含めない)',
-          counterexample: { job: decl.id, cron },
-        }),
-      );
+      const unregistered = j3Finding({
+        message: `ジョブ ${decl.id}(scheduler: database)が ${input.roots.migrations} の cron.schedule に登録されていません`,
+        location: decl.location,
+        suggestion:
+          `新しい migration に select cron.schedule('${decl.id}', '${cron}', $$ ... $$) を書く` +
+          '(job-spec-writing.md §scheduler。pg_cron はトリガのみ・業務ロジックを含めない)',
+        counterexample: { job: decl.id, cron },
+      });
+      findings.push(absentFor({ kind: 'catalog', id: JOB_CATALOG_ID }, unregistered));
       continue;
     }
     if (match.cron !== cron) {

@@ -51,7 +51,7 @@ export interface Finding {
   readonly acceptance?: AcceptedRiskDecl;
   /**
    * この指摘が「仕様 X が名指す Y が無い」という**純粋な不在の error**であり、X の持ち主が `owner` であること(あれば)。
-   * `kernel/scope-owner.ts` の `absentFor()` だけが書く。実装の範囲(`implemented`)の外の持ち主の印つき error だけが、最後の仕分けで報告へ移る。
+   * `kernel/scope-owner.ts` の関数 `absentFor` だけが書く。実装の範囲(`implemented`)の外の持ち主の印つき error だけが、最後の仕分けで報告へ移る。
    */
   readonly absentFor?: ScopeOwner;
 }

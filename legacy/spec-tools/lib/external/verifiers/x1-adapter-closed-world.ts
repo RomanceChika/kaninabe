@@ -35,6 +35,8 @@ import path from 'node:path';
 import { appGrounded, isDirectory, isFile, listEntries, toRelative, walkFiles } from '../../io/paths.js';
 import { readText } from '../../io/read-text.js';
 import type { Finding } from '../../kernel/finding.js';
+import { absentFor } from '../../kernel/scope-owner.js';
+import { EXTERNAL_CATALOG_ID } from '../../model/external/parse-external.js';
 import { inputValue, unusableOf, type CatalogInput, type InputGapNote } from '../../kernel/input-state.js';
 import type { SpecModel } from '../../model/types.js';
 import { productBaseDirPaths } from '../../model/framework-base-dirs.js';
@@ -129,14 +131,13 @@ function checkAdapterImplementations(catalog: ExternalCatalogSpec, repoRoot: str
   return catalog.integrations.flatMap((integration) => {
     const absolute = path.join(repoRoot, integration.adapter);
     if (!isFile(absolute)) {
-      return [
-        x1({
-          message: `連携 ${integration.id} の adapter ${integration.adapter} が実在しません`,
-          location: integration.location,
-          suggestion: '実在するファイルパス(リポジトリルート相対)に直すか、アダプタを実装する',
-          counterexample: { integration: integration.id, adapter: integration.adapter },
-        }),
-      ];
+      const missing = x1({
+        message: `連携 ${integration.id} の adapter ${integration.adapter} が実在しません`,
+        location: integration.location,
+        suggestion: '実在するファイルパス(リポジトリルート相対)に直すか、アダプタを実装する',
+        counterexample: { integration: integration.id, adapter: integration.adapter },
+      });
+      return [absentFor({ kind: 'catalog', id: EXTERNAL_CATALOG_ID }, missing)];
     }
     if (!readText(absolute).includes(integration.port)) {
       return [

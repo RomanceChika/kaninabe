@@ -17,6 +17,7 @@ import { traceFinding } from '../verifier.js';
 import type { ActionSpec } from '../../model/trace/types.js';
 import type { TraceInput } from '../input.js';
 import { layoutPath } from '../../model/product/layout.js';
+import { absentFor } from '../../kernel/scope-owner.js';
 
 /** A2: 仕様ファイルの置き場所と実装ファイルの置き場所が handles と一致するかを検証する。 */
 export const pathConsistencyVerifier: TraceVerifier = {
@@ -62,13 +63,14 @@ function checkImplPath(
   const expected = layoutPath(input.layout, input.roots.app, 'operation-entry', action.handles.raw);
   if (expected === null) return null;
   if (implemented.has(expected)) return null;
-  return traceFinding('A2', {
+  const missing = traceFinding('A2', {
     message: `handles(${action.handles.raw})に対応する Server Action の実装がありません`,
     location: { file: action.location.file, pointer: 'handles' },
     suggestion: `${expected} を作る(配置の正: server-actions.md の _actions/{aggregate}/{event}.ts)`,
     counterexample: { handles: action.handles.raw, expected_impl: expected },
     grounding: 'implementation',
   });
+  return absentFor({ kind: 'action', id: action.id }, missing);
 }
 
 /** `entry/submit.md` → `entry.submit`。置き場所から導かれる handles をメッセージに出すため。 */

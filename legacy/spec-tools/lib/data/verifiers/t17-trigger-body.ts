@@ -46,6 +46,7 @@
 
 import path from 'node:path';
 import { isDirectory } from '../../io/paths.js';
+import { absentFor } from '../../kernel/scope-owner.js';
 import { tryReadText } from '../../io/read-text.js';
 import type { SpecModel } from '../../model/types.js';
 import { checkTriggerOf } from '../../sql/ddl-check-triggers.js';
@@ -258,17 +259,16 @@ function namedMigration(
   const location = { ...table.location, pointer: `functions.${fn.name}.handwritten.migration` };
   const text = tryReadText(path.join(migrationsDir, named));
   if (text === null) {
-    return [
-      t17({
-        message: `トリガ関数 ${fn.name} の handwritten が名指した migration ${named} は実在しません`,
-        location,
-        suggestion:
-          `${roots.migrations}/ にあるファイル名をそのまま書く(その関数の本文を作っている migration)。` +
-          '名前が違うと「手で書いた」という宣言の根拠がどこにも無い',
-        counterexample: { function: fn.name, migration: named },
-        grounding: 'implementation',
-      }),
-    ];
+    const missing = t17({
+      message: `トリガ関数 ${fn.name} の handwritten が名指した migration ${named} は実在しません`,
+      location,
+      suggestion:
+        `${roots.migrations}/ にあるファイル名をそのまま書く(その関数の本文を作っている migration)。` +
+        '名前が違うと「手で書いた」という宣言の根拠がどこにも無い',
+      counterexample: { function: fn.name, migration: named },
+      grounding: 'implementation',
+    });
+    return [absentFor({ kind: 'table', id: table.id }, missing)];
   }
   if (text.includes(fn.name)) return [];
   return [

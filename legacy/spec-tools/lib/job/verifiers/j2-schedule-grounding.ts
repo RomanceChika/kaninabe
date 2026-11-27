@@ -18,6 +18,8 @@ import path from 'node:path';
 import { appGrounded, isFile } from '../../io/paths.js';
 import type { SpecModel } from '../../model/types.js';
 import type { Finding } from '../../kernel/finding.js';
+import { absentFor, type ScopeOwner } from '../../kernel/scope-owner.js';
+import { JOB_CATALOG_ID } from '../../model/job/parse-jobs.js';
 import type { JobDecl, JobSpecModel } from '../../model/job/types.js';
 import { httpEntryPath } from '../../model/product/layout.js';
 import type { ProductLayout } from '../../model/product/layout.js';
@@ -62,6 +64,9 @@ export function verifyScheduleGrounding(input: ScheduleGroundingInput): Finding[
   return findings;
 }
 
+/** 実装・Route Handler の不在の持ち主(ジョブカタログ)。 */
+const JOB_CATALOG_OWNER: ScopeOwner = { kind: 'catalog', id: JOB_CATALOG_ID };
+
 /**
  * 1 行分の接地(実装・Route Handler・fires・due_from)。
  *
@@ -74,15 +79,14 @@ function verifyOne(decl: JobDecl, input: ScheduleGroundingInput, grounded: boole
   const findings: Finding[] = [];
 
   if (grounded && !isFile(path.join(input.repoRoot, schedule.implementation))) {
-    findings.push(
-      j2Finding({
-        message: `ジョブ ${decl.id} の implementation ${schedule.implementation} が実在しません`,
-        location: decl.location,
-        suggestion: 'モジュールを作るか、implementation を実在するパス(リポジトリルート相対)へ直す',
-        counterexample: { job: decl.id, implementation: schedule.implementation },
-        grounding: 'implementation',
-      }),
-    );
+    const missing = j2Finding({
+      message: `ジョブ ${decl.id} の implementation ${schedule.implementation} が実在しません`,
+      location: decl.location,
+      suggestion: 'モジュールを作るか、implementation を実在するパス(リポジトリルート相対)へ直す',
+      counterexample: { job: decl.id, implementation: schedule.implementation },
+      grounding: 'implementation',
+    });
+    findings.push(absentFor(JOB_CATALOG_OWNER, missing));
   }
 
   if (grounded && schedule.endpoint !== undefined) {
@@ -97,15 +101,14 @@ function verifyOne(decl: JobDecl, input: ScheduleGroundingInput, grounded: boole
         }),
       );
     } else if (!isFile(path.join(input.repoRoot, route))) {
-      findings.push(
-        j2Finding({
-          message: `ジョブ ${decl.id} の endpoint ${schedule.endpoint} に対応する Route Handler がありません`,
-          location: decl.location,
-          suggestion: `${route} を作るか、endpoint を実在する口へ直す(Cron が叩けない口は宣言だけの死んだ経路)`,
-          counterexample: { job: decl.id, expected_route: route },
-          grounding: 'implementation',
-        }),
-      );
+      const missing = j2Finding({
+        message: `ジョブ ${decl.id} の endpoint ${schedule.endpoint} に対応する Route Handler がありません`,
+        location: decl.location,
+        suggestion: `${route} を作るか、endpoint を実在する口へ直す(Cron が叩けない口は宣言だけの死んだ経路)`,
+        counterexample: { job: decl.id, expected_route: route },
+        grounding: 'implementation',
+      });
+      findings.push(absentFor(JOB_CATALOG_OWNER, missing));
     }
   }
 

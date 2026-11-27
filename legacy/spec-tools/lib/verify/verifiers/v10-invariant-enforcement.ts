@@ -56,6 +56,7 @@
 
 import type { SpecModel, InvariantDef, EnforcementDef } from '../../model/types.js';
 import type { Finding } from '../../kernel/finding.js';
+import { absentFor } from '../../kernel/scope-owner.js';
 import type { Verifier, VerifyContext } from '../../check-api/contract.js';
 import { FORMAL_PARSE } from '../../guard/ast.js';
 import type { DomainEnv } from '../../guard/ast.js';
@@ -268,9 +269,10 @@ function checkInvariant(
   for (const enforcement of invariant.enforcedBy) {
     if (enforcement.kind === 'application') {
       const applicationResult = checkApplicationRefExists(invariant, enforcement, ctx);
-      if (applicationResult !== undefined) findings.push({ ...applicationResult, grounding: 'implementation' });
+      const owner = { kind: 'invariant' as const, id: invariant.id };
+      if (applicationResult !== undefined) findings.push(absentFor(owner, { ...applicationResult, grounding: 'implementation' }));
       const calledResult = checkApplicationRefCalled(invariant, enforcement, ctx);
-      if (calledResult !== undefined) findings.push({ ...calledResult, grounding: 'implementation' });
+      if (calledResult !== undefined) findings.push(absentFor(owner, { ...calledResult, grounding: 'implementation' }));
       continue;
     }
     if (enforcement.kind !== 'guard') continue;

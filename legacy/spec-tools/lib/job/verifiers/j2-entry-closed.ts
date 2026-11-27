@@ -27,6 +27,9 @@
 
 import path from 'node:path';
 import type { Finding } from '../../kernel/finding.js';
+import { absentFor } from '../../kernel/scope-owner.js';
+import { AUTH_FLOW_ID } from '../../model/auth/parse-auth.js';
+import { EXTERNAL_CATALOG_ID } from '../../model/external/parse-external.js';
 import { unusableOf } from '../../kernel/input-state.js';
 import type { CatalogInput, UnusableInput } from '../../kernel/input-state.js';
 import { appGrounded, toRelative } from '../../io/paths.js';
@@ -207,13 +210,15 @@ const HANDWRITTEN_DECLARED: ReadonlySet<EntryDeclaration['origin']> = new Set(['
 
 /** 宣言した手書きの口に、実装の木の入口が無い指摘(認証の口・送信の連携の endpoints)。 */
 function missingFinding(decl: EntryDeclaration, expected: string): Finding {
-  return j2Finding({
+  const missing = j2Finding({
     message: `${decl.source} に対応する Route Handler がありません`,
     location: decl.location,
     suggestion: `${expected} を作るか、宣言を実在する口へ直す(叩けない口は宣言だけの死んだ経路)`,
     counterexample: { endpoint: decl.url, expected_route: expected },
     grounding: 'implementation',
   });
+  // 宣言した持ち主(認証フロー仕様 / 外部連携カタログ)の不在として印を付ける。
+  return absentFor({ kind: 'catalog', id: decl.origin === 'external_endpoint' ? EXTERNAL_CATALOG_ID : AUTH_FLOW_ID }, missing);
 }
 
 /**

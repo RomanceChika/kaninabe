@@ -17,6 +17,7 @@
 
 import type { Finding, ScreenVerifier } from '../verifier.js';
 import { authGateBlocked, screenFinding } from '../verifier.js';
+import { absentFor } from '../../kernel/scope-owner.js';
 import { isParsableMatcher, matcherCovers } from '../route-match.js';
 import type { AppRoutesModel } from '../../model/screen/app-types.js';
 import { isSpecRouteForm } from '../../model/screen/route-syntax.js';
@@ -148,14 +149,17 @@ function missingImplementations(
   return screens
     .filter((screen) => !implemented.has(screen.route))
     .map((screen) =>
-      screenFinding('S7', {
-        message: `route ${screen.route} に対応する実ルートが ${routeRoot} にありません`,
-        location: { file: screen.location.file, pointer: 'route' },
-        suggestion:
-          `${screenShellPath(layout, roots, screen.route) ?? routeRoot} を作るか、` +
-          'route を実装の配置に合わせる(動的セグメントの名前も実装と同じにする)',
-        counterexample: { screen: screen.name, route: screen.route },
-      }),
+      absentFor(
+        { kind: 'screen', id: screen.id },
+        screenFinding('S7', {
+          message: `route ${screen.route} に対応する実ルートが ${routeRoot} にありません`,
+          location: { file: screen.location.file, pointer: 'route' },
+          suggestion:
+            `${screenShellPath(layout, roots, screen.route) ?? routeRoot} を作るか、` +
+            'route を実装の配置に合わせる(動的セグメントの名前も実装と同じにする)',
+          counterexample: { screen: screen.name, route: screen.route },
+        }),
+      ),
     );
 }
 

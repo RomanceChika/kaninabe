@@ -1,6 +1,6 @@
 {
   "name": "kaninabe",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "仕組み(framework)と製品(product)を束ねるワークスペースの根。docs と legacy/spec-tools は入れない(検査器のツールチェーンを製品のビルドに混ぜないため。ADR-0013)。検査器の scripts はここから `legacy/spec-tools` の同名へ取り次ぐ。",
   "workspaces": [

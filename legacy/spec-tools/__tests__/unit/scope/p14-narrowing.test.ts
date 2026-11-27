@@ -1,0 +1,185 @@
+/**
+ * P14: 実装の範囲は広がる向きにしか動かせない(base の宣言と、仕様の id で比べる)。
+ *
+ * 比べるのは path の増減ではなく**同じ仕様が範囲に残っているか**である。
+ *   - 広がった(base の id が全部残っている)→ 通る
+ *   - base にあった id が消え、その仕様がまだある → P14(error)
+ *   - base にあった id が消え、仕様も無い(廃止・改名)→ 通る。ただし**件数は 1 行に数える**(改名は「仕様から消えた」と見分けがつかない)
+ *   - head にキーが無い(範囲が「全部」になる)→ 通る(広がる向き)
+ *   - base の file が読めない・YAML が壊れている・`implemented` が壊れている → **error。読み飛ばさない**(比べられないまま通さない)
+ *   - base にキーが無い → error ではなく 1 行(キーを入れるのは持ち主が承認する基準の変更。N1)
+ * 1 行の文面に **id は出さない**(公開の log に載りうる。件数だけ)。
+ *
+ * 計画: step 3b の section 2(P14)と Designer decisions の N1 / N2。
+ */
+
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import type { ScopeOwner } from '../../../lib/kernel/scope-owner.js';
+import type { ProductImplemented } from '../../../lib/model/product/implemented.js';
+import { readBaseScope } from '../../../lib/scope/base.js';
+import { verifyNarrowing } from '../../../lib/scope/verifiers/p14-narrowing.js';
+
+const created: string[] = [];
+
+afterEach(() => {
+  for (const dir of created.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+/** 仕様がいま在る持ち主(head の木から数えた一覧の代わり)。 */
+const OWNERS: readonly ScopeOwner[] = [
+  { kind: 'action', id: 'room-create-action' },
+  { kind: 'action', id: 'room-delete-action' },
+  { kind: 'screen', id: 'screen-room-admin' },
+];
+
+/** base の product.md を書き、そのパスを返す。 */
+function baseFile(frontmatterTail: readonly string[]): string {
+  const dir = mkdtempSync(path.join(tmpdir(), 'p14-base-'));
+  created.push(dir);
+  const file = path.join(dir, 'product.md');
+  writeFileSync(
+    file,
+    ['---', 'doc_type: product_roots', 'scope: common', 'id: product-roots', 'name: test-product', 'roots:', '  specs: spec', '  book: read', '  generated: impl/src/generated', '  migrations: db/migrations', 'uses:', '  - actions', ...frontmatterTail, '---', ''].join('\n'),
+  );
+  return file;
+}
+
+/** base を読んで head と比べる。 */
+function narrowing(base: string, head: ProductImplemented, owners: readonly ScopeOwner[] = OWNERS) {
+  return verifyNarrowing({ head, base: readBaseScope(base), owners });
+}
+
+describe('P14 範囲は広がる向きにしか動かない', () => {
+  it('広がった(base の id が全部残り、足された)→ 通る', () => {
+    const base = baseFile(['implemented:', '  - room-create-action']);
+
+    const result = narrowing(base, { declared: true, ids: ['room-create-action', 'room-delete-action'] });
+
+    expect(result.findings).toEqual([]);
+  });
+
+  it('変わらない → 通る', () => {
+    const base = baseFile(['implemented:', '  - room-create-action']);
+
+    expect(narrowing(base, { declared: true, ids: ['room-create-action'] }).findings).toEqual([]);
+  });
+
+  it('base の id が消え、その仕様がまだある → P14(消えた id を名指す)', () => {
+    const base = baseFile(['implemented:', '  - room-create-action', '  - room-delete-action']);
+
+    const result = narrowing(base, { declared: true, ids: ['room-create-action'] });
+
+    expect(result.findings.map((finding) => [finding.verifier, finding.severity])).toEqual([['P14', 'error']]);
+    expect(result.findings[0]?.message).toBe('base の実装の範囲にあった room-delete-action が範囲から消えています(仕様を廃止するときだけ消せます)');
+  });
+
+  it('base の id を全部消して `[]` にしても、仕様がまだあれば全部 P14', () => {
+    const base = baseFile(['implemented:', '  - room-create-action', '  - screen-room-admin']);
+
+    const result = narrowing(base, { declared: true, ids: [] });
+
+    expect(result.findings.map((finding) => finding.verifier)).toEqual(['P14', 'P14']);
+  });
+
+  it('base の id が消え、仕様も無い → 通る。件数は 1 行に数え、id は書かない', () => {
+    const base = baseFile(['implemented:', '  - room-create-action', '  - room-retired-action']);
+
+    const result = narrowing(base, { declared: true, ids: ['room-create-action'] });
+
+    expect(result.findings).toEqual([]);
+    expect(result.gone).toBe(1);
+    expect(result.note).not.toBeNull();
+    expect(result.note).toContain('1');
+    expect(result.note).not.toContain('room-retired-action');
+  });
+
+  it('消えた id が 0 件なら、数える行は出さない(宣言のある base と比べて何も無いときに log を増やさない)', () => {
+    const base = baseFile(['implemented:', '  - room-create-action']);
+
+    const result = narrowing(base, { declared: true, ids: ['room-create-action'] });
+
+    expect(result.gone).toBe(0);
+    expect(result.note).toBeNull();
+  });
+
+  it('head にキーが無い(範囲が全部になる)→ 通る', () => {
+    const base = baseFile(['implemented:', '  - room-create-action']);
+
+    expect(narrowing(base, { declared: false }).findings).toEqual([]);
+  });
+
+  it('base が `implemented: []` なら、head が何であれ通る(狭めようがない)', () => {
+    const base = baseFile(['implemented: []']);
+
+    expect(narrowing(base, { declared: true, ids: [] }).findings).toEqual([]);
+  });
+});
+
+describe('比べられない base は error(読み飛ばさない)', () => {
+  it('base の file が読めない', () => {
+    const missing = path.join(tmpdir(), 'p14-no-such-dir', 'product.md');
+
+    const result = narrowing(missing, { declared: true, ids: ['room-create-action'] });
+
+    expect(result.findings.map((finding) => [finding.verifier, finding.severity])).toEqual([['P14', 'error']]);
+  });
+
+  it('base の YAML が壊れている', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'p14-base-'));
+    created.push(dir);
+    const file = path.join(dir, 'product.md');
+    writeFileSync(file, '---\nroots: [unclosed\n---\n');
+
+    const result = narrowing(file, { declared: true, ids: [] });
+
+    expect(result.findings.map((finding) => [finding.verifier, finding.severity])).toEqual([['P14', 'error']]);
+  });
+
+  it('base の frontmatter が無い', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'p14-base-'));
+    created.push(dir);
+    const file = path.join(dir, 'product.md');
+    writeFileSync(file, '# 宣言なし\n');
+
+    expect(narrowing(file, { declared: true, ids: [] }).findings.map((finding) => finding.verifier)).toEqual(['P14']);
+  });
+
+  it.each([
+    ['値が無い', ['implemented:']],
+    ['リストでない', ['implemented: room-create-action']],
+    ['文字列でない要素', ['implemented:', '  - 1']],
+    ['重複', ['implemented:', '  - room-create-action', '  - room-create-action']],
+  ])('base の implemented が壊れている(%s)', (_label, tail) => {
+    const result = narrowing(baseFile(tail), { declared: true, ids: ['room-create-action'] });
+
+    expect(result.findings.map((finding) => [finding.verifier, finding.severity])).toEqual([['P14', 'error']]);
+  });
+
+  it('壊れた base は、head が何であっても(宣言なしでも)通さない', () => {
+    const missing = path.join(tmpdir(), 'p14-no-such-dir', 'product.md');
+
+    expect(narrowing(missing, { declared: false }).findings.map((finding) => finding.verifier)).toEqual(['P14']);
+  });
+});
+
+describe('base にキーが無い(N1)', () => {
+  it('error にはせず、1 行だけ言う(キーを入れる変更は持ち主が承認する基準の変更)', () => {
+    const base = baseFile([]);
+
+    const result = narrowing(base, { declared: true, ids: ['room-create-action'] });
+
+    expect(result.findings).toEqual([]);
+    expect(result.note).not.toBeNull();
+    expect(result.note).not.toContain('room-create-action');
+  });
+
+  it('head にも無ければ、何も言わない', () => {
+    const result = narrowing(baseFile([]), { declared: false });
+
+    expect(result.findings).toEqual([]);
+    expect(result.note).toBeNull();
+  });
+});

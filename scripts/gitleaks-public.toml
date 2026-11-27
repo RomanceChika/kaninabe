@@ -1,0 +1,8 @@
+# The gitleaks configuration of the push gate (scripts/push-gate.sh passes it with --config). It only extends the
+# built-in default rules. It is fixed here, on the gate's side, so that a .gitleaks.toml (or an environment variable,
+# or an ignore file) in the tree being scanned cannot allowlist what the gate must see.
+# KNOWN LIMIT: `useDefault = true` brings in the default rules AND the tool's default global allowlist, so a key in a
+# file that the allowlist skips by name or kind (for example a .svg whose content is text, or a file named
+# gitleaks.toml) is not found. The scanner change replaces this with exclusions named file by file (docs/known-gaps.md).
+[extend]
+useDefault = true

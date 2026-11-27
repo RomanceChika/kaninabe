@@ -229,10 +229,18 @@ const codeLines = (file) => readFileSync(file, 'utf8').split('\n').map((l, i) =>
 
 describe('there is no way to skip a file except the list', () => {
   const CONFIG = path.join(scriptsDir, 'push-gate.gitleaks.toml');
-  it('the vendored gitleaks configuration does not extend the default, has no global allowlist and no `paths =`', () => {
+  it('the vendored gitleaks configuration does not extend anything, has no global allowlist (any spelling) and no `paths =`', () => {
     const lines = codeLines(CONFIG);
-    const hits = lines.filter(([, l]) => /useDefault/.test(l) || /^\s*\[allowlist\]/.test(l) || /^\s*\[\[allowlists\]\]/.test(l) || /^\s*paths\s*=/.test(l));
-    assert.deepEqual(hits, [], 'useDefault brings in the default global allowlist; paths = would skip files by name (a [[rules.allowlists]] without paths is fine)');
+    const hits = lines.filter(([, l]) => /useDefault/.test(l) || /^\s*\[\s*extend\s*\]/.test(l) || /^\s*\[\s*allowlist\s*\]/.test(l) || /^\s*\[\[\s*allowlists\s*\]\]/.test(l)
+      || /^\s*allowlists?\s*=/.test(l) || /^\s*paths\s*=/.test(l));
+    assert.deepEqual(hits, [], 'useDefault / [extend] bring in the default global allowlist; paths = would skip files by name (a [[rules.allowlists]] without paths is fine)');
+  });
+  it('before its first [[rules]] the vendored configuration holds only comments, blank lines, title = and minVersion =', () => {
+    const text = readFileSync(CONFIG, 'utf8');
+    const i = text.indexOf('[[rules]]');
+    const head = (i < 0 ? text : text.slice(0, i)).split('\n').filter((l) => l.trim() !== '' && !/^\s*#/.test(l) && !/^\s*(title|minVersion)\s*=/.test(l));
+    assert.deepEqual(head, [], 'something other than a comment, title or minVersion precedes the rules');
+    assert.ok(i >= 0, 'the vendored configuration has no [[rules]]');
   });
 
   /** The default configuration that the pinned gitleaks carries inside its binary, found offline in the binary's own bytes. */
@@ -250,25 +258,44 @@ describe('there is no way to skip a file except the list', () => {
     return data.subarray(start, end).toString('utf8');
   };
   /**
-   * The rules of a configuration, compared without the one thing the gate must not keep: a `paths = [...]` list. (The pinned
-   * default has three of them inside rule-level allowlists: .bb files for generic-api-key, and @octokit/auth-token/README.md
-   * for two GitHub rules. They skip files by name, so the vendored copy drops them; a rule-level allowlist left with nothing
-   * but a description is dropped as well.)
+   * The rules of a configuration, compared without the one thing the gate must not keep: a `paths = [...]` list. The pinned
+   * default has three of them inside rule-level allowlists (.bb files for generic-api-key, and @octokit/auth-token/README.md for
+   * two GitHub rules). They skip files by name, so the vendored copy has no `paths`. Dropping only the `paths` of an allowlist
+   * is right when it combines its parts with OR (a match on paths OR on regexes allows): the rest still allows what it did.
+   * With `condition = "AND"` (a match must be on the path AND on the regexes) dropping only `paths` would widen the allowlist to
+   * every file, so the WHOLE allowlist is dropped. A rule-level allowlist left with nothing but a description is dropped too.
    */
-  const rulesOf = (text) => {
-    const i = text.indexOf('[[rules]]');
-    if (i < 0) return '';
+  const stripPaths = (lines) => {
     const kept = [];
     let skipping = false;
-    for (const l of text.slice(i).split('\n').map((x) => x.replace(/\s+$/, ''))) {
+    for (const l of lines) {
       if (skipping) { if (/^\s*\]$/.test(l)) skipping = false; continue; }
       if (/^\s*paths\s*=\s*\[\s*$/.test(l)) { skipping = true; continue; }
       if (/^\s*paths\s*=\s*\[.*\]$/.test(l)) continue;
       kept.push(l);
     }
-    const tables = kept.join('\n').split(/^(?=\[)/m).filter((t) => !(/^\[\[rules\.allowlists\]\]/.test(t) && t.split('\n').slice(1).every((l) => l === '' || /^\s*description\s*=/.test(l))));
-    return tables.join('').replace(/\n{2,}/g, '\n').trim();
+    return kept;
   };
+  const rulesOf = (text) => {
+    const i = text.indexOf('[[rules]]');
+    if (i < 0) return '';
+    const tables = text.slice(i).split('\n').map((x) => x.replace(/\s+$/, '')).join('\n').split(/^(?=\[)/m);
+    const out = [];
+    for (const t of tables) {
+      if (!/^\[\[rules\.allowlists\]\]/.test(t)) { out.push(stripPaths(t.split('\n')).join('\n')); continue; }
+      if (/^\s*paths\s*=/m.test(t) && /^\s*condition\s*=\s*"AND"/m.test(t)) continue;
+      const body = stripPaths(t.split('\n'));
+      if (body.slice(1).every((l) => l === '' || /^\s*description\s*=/.test(l))) continue;
+      out.push(body.join('\n'));
+    }
+    return out.join('').replace(/\n{2,}/g, '\n').trim();
+  };
+  it('(guard) the comparison drops a whole AND allowlist that had paths, and only the paths of an OR one', () => {
+    const text = '[[rules]]\nid = "x"\n[[rules.allowlists]]\ncondition = "AND"\npaths = [\n  \'a\',\n]\nregexes = [\'bbb\']\n[[rules.allowlists]]\npaths = [\'ccc\']\nregexes = [\'ddd\']\n[[rules.allowlists]]\ndescription = "d"\npaths = [\'eee\']\n';
+    const out = rulesOf(text);
+    assert.ok(!out.includes('bbb') && !out.includes('ccc') && !out.includes('eee') && !out.includes('paths'), out);
+    assert.ok(out.includes('ddd') && out.includes('id = "x"'), out);
+  });
   it('the vendored rules are exactly the pinned gitleaks\' default rules (its global allowlist is the only part left out)', () => {
     const want = rulesOf(embeddedDefault());
     assert.ok(want.length > 10000, 'could not read the default rules out of the pinned binary');

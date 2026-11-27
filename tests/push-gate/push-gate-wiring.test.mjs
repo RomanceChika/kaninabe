@@ -1033,6 +1033,34 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
       shimFail('git', 'ls-tree');
       stops(runGate(sb, ['--mode', 'general', '--all']), 2, 'push-gate: step workflows could not run (could not list the files of HEAD)');
     });
+    describe('the tree of HEAD is read as a synthetic root commit: a step of it that fails is exit 2, never a clean tree line', () => {
+      // The contract of the tree step: it builds the commit with `git commit-tree`, lists the tree with `ls-tree -r -z`, and reads
+      // the content of each file with `cat-file blob`. A shim fails exactly that command; the others keep working.
+      for (const [label, needle] of [['commit-tree (making the root commit)', 'commit-tree'], ['ls-tree -r -z (listing the files of the tree)', 'ls-tree -r -z'], ['cat-file blob (reading a file of the tree)', 'cat-file blob']]) {
+        it(`a ${label} that fails stops the gate (2)`, () => {
+          shimFail('git', needle);
+          const r = runGate(sb, ['--mode', 'general', '--all']);
+          assert.equal(r.status, 2, r.out);
+          assert.ok(!r.out.includes('push-gate: passed') && !r.out.includes('step gitleaks: ok'), r.out);
+          assert.ok(!/tree of HEAD[^\n]*(ok|clean)/i.test(r.out), `a clean tree line was printed: ${r.out}`);
+        });
+      }
+    });
+    it('a shallow clone stops the gate (2): the history cannot be read to the end', () => {
+      const d = path.join(sb.dir, 'shallow');
+      git({ ...sb, cwd: sb.dir }, 'clone', '-q', '--depth', '1', `file://${sb.repo}`, d);
+      const r = spawnSync('/bin/sh', [gate, '--mode', 'general', '--all'], { cwd: d, encoding: 'utf8', env: sb.env() });
+      stops({ status: r.status, out: r.stdout + r.stderr }, 2, 'push-gate: this is a shallow clone, so the history cannot be read to the end');
+    });
+    it('a repository with no commit stops the gate (2) with "HEAD is not a commit", in every way of naming the range', () => {
+      const d = path.join(sb.dir, 'empty');
+      mkdirSync(d);
+      git({ ...sb, cwd: d }, 'init', '-q', '-b', 'main');
+      for (const range of [['--all'], ['--base', 'HEAD']]) {
+        const r = spawnSync('/bin/sh', [gate, '--mode', 'general', ...range], { cwd: d, encoding: 'utf8', env: sb.env() });
+        stops({ status: r.status, out: r.stdout + r.stderr }, 2, 'push-gate: HEAD is not a commit');
+      }
+    });
     it('W2: the tr of the text-added decision that fails stops the gate, it is not "nothing added"', () => {
       shimFail('tr', '\\000');
       stops(runGate(sb, ['--mode', 'general', '--all']), 2, 'push-gate: step gitleaks could not run (could not read the patch of a commit)');

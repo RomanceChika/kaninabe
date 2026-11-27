@@ -34,7 +34,6 @@ const TAGGED: readonly (readonly [string, string])[] = [
   ['T3', 'TC-TABLE-ROOMS-001 の implementation が指すテストファイルがありません'],
   ['T17', 'トリガ関数 check_room_overlap の handwritten が名指した migration 20260101000000_x.sql は実在しません'],
   ['V10', 'INV-CLAIM-001: enforced_by(kind: application)の ref "assertClaimHasLines" は app/src に export された関数・定数として実在しません'],
-  ['V10', 'INV-CLAIM-001: enforced_by(kind: application)の ref "assertClaimHasLines" は app/src のどこからも呼ばれていません(宣言だけがあって、この不変条件を実際に守っているものがありません)'],
   ['X1', '連携 bank_transfer の adapter app/src/infrastructure/bank/transfer.ts が実在しません'],
   ['X4', 'TC-EXT-PAY-001 の implementation が指すテストファイルがありません'],
   ['Y9', 'TC-USECASE-BOOK_ROOM-001 の implementation が指すテストファイルがありません'],
@@ -64,6 +63,7 @@ const NEVER_TAGGED: readonly (readonly [string, string])[] = [
   ['Z1', 'TC-GUAR-LOANS-001 のテスト名が implementation と一致しません'],
   ['G8', 'ハンドブック側のロゴの写し docs/book/assets/icon.png がありません'],
   ['V10', 'INV-CLAIM-001: enforced_by(kind: application)の ref が見つかりません'],
+  ['V10', 'INV-CLAIM-001: enforced_by(kind: application)の ref "assertClaimHasLines" は app/src のどこからも呼ばれていません(宣言だけがあって、この不変条件を実際に守っているものがありません)'],
 ];
 
 describe('許す文面の閉じた表', () => {
@@ -80,11 +80,11 @@ describe('許す文面の閉じた表', () => {
     expect(Object.keys(ABSENCE_TEMPLATES)).not.toContain('Z3');
   });
 
-  it('表の正規表現は全部、行頭と行末(V10 の「呼ばれていません」だけは行頭のみ)を固定している', () => {
+  it('表の正規表現は全部、行頭と行末を固定している', () => {
     for (const [verifier, templates] of Object.entries(ABSENCE_TEMPLATES)) {
       for (const template of templates) {
         expect(template.source.startsWith('^'), `${verifier} ${template.source}`).toBe(true);
-        if (!template.source.includes('のどこからも呼ばれていません')) expect(template.source.endsWith('$'), `${verifier} ${template.source}`).toBe(true);
+        expect(template.source.endsWith('$'), `${verifier} ${template.source}`).toBe(true);
       }
     }
   });

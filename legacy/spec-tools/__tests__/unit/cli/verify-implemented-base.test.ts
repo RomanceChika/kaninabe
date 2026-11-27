@@ -103,6 +103,22 @@ describe('verify --implemented-base', () => {
     expect(run.stdout).not.toContain('room-retired-action');
   }, SLOW);
 
+  it('--implemented-base を 2 回書けば、検証を始めずに終了コード 1 と固定の文言で止まる', () => {
+    const file = baseFile(['implemented:', '  - room-create-action']);
+    const run = runToolCli(cliPath('verify-docs.ts'), TOOL_TREE, ['--root', widened, '--implemented-base', file, '--implemented-base', file]);
+
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('--implemented-base は 1 回だけ書いてください');
+    expect(run.stdout).not.toContain('検証結果');
+  }, SLOW);
+
+  it('--implemented-base の値が無ければ、終了コード 1 と固定の文言で止まる', () => {
+    const run = runToolCli(cliPath('verify-docs.ts'), TOOL_TREE, ['--root', widened, '--implemented-base']);
+
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('--implemented-base には基準の product.md のパスを続けて書いてください');
+  }, SLOW);
+
   it.each([
     ['file が無い', () => path.join(tmpdir(), 'implemented-base-no-such-dir', 'product.md')],
     ['読めない(ディレクトリ)', () => mkdtempSync(path.join(tmpdir(), 'implemented-base-dir-'))],

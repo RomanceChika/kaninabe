@@ -37,10 +37,7 @@ export const ABSENCE_TEMPLATES: Readonly<Record<string, readonly RegExp[]>> = {
   S11: [/^\S+ の smoke の implementation が指すファイル\(.+\)がありません$/u],
   T3: TEST_ABSENT,
   T17: [/^トリガ関数 \S+ の handwritten が名指した migration \S+ は実在しません$/u],
-  V10: [
-    /^enforced_by\(kind: application\)の ref ".+" は app\/src に export された関数・定数として実在しません$/u,
-    /^enforced_by\(kind: application\)の ref ".+" は app\/src のどこからも呼ばれていません/u,
-  ],
+  V10: [/^enforced_by\(kind: application\)の ref ".+" は app\/src に export された関数・定数として実在しません$/u],
   X1: [/^連携 \S+ の adapter \S+ が実在しません$/u],
   X4: TEST_ABSENT,
   Y9: TEST_ABSENT,

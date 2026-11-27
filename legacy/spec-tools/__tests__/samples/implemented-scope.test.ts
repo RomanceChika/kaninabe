@@ -17,7 +17,8 @@
  * **重い組**(別プロセスの CLI を起こし、全検査を何度も回す)なので `vitest.heavy.config.ts` に載せる。
  */
 
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { runAllVerifications, type PipelineResult } from '../../lib/compose/verify-pipeline.js';
@@ -63,9 +64,14 @@ function declare(tree: Tree, lines: readonly string[] | null): void {
 }
 
 /** 生成の後の木で、全部の検査を回す。 */
-async function verifyAll(tree: Tree): Promise<{ readonly result: PipelineResult; readonly log: readonly string[] }> {
+async function verifyAll(tree: Tree, implementedBase?: string): Promise<{ readonly result: PipelineResult; readonly log: readonly string[] }> {
   const log: string[] = [];
-  const result = await runAllVerifications({ ...TEST_VERIFY_INPUTS, domainRoot: path.join(tree.root, tree.run.roots.specs, 'domain'), log: (line) => log.push(line) });
+  const result = await runAllVerifications({
+    ...TEST_VERIFY_INPUTS,
+    domainRoot: path.join(tree.root, tree.run.roots.specs, 'domain'),
+    ...(implementedBase === undefined ? {} : { implementedBase }),
+    log: (line) => log.push(line),
+  });
   return { result, log };
 }
 
@@ -103,8 +109,12 @@ function edit(tree: Tree, relative: string, change: (text: string) => string): (
 
 const trees: Tree[] = [];
 
+/** base の product.md を置いた一時ディレクトリ(後片付けのため)。 */
+const baseDirs: string[] = [];
+
 afterAll(() => {
   for (const tree of trees.splice(0)) rmSync(tree.root, { recursive: true, force: true });
+  for (const dir of baseDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 describe('実装の範囲の宣言を rooms の生成の後の木に通す', () => {
@@ -380,6 +390,36 @@ describe('負例(題材 library): ホストの設定・テスト名の食い違�
     }
   }, SLOW);
 
+  it('配線: 種類の読み込みが失敗したとき、その種類の base の id は「仕様から消えた」と数えず P14 の error になる(読み込みの失敗の種類ごと: queries・auth・design_tokens)', async () => {
+    const queryId = 'query-item-list';
+    const queryFile = path.join(tree.run.roots.specs, 'backend', 'queries', 'item', 'item_list.md');
+    // [壊す種類, base に書く id, 壊す file, 壊し方]
+    const cases: readonly (readonly [string, string, string, (text: string) => string])[] = [
+      ['queries', queryId, queryFile, (text) => text.replace('\nid:', '\nbroken: [unclosed\nid:')],
+      ['auth', 'auth-flow', 'docs/specs/backend/auth.md', (text) => text.replace('providers: [email]', 'providers: [unclosed')],
+      ['design_tokens', 'design-tokens', 'docs/specs/frontend/design/tokens.md', (text) => text.replace('brand:\n', 'brand: [unclosed\n')],
+    ];
+    declare(tree, ['implemented: []']);
+
+    for (const [kind, id, file, breakIt] of cases) {
+      const base = writeBase([id]);
+      const clean = (await verifyAll(tree, base)).result;
+      const restore = edit(tree, file, breakIt);
+      try {
+        const broken = (await verifyAll(tree, base)).result;
+        const p14 = (result: PipelineResult): readonly Finding[] => result.findings.filter((finding) => finding.verifier === 'P14' && finding.severity === 'error');
+
+        // 対照: 読めているとき、その id は持ち主に居るので、消えたことを名指す P14(error)が 1 件。
+        expect(p14(clean).map((finding) => finding.message), kind).toEqual([`base の実装の範囲にあった ${id} が範囲から消えています(仕様を廃止するときだけ消せます)`]);
+        // 読めないとき: 持ち主から消えるが「仕様ごと廃止された」とは数えない(id の件数の行にも載らない)。種類を名指す集約の error が付く。
+        expect(p14(broken).some((finding) => finding.message.includes(kind)), kind).toBe(true);
+        expect(p14(broken).some((finding) => finding.message.includes(`${id} が範囲から消えています`)), kind).toBe(true);
+      } finally {
+        restore();
+      }
+    }
+  }, SLOW);
+
   it('G8: アイコンのファイルの不在は error のとき(placeholder 無し)だけ印が付く。`brand.placeholder` があれば warning で、印も throw も無い', async () => {
     declare(tree, ['implemented: []']);
     const withoutPlaceholder = (await verifyAll(tree)).result;
@@ -441,5 +481,53 @@ describe('負例(題材 stores): 宣言の無い連携の置き場・設定の�
     expect(errors.some((finding) => finding.verifier === 'X1' && finding.message.includes('どの分類'))).toBe(true);
     expect(errors.some((finding) => finding.verifier === 'J3' && finding.message.includes('scheduler: database として宣言されていません'))).toBe(true);
     expect(result.relieved.some((finding) => finding.message.includes('infrastructure/external') || finding.message.includes('pg_cron'))).toBe(false);
+  }, SLOW);
+});
+
+/** base の product.md(`implemented` の id を並べる)を木の外に書く。 */
+function writeBase(ids: readonly string[]): string {
+  const dir = mkdtempSync(path.join(tmpdir(), 'implemented-scope-base-'));
+  baseDirs.push(dir);
+  const file = path.join(dir, 'product.md');
+  const lines = ids.length === 0 ? 'implemented: []' : `implemented:\n${ids.map((id) => `  - ${id}`).join('\n')}`;
+  writeFileSync(file, `---\ndoc_type: product_roots\nscope: common\nid: product-roots\nname: sample\nroots:\n  specs: spec\n  book: read\n  generated: impl/src/generated\n  migrations: db/migrations\nuses:\n  - actions\n${lines}\n---\n`);
+  return file;
+}
+
+describe('題材 expenses: 応用の参照の呼び出しの不在と、不変条件の読み込みの失敗', () => {
+  let tree: Tree;
+  beforeAll(async () => {
+    tree = await openTree('expenses');
+    trees.push(tree);
+  }, SLOW);
+
+  it('V10: ref は export されているが呼ばれていない指摘は「あるが配線が無い」ので、`[]` でも外れない', async () => {
+    plant(tree, 'app/src/domain/claim-rules.ts', 'export function assertClaimHasLines(): void {}\nexport function claimTotalAmount(): number {\n  return 0;\n}\n');
+    declare(tree, ['implemented: []']);
+
+    const { result } = await verifyAll(tree);
+    const notCalled = (finding: Finding): boolean => finding.verifier === 'V10' && finding.message.includes('のどこからも呼ばれていません');
+
+    expect(errorsOf(result.findings).some(notCalled)).toBe(true);
+    expect(result.relieved.some(notCalled)).toBe(false);
+    expect(taggedOf(result.findings).some(notCalled)).toBe(false);
+  }, SLOW);
+
+  it('P14: 不変条件の読み込みに error があるとき、base の不変条件の id は「仕様から消えた」と数えず P14 の error になる', async () => {
+    const invariants = path.join(tree.run.roots.specs, 'domain', 'claim', 'invariants.md');
+    const base = writeBase(['INV-CLAIM-001']);
+    declare(tree, ['implemented: []']);
+    const clean = (await verifyAll(tree, base)).result;
+    const restore = edit(tree, invariants, (text) => text.replace('\nid:', '\nbroken: [unclosed\nid:'));
+    try {
+      const broken = (await verifyAll(tree, base)).result;
+
+      // 読めているのに id が無い(`[]` は base の id を消した)→ 仕様はまだあるので P14 の error(対照)。
+      expect(clean.findings.filter((finding) => finding.verifier === 'P14').length).toBe(1);
+      // 読めなかったとき: 消えたのか読めないだけなのか分からないので、同じく P14 の error。
+      expect(broken.findings.filter((finding) => finding.verifier === 'P14' && finding.severity === 'error').length).toBeGreaterThanOrEqual(1);
+    } finally {
+      restore();
+    }
   }, SLOW);
 });

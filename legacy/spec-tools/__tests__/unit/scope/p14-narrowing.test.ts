@@ -50,8 +50,8 @@ function baseFile(frontmatterTail: readonly string[]): string {
 }
 
 /** base を読んで head と比べる。 */
-function narrowing(base: string, head: ProductImplemented, owners: readonly ScopeOwner[] = OWNERS, unloaded: readonly SpecKind[] = []) {
-  return verifyNarrowing({ head, base: readBaseScope(base), owners, unloaded });
+function narrowing(base: string, head: ProductImplemented, owners: readonly ScopeOwner[] = OWNERS, unloaded: readonly SpecKind[] = [], invariantsUnloaded = false) {
+  return verifyNarrowing({ head, base: readBaseScope(base), owners, unloaded, invariantsUnloaded });
 }
 
 describe('P14 範囲は広がる向きにしか動かない', () => {
@@ -163,6 +163,30 @@ describe('head で読めなかった種類(unloaded)の id は「仕様から消
     const base = baseFile(['implemented:', '  - room-create-action']);
 
     expect(narrowing(base, { declared: false }, [], ['actions']).findings).toEqual([]);
+  });
+});
+
+describe('不変条件(ドメイン仕様)の読み込みの失敗(invariantsUnloaded)', () => {
+  it('不変条件を読めなかったとき、持ち主に居ない base の id は P14(消えたのか読めないだけなのか分からない)', () => {
+    const base = baseFile(['implemented:', '  - room-create-action', '  - INV-ROOM-001']);
+
+    const result = narrowing(base, { declared: true, ids: ['room-create-action'] }, OWNERS, [], true);
+
+    expect(result.findings.map((finding) => finding.verifier)).toEqual(['P14', 'P14']);
+    expect(result.gone).toBe(0);
+  });
+
+  it('読めていれば(false)、同じ id は「仕様から消えた」で通る', () => {
+    const base = baseFile(['implemented:', '  - room-create-action', '  - INV-ROOM-001']);
+
+    const result = narrowing(base, { declared: true, ids: ['room-create-action'] }, OWNERS, [], false);
+
+    expect(result.findings).toEqual([]);
+    expect(result.gone).toBe(1);
+  });
+
+  it('head の宣言が無ければ(範囲が全部)、読めなくても通る', () => {
+    expect(narrowing(baseFile(['implemented:', '  - INV-ROOM-001']), { declared: false }, [], [], true).findings).toEqual([]);
   });
 });
 

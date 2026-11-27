@@ -223,6 +223,18 @@ describe('H2: 着地と関門の接地', () => {
     ).toContain('requireNothing');
   });
 
+  it('範囲の印: ファイルが無いだけの実装には印が付き、`::関数名` / `ファイル::` / `::` なしの書き間違いには付かない', () => {
+    const find = (implementation: string) =>
+      verifyLandingGrounding({ roots: TEST_ROOTS, auth: authModel({ landings: MATCHED, gates: [authGate('session', { implementation })] }), screens: screens(), repoRoot: REPO_ROOT })[0];
+
+    expect(find('app/src/composition/nope.ts::requireSession')?.absentFor).toEqual({ kind: 'catalog', id: 'auth-flow' });
+    for (const malformed of ['::requireSession', 'app/src/composition/auth.ts::', '::', 'app/src/composition/nope.ts']) {
+      const finding = find(malformed);
+      expect(finding?.message, malformed).toContain('実在しません');
+      expect(finding?.absentFor, malformed).toBeUndefined();
+    }
+  });
+
   it('画面仕様が阻害でも、画面に依らない関門の実装の実在は見る(画面との突合だけを止める)。未選択は何も見ない', () => {
     const blocked: CatalogInput<ScreenSpecModel> = { state: 'blocked', reason: 'invalid', findings: [], partial: screenModel() };
     const missingFile = authModel({

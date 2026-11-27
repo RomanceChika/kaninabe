@@ -34,6 +34,7 @@ const FILES = [
   'scripts/repo-context.sh',
   'scripts/check-review-record.sh',
   'scripts/classify-paths.sh',
+  'scripts/check-basis-record.sh',
   '.githooks/pre-push',
 ];
 const MARKER = '# GATE-EXCEPTION:';

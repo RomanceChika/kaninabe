@@ -563,7 +563,8 @@ describe('classify-paths.sh: a step that cannot run is exit 2, never 1, never a 
     const mvFails = withOut(['--list', fx.list], { shim: { mv: 'exit 1' } });
     couldNotRun(mvFails.r, null);
     assert.deepEqual(mvFails.names, [], 'a failed move leaves no result and no temporary file');
-    const rmFails = withOut(['--list', fx.list], { shim: { rm: 'exit 1' } });
+    // with an rm that always fails nothing can be removed, so there is no stale file to begin with: the result must not appear
+    const rmFails = withOut(['--list', fx.list], { shim: { rm: 'exit 1' }, stale: false });
     couldNotRun(rmFails.r, null);
     assert.ok(!existsSync(rmFails.out), 'a cleanup that fails is exit 2 and leaves no result');
     const ok = withOut(['--list', fx.list]);
@@ -574,6 +575,13 @@ describe('classify-paths.sh: a step that cannot run is exit 2, never 1, never a 
     assert.equal(violated.r.status, 1, violated.r.all);
     assert.deepEqual(violated.names, ['result']);
     assert.ok(!readFileSync(violated.out, 'utf8').includes('STALE'));
+  });
+  it('a file name that starts with - (it could be read as an option by a tool) is exit 2 for --list, --paths and --out', () => {
+    const list = writeList([L('basis', 'x/*', 'r')]); const paths = writePaths(['a']);
+    toolPath = makeBin(root); tmpOverride = path.join(root, 'tmp');
+    couldNotRun(run(['--list', '-list', '--paths', paths]), null);
+    couldNotRun(run(['--list', list, '--paths', '-paths']), null);
+    couldNotRun(run(['--list', list, '--paths', paths, '--out', '-out']), null);
   });
   it('--out may not be the list or the paths file (they would be removed first)', () => {
     const list = writeList([L('basis', 'x/*', 'r')]); const paths = writePaths(['a']);
@@ -671,7 +679,7 @@ describe('classify-paths.sh: a stage output that is cut short is exit 2, whateve
               assert.equal(r.status, 2, `${label}: the output of the call was cut, and the result is not exit 2: ${r.all}`);
               assert.ok(r.all.includes('classify-paths: could not run ('), `${label}: ${r.all}`);
               assert.ok(!SUMMARY.test(r.all) && !CLASS_LINE.test(r.all) && !r.all.includes('FAILED'), `${label}: a verdict was printed: ${r.all}`);
-              assert.equal(r.outExists, false, `${label}: --out holds a stale or partial result after exit 2`);
+              if (s.withOut) assert.equal(r.outExists, false, `${label}: --out holds a stale or partial result after exit 2`);
             } else {
               assert.equal(r.status, s.truth, `${label}: nothing was cut, and the verdict changed: ${r.all}`);
               assert.equal(r.out, baseOut, `${label}: nothing was cut, and the output changed`);

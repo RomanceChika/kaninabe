@@ -232,3 +232,41 @@ describe('check-review-record.sh: a step that cannot run is exit 2, never 1 and 
     assert.ok(!r.out.includes('秘密の語') && !r.out.includes(OLD), r.out);
   });
 });
+
+describe('check-review-record.sh: a result that was cut short, or a body named like an awk assignment', () => {
+  let root;
+  before(() => { root = mkdtempSync(path.join(tmpdir(), 'review-record-cut-')); });
+  after(() => { toolPath = null; rmSync(root, { recursive: true, force: true }); });
+  /** An awk that runs the real one and then hands on its output without the last `n` lines, with status 0 (a write error that nobody saw). */
+  const cutAwk = (n) => `T=$(${which('mktemp')}) || exit 3\n${which('awk')} "$@" > "$T" || exit $?\n${which('head')} -n -${n} "$T"\n${which('rm')} -f "$T"\nexit 0`;
+  const BODIES = [['a matching record', record()], ['a record with a section after it', `${record()}メモ\n`], ['a record with an HTML tag before it', `<div>\n${record()}`]];
+  for (const n of [1, 2]) {
+    for (const [what, body] of BODIES) {
+      it(`an awk whose output lost its last ${n} line(s): ${what} is exit 2, never 0 or 1`, () => {
+        toolPath = makeBin(root, { shim: { awk: cutAwk(n) } });
+        const r = check(body);
+        assert.equal(r.status, 2, r.out);
+        assert.ok(r.out.includes('could not run'), r.out);
+        assert.ok(!r.out.includes('matches the head') && !r.out.includes('review record: FAILED'), r.out);
+      });
+    }
+  }
+
+  const inDir = (name, body) => {
+    const dir = mkdtempSync(path.join(root, 'd-'));
+    writeFileSync(path.join(dir, name), body);
+    const r = spawnSync('/bin/sh', [script, name, HEAD], { cwd: dir, encoding: 'utf8' });
+    return { status: r.status, out: r.stdout + r.stderr };
+  };
+  it('a body file named like an awk assignment (x=1, relative) is read as a file: a matching record passes', () => {
+    const r = inDir('x=1', record());
+    assert.equal(r.status, 0, r.out);
+    assert.ok(r.out.includes('matches the head'), r.out);
+  });
+  it('and a stale record in it fails for the right rule', () => {
+    const r = inDir('x=1', record(OLD));
+    assert.equal(r.status, 1, r.out);
+    assert.ok(r.out.includes('reviewed bbbbbbbb'), r.out);
+  });
+});
+

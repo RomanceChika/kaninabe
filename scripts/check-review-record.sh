@@ -78,11 +78,18 @@ LC_ALL=C awk '
     }
     print "D"
   }' < "$f" > "$tmp/out" || could_not "the body could not be read"
-# last_is <file> <line>: the last line of <file> is exactly <line>
+# last_is <file> <line>: the last line of <file> is exactly <line>. (A cut-short output of either tool here leaves an empty or other
+# line, which is not <line>: the caller stops.)
 last_is() {
   sed -n '$p' "$1" > "$1.last" || return 1
   li=$(cat "$1.last") || return 1
   [ "$li" = "$2" ]
+}
+# lines_of <file>: sets $nl to the number of lines of <file> (digits only; an output that is empty or not a number is a failure)
+lines_of() {
+  sed -n '$=' "$1" > "$1.n" || return 1
+  nl=$(cat "$1.n") || return 1
+  case $nl in '' | *[!0-9]*) return 1 ;; esac
 }
 last_is "$tmp/out" D || could_not "the result was cut short"
 sed -n -e 's/^E //p' -e 's/^D$/~D/p' "$tmp/out" > "$tmp/e1" || could_not "the findings could not be read"
@@ -91,16 +98,28 @@ last_is "$tmp/e2" '~D' || could_not "the findings were cut short"
 # findings exist when the first line of the sorted file is not the sentinel (decided on the checked file, not on a later stage's output)
 sed -n '1p' "$tmp/e2" > "$tmp/e2.first" || could_not "the findings could not be read"
 first=$(cat "$tmp/e2.first") || could_not "the findings could not be read"
+[ -n "$first" ] || could_not "the findings were cut short"
 fail=0
 if [ "$first" != '~D' ]; then
+  # each stage that makes what is printed is checked by its line count against the stage before it, and the print is the shell's own
+  lines_of "$tmp/e2" || could_not "the findings could not be counted"; n2=$nl
   sed '$d' "$tmp/e2" > "$tmp/e3" || could_not "the findings could not be written"
+  lines_of "$tmp/e3" || could_not "the findings could not be counted"; n3=$nl
+  [ "$n3" = "$((n2 - 1))" ] || could_not "the findings were cut short"
   sed 's/^/review record: /' "$tmp/e3" > "$tmp/e4" || could_not "the findings could not be written"
-  cat "$tmp/e4" || could_not "the findings could not be written"
+  lines_of "$tmp/e4" || could_not "the findings could not be counted"
+  [ "$nl" = "$n3" ] || could_not "the findings were cut short"
+  while IFS= read -r msg; do
+    printf '%s\n' "$msg" || could_not "the findings could not be written"
+  done < "$tmp/e4"
   fail=1
 else
   for who in opus codex; do
-    sed -n "s/^V $who //p" "$tmp/out" > "$tmp/v.$who" || could_not "the record could not be read"
-    v=$(cat "$tmp/v.$who") || could_not "the record could not be read"
+    sed -n -e "s/^V $who /v:/p" -e 's/^D$/~D/p' "$tmp/out" > "$tmp/v.$who" || could_not "the record could not be read"
+    last_is "$tmp/v.$who" '~D' || could_not "the record was cut short"
+    sed -n '1p' "$tmp/v.$who" > "$tmp/v.$who.1" || could_not "the record could not be read"
+    vl=$(cat "$tmp/v.$who.1") || could_not "the record could not be read"
+    case $vl in v:*) v=${vl#v:} ;; *) could_not "the record was cut short" ;; esac
     case $v in *[!0-9a-f]*|'') ok=0 ;; *) ok=1 ;; esac
     if [ "$ok" -eq 0 ] || [ "${#v}" -ne 40 ]; then echo "review record: '- $who:' is not a full commit sha"; fail=1
     elif [ "$v" != "$head" ]; then echo "review record: $who reviewed $(printf '%.8s' "$v"), the head is $(printf '%.8s' "$head") (review the new diff, then update the record)"; fail=1; fi

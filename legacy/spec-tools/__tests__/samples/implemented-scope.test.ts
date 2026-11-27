@@ -360,14 +360,36 @@ describe('負例(題材 library): ホストの設定・テスト名の食い違�
     expect(result.relieved.some((finding) => finding.message.includes('matcher') || finding.message.includes('どの宣言にも'))).toBe(false);
   }, SLOW);
 
+  it('J2(宣言した認証の口に Route Handler が無い): `[]` なら認証フロー仕様の不在として移り、持ち主を範囲に入れれば error のまま残る', async () => {
+    const entries = 'callback:\n  endpoint: /api/auth/callback\n  summary: 帰り道\nstart:\n  endpoint: /api/auth/start\n  summary: 開始\nlogout:\n  endpoint: /api/auth/logout\n  summary: ログアウト\n';
+    const restore = edit(tree, 'docs/specs/backend/auth.md', (text) => text.replace('providers: [email]', `${entries}providers: [email]`));
+    const isEntryMissing = (finding: Finding): boolean => finding.verifier === 'J2' && /^認証 (?:callback|start|logout) の endpoint \S+ に対応する Route Handler がありません$/u.test(finding.message);
+    try {
+      declare(tree, ['implemented: []']);
+      const relievedRun = (await verifyAll(tree)).result;
+      declare(tree, ['implemented: [auth-flow]']);
+      const inScopeRun = (await verifyAll(tree)).result;
+
+      expect(relievedRun.relieved.filter(isEntryMissing).map((finding) => finding.absentFor?.id)).toEqual(['auth-flow', 'auth-flow', 'auth-flow']);
+      expect(errorsOf(relievedRun.findings).some(isEntryMissing)).toBe(false);
+      expect(errorsOf(inScopeRun.findings).filter(isEntryMissing)).toHaveLength(3);
+      expect(inScopeRun.relieved.some(isEntryMissing)).toBe(false);
+    } finally {
+      restore();
+      declare(tree, null);
+    }
+  }, SLOW);
+
   it('G8: アイコンのファイルの不在は error のとき(placeholder 無し)だけ印が付く。`brand.placeholder` があれば warning で、印も throw も無い', async () => {
     declare(tree, ['implemented: []']);
     const withoutPlaceholder = (await verifyAll(tree)).result;
-    const restore = edit(tree, 'docs/specs/frontend/design/tokens.md', (text) => text.replace('  icon: app/src/app/icon.png', '  icon: app/src/app/icon.png\n  placeholder: 実物のロゴができるまでの仮のアイコン'));
+    const restore = edit(tree, 'docs/specs/frontend/design/tokens.md', (text) => text.replace('brand:\n  icon:', 'brand:\n  placeholder:\n    reason: 実物のロゴができるまでの仮のアイコン\n  icon:'));
     try {
       const { result } = await verifyAll(tree);
 
       expect(withoutPlaceholder.relieved.some((finding) => finding.verifier === 'G8' && finding.severity === 'error' && finding.absentFor?.id === 'design-tokens')).toBe(true);
+      // 書き方が正しい(マッピング + reason)ので、デザイントークンの読み込みは何も言わない(読み損ねると G8 は error のままになる)。
+      expect(result.findings.filter((finding) => finding.message.includes('brand.placeholder') || finding.message.includes('brand の'))).toEqual([]);
       const g8 = result.findings.filter((finding) => finding.verifier === 'G8' && finding.message.includes('が指すファイル'));
       expect(g8.map((finding) => finding.severity)).toEqual(['warning']);
       expect(g8[0]?.absentFor).toBeUndefined();

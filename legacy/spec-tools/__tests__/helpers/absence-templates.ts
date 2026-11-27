@@ -26,7 +26,8 @@ export const ABSENCE_TEMPLATES: Readonly<Record<string, readonly RegExp[]>> = {
   J2: [
     /^ジョブ \S+ の implementation \S+ が実在しません$/u,
     /^ジョブ \S+ の endpoint \S+ に対応する Route Handler がありません$/u,
-    /^\S+ に対応する Route Handler がありません$/u,
+    /^認証 (?:callback|start|logout) の endpoint \S+ に対応する Route Handler がありません$/u,
+    /^外部連携 \S+ の endpoints \S+ に対応する Route Handler がありません$/u,
   ],
   J3: [/^ジョブ \S+\(scheduler: database\)が \S+ の cron\.schedule に登録されていません$/u],
   K1: [/^カタログの設定 \S+ を読んでいる実装がありません$/u],

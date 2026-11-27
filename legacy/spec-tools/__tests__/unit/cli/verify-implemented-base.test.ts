@@ -95,7 +95,11 @@ describe('verify --implemented-base', () => {
     const run = verify(headTree('base-retired', ['room-create-action']), baseFile(['implemented:', '  - room-create-action', '  - room-retired-action']));
 
     expect(run.status, run.stdout).toBe(0);
-    expect(run.stdout).toContain('1 件');
+    // 件数は P14 の注記の行そのもので見る(検証結果の要約の行にも `N 件` が出るので、全体に対する `toContain` は何も見ない)。
+    const noteLines = run.stdout.split('\n').filter((line) => line.includes('base') && line.includes('実装の範囲'));
+    expect(noteLines).toHaveLength(1);
+    expect(noteLines[0]).toContain('1 件');
+    expect(noteLines[0]).not.toContain('room-retired-action');
     expect(run.stdout).not.toContain('room-retired-action');
   }, SLOW);
 

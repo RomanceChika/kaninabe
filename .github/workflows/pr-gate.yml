@@ -6,13 +6,18 @@ name: pr-gate
 # `pull_request_target` runs this workflow and its scripts from the base branch, so a pull request cannot switch the
 # gate off by editing it. The pull request's code is never checked out or run here: only the event's title, body and
 # head sha are read, as data. A change to this file or to the scripts takes effect once it is on the base branch.
-# A run's own head sha is the base branch's (pull_request_target runs on the base), so a run is tied to what it checked
-# by its log: the first step prints the pull request number, and the last step, reached only when everything passed,
-# prints `pr-gate: passed pr <n> head <sha> base <sha> text sha256 <hash>`. Merge only when the newest pr-gate run that
-# names the pull request concluded success and its passed line names the head you merge, the base branch's current
+# A run is found as AGENTS.md says: event `pull_request_target`, workflow path `.github/workflows/pr-gate.yml`, and `head_sha`
+# equal to the pull request's head sha (inside the run, only GITHUB_SHA is the base branch's). What the run checked is
+# tied to it by its log: the first step prints the pull request number, and the last step, reached only when everything
+# passed, prints `pr-gate: passed pr <n> head <sha> base <sha> text sha256 <hash>`. Merge only when the newest pr-gate run
+# that names the pull request concluded success and its passed line names the head you merge, the base branch's current
 # commit (a newer base may carry newer rules) and the hash of the title and body you merge with (a missing run or line
 # is not a pass; see AGENTS.md). The hash is compared, not times: a re-run of an old run reuses that run's event, so it
 # can succeed on a body that is no longer the current one.
+# The shell here is under the same rule as the scripts it calls (tests/pr-gate/wiring.test.mjs runs it): no pipeline, no
+# `|| true`, every status checked, and each value of the passed line is read into a variable first and validated (a number
+# is digits, a sha is 40 hex characters, the hash is 64). What cannot be read or validated prints
+# `pr-gate: could not run (...)` and exits 2; the passed line is then not printed. Exit 1 is "found something".
 # `base` is the commit whose workflow and scripts this run used: github.sha, the base branch's tip when the run started
 # (the event's base.sha can be older), checked out explicitly.
 # The hash is sha256 of jq -r's output below: the title, an empty line and the body, each followed by a line feed.
@@ -36,35 +41,68 @@ jobs:
     steps:
       - name: Name the pull request (first, so that a run that fails later can still be told apart)
         run: |
-          echo "pr-gate: pr $(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")"
+          stop() { echo "pr-gate: could not run ($1)"; exit 2; }
+          n=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH") || stop "cannot read the pull request number"
+          case $n in ''|*[!0-9]*) stop "the pull request number is not a number" ;; esac
+          echo "pr-gate: pr $n"
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Only pull requests from this repository
         run: |
-          from=$(jq -r '.pull_request.head.repo.full_name // ""' "$GITHUB_EVENT_PATH")
+          stop() { echo "pr-gate: could not run ($1)"; exit 2; }
+          from=$(jq -r '.pull_request.head.repo.full_name // ""' "$GITHUB_EVENT_PATH") || stop "cannot read the head repository"
           [ "$from" = "$GITHUB_REPOSITORY" ] || { echo "pr-gate: a pull request from a fork is not gated here (push the branch to this repository)"; exit 1; }
       # Read from the event file, never from env (the log prints a step's env). The word list is the Actions secret
-      # SCAN_WORDS, written to a temp file and never printed; the script prints counts only.
+      # SCAN_WORDS, written to a temp file and never printed; the script prints counts only. The file is removed whether
+      # the scan passed or failed; the scan's own status (0 nothing found, 1 found, 2 could not run) is passed on.
       - name: Scan the title and body (the squash commit message)
         env:
           SCAN_WORDS: ${{ secrets.SCAN_WORDS }}
         run: |
-          words="$RUNNER_TEMP/scan-words"; umask 077
-          if [ -n "$SCAN_WORDS" ]; then printf '%s\n' "$SCAN_WORDS" > "$words"; export SCAN_WORDS_FILE="$words"
-          else echo "SCAN_WORDS is not set"; exit 1; fi
-          jq -r '.pull_request.title, "", (.pull_request.body // "")' "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/pr-text"
-          sh scripts/scan-pr-text.sh "$RUNNER_TEMP/pr-text"
-          rm -f "$words"
+          stop() { echo "pr-gate: could not run ($1)"; exit 2; }
+          words="$RUNNER_TEMP/scan-words"; text="$RUNNER_TEMP/pr-text"; umask 077
+          [ -n "$SCAN_WORDS" ] || stop "the word list secret SCAN_WORDS is not set"
+          why=
+          printf '%s\n' "$SCAN_WORDS" > "$words" || why="cannot write the word list"
+          if [ -z "$why" ]; then
+            jq -r '.pull_request.title, "", (.pull_request.body // "")' "$GITHUB_EVENT_PATH" > "$text" || why="cannot read the title and body"
+          fi
+          rc=0
+          if [ -z "$why" ]; then
+            SCAN_WORDS_FILE="$words" sh scripts/scan-pr-text.sh "$text" || rc=$?
+          fi
+          rm -f "$words" || stop "cannot remove the word list"
+          [ -z "$why" ] || stop "$why"
+          case $rc in
+            0|1|2) exit "$rc" ;;
+            *) stop "the scan ended with status $rc" ;;
+          esac
       - name: The review record names the head commit
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/pr-body"
-          sh scripts/check-review-record.sh "$RUNNER_TEMP/pr-body" "$HEAD_SHA"
+          stop() { echo "pr-gate: could not run ($1)"; exit 2; }
+          body="$RUNNER_TEMP/pr-body"
+          jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > "$body" || stop "cannot read the body"
+          sh scripts/check-review-record.sh "$body" "$HEAD_SHA"
       - name: Tie the result to what was checked
         run: |
-          printf 'pr-gate: passed pr %s head %s base %s text sha256 %s\n' \
-            "$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")" "$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH")" \
-            "$GITHUB_SHA" "$(sha256sum < "$RUNNER_TEMP/pr-text" | cut -d' ' -f1)"
+          stop() { echo "pr-gate: could not run ($1)"; exit 2; }
+          is_hex() { case $1 in ''|*[!0-9a-f]*) return 1 ;; esac; [ "${#1}" = "$2" ]; }
+          text="$RUNNER_TEMP/pr-text"
+          n=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH") || stop "cannot read the pull request number"
+          head=$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH") || stop "cannot read the head sha"
+          sha256sum < "$text" > "$text.sum" || stop "cannot hash the title and body"
+          IFS= read -r line < "$text.sum" || stop "cannot read the hash record"
+          hash=${line%  -}
+          [ "$hash" != "$line" ] || stop "the hash record does not end in two blanks and a dash"
+          # the record is compared as bytes with what it must be (a shell variable drops trailing line feeds and NUL bytes)
+          printf '%s  -\n' "$hash" > "$text.want" || stop "cannot write the expected hash record"
+          cmp -s "$text.want" "$text.sum" || stop "the hash record is not exactly one line"
+          case $n in ''|*[!0-9]*) stop "the pull request number is not a number" ;; esac
+          is_hex "$head" 40 || stop "the head sha is not 40 hex characters"
+          is_hex "$GITHUB_SHA" 40 || stop "the base sha is not 40 hex characters"
+          is_hex "$hash" 64 || stop "the hash is not 64 hex characters"
+          printf 'pr-gate: passed pr %s head %s base %s text sha256 %s\n' "$n" "$head" "$GITHUB_SHA" "$hash"

@@ -262,6 +262,16 @@ describe('pr-gate.yml: wiring', () => {
     assert.equal(job.env ?? null, null);
   });
 
+  it('has no expression inside any run block, and the expressions it has are exactly the four known ones', () => {
+    // An expression is substituted into the script text before the shell runs, so one that holds text from the pull request
+    // (a branch name, a label) is script injection in a job that runs with the base repository's rights.
+    for (const s of runs) assert.ok(!s.run.includes('${{'), `the run block of "${s.name}" holds an expression`);
+    const code = workflowText.split('\n').filter((l) => !l.trim().startsWith('#')).join('\n');
+    const found = [...code.matchAll(/\$\{\{\s*(.*?)\s*\}\}/g)].map((m) => m[1]).sort();
+    assert.deepEqual(found, ['github.event.pull_request.head.sha', 'github.event.pull_request.number', 'github.sha', 'secrets.SCAN_WORDS']);
+    assert.equal(code.split('${{').length - 1, found.length, 'an expression that the pattern did not read');
+  });
+
   it('has a fork step that turns a pull request from another repository red', () => {
     const fork = runs.filter((s) => s.run.includes('head.repo.full_name'));
     assert.equal(fork.length, 1);

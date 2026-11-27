@@ -54,7 +54,7 @@ jobs:
           if [ -n "$SCAN_WORDS" ]; then printf '%s\n' "$SCAN_WORDS" > "$words"; export SCAN_WORDS_FILE="$words"
           else echo "SCAN_WORDS is not set"; exit 1; fi
           jq -r '.pull_request.title, "", (.pull_request.body // "")' "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/pr-text"
-          sh scripts/scan-pr-text.sh "$RUNNER_TEMP/pr-text"
+          sh scripts/scan-pr-text.sh --require-words "$RUNNER_TEMP/pr-text"
           rm -f "$words"
       - name: The review record names the head commit
         env:

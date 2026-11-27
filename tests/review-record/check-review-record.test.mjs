@@ -80,7 +80,7 @@ describe('check-review-record.sh', () => {
     failsWith(`\ufeff${record()}`, 'invisible character');
     failsWith(`a\u202eb\n${record()}`, 'invisible character');
     failsWith(`a\u2060b\n${record()}`, 'invisible character');
-    for (const ch of ['\u200b', '\u200d', '\u200f', '\u202a', '\u202e', '\u2060', '\u2061', '\u2064', '\u2066', '\u2069', '\ufeff']) {
+    for (const ch of ['\u200b', '\u200c', '\u200d', '\u200f', '\u202a', '\u202e', '\u2060', '\u2061', '\u2064', '\u2066', '\u2069', '\ufeff']) {
       failsWith(`a${ch}b\n${record()}`, 'invisible character');
     }
   });
@@ -91,9 +91,10 @@ describe('check-review-record.sh', () => {
       failsWith(body, INFENCE);
     }
     assert.equal(check(`\`\`\`a\`b\n${record()}`).status, 0, 'a backtick in the info string makes it not a fence');
+    assert.equal(check(`\`\`\`\nx\n\`\`\`\t\n${record()}`).status, 0, 'a closing fence may be followed by a tab');
+    failsWith(`\`\`\`\nx\n\`\`\` y\n${record()}`, INFENCE);
     failsWith(`\`\`\`\`\`\n${record()}`, INFENCE);
     assert.equal(check(`~~消し線~~ と \`code\`\n${record()}`).status, 0, 'fewer than three is not a fence');
-    failsWith(`> ## Review\n- opus: ${HEAD}\n- codex: ${HEAD}\n`, BEFORE);
   });
 
   it('fails on a fence that does not start the line (a list item ends it where a line reader cannot see)', () => {
@@ -112,7 +113,9 @@ describe('check-review-record.sh', () => {
 
   it('holds the section to the exact heading and record lines', () => {
     failsWith(`## Review foo\n- opus: ${HEAD}\n- codex: ${HEAD}\n`, BEFORE);
+    failsWith(`> ## Review\n- opus: ${HEAD}\n- codex: ${HEAD}\n`, BEFORE);
     assert.equal(check(`## Review \t\n\t\n- opus:\t ${HEAD} \t\n \n- codex:  ${HEAD}\t\n`).status, 0, 'blank lines and blanks around the value are allowed');
+    assert.equal(check(`## Review\n- opus: ${HEAD}\n- codex:\t${HEAD}\n`).status, 0, 'a tab right after the colon is a blank too');
   });
 
   it('fails on a record-like line before the section, even in a fence or other markup', () => {

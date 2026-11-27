@@ -149,6 +149,40 @@ describe('push-range.sh', () => {
     assert.equal(r.status, 2, r.all);
   });
 
+  describe('the id is made only when every write and the hash succeed (review round 21, AB1)', () => {
+    const rangeId = fileURLToPath(new URL('../../scripts/range-id.sh', import.meta.url));
+    /** Runs range_list_id / range_id in sh with `printf` replaced by a function that fails for a given first word (a builtin cannot be shimmed by PATH). */
+    const withFailingPrintf = (call, word) => {
+      const file = path.join(dir, 'list');
+      writeFileSync(file, 'a\nb\n');
+      const script = `. "${rangeId}"\nprintf() { case "$1" in ${word}*) return 1 ;; esac; command printf "$@"; }\n${call}\n`;
+      const r = spawnSync('/bin/sh', ['-c', script, 'sh'], { cwd: dir, encoding: 'utf8', env: env() });
+      return { status: r.status, out: r.stdout };
+    };
+    it('range_list_id: a failed first write is no id, even though the later cat succeeds', () => {
+      const r = withFailingPrintf(`range_list_id ${'1'.repeat(40)} "${path.join(dir, 'list')}"`, 'head');
+      assert.notEqual(r.status, 0);
+      assert.equal(r.out, '');
+    });
+    it('range_id: a failed write is no id', () => {
+      const r = withFailingPrintf(`range_id u ${'a'.repeat(64)} "${path.join(dir, 'w')}"`, 'kaninabe');
+      assert.notEqual(r.status, 0);
+      assert.equal(r.out, '');
+    });
+    for (const tool of ['sha256sum', 'cat']) {
+      it(`push-range: a failing ${tool} is exit 2 with no id on stdout`, () => {
+        commit(repo, 'a.txt');
+        const shim = path.join(dir, `shim-bin-${tool}`);
+        mkdirSync(shim);
+        const real = spawnSync('/bin/sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).stdout.trim();
+        writeFileSync(path.join(shim, tool), `#!/bin/sh\ncase "$*" in *${tool === 'cat' ? 'commits' : ''}*) exit 1 ;; esac\nexec ${real} "$@"\n`, { mode: 0o755 });
+        const r = run(['--gate-args', bare], repo, { PATH: `${shim}:${process.env.PATH}` });
+        assert.equal(r.status, 2, r.all);
+        assert.equal(r.out, '');
+      });
+    }
+  });
+
   it('stops when the history cannot be read (a missing parent commit)', () => {
     const a = commit(repo, 'a.txt');
     commit(repo, 'b.txt');

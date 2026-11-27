@@ -10,6 +10,11 @@
  * The detector is a small scanner of one line at a time: it blanks single-quoted text, double-quoted text and comments, and keeps
  * the inside of `$( ... )` as code. A `|` that is not part of `||` is a pipeline unless it is a case alternation: a `|` at the base
  * level of the line with an unmatched `)` after it on the same line (the structural form `a | b) ...`).
+ * Also flagged: `egrep`, `fgrep`, `\grep`, `command grep`, a path to grep, `eval`, `sh -c`, and a one-line group `{ a; b; }` or
+ * `( a; b )` whose status or output is used (only the last command counts). NOT seen: anything that spans lines (a group opened on one
+ * line and closed on another, a pipe after a `\` continuation is seen only on its own line), a function that is called in a
+ * condition and relies on `set -e` inside (that is a review item, listed in known-gaps), a construct built at run time, and a
+ * heredoc body (none is used in these files).
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
@@ -37,6 +42,7 @@ export function inspect(line) {
   const stack = [{ kind: 'code', depth: 0 }];
   let code = '';
   const pipes = [];
+  let escaped = false;
   const n = line.length;
   for (let i = 0; i < n; i++) {
     const c = line[i];
@@ -48,7 +54,10 @@ export function inspect(line) {
       code += ' ';
       continue;
     }
-    if (c === '\\') { i++; code += '  '; continue; }
+    if (c === '\\') {
+      if (/^(e|f)?grep(\s|$)/.test(line.slice(i + 1))) escaped = true;
+      i++; code += '  '; continue;
+    }
     if (c === "'") {
       const j = line.indexOf("'", i + 1);
       if (j < 0) { code += ' '.repeat(n - i); break; }
@@ -80,7 +89,48 @@ export function inspect(line) {
   }
   if (/\|\|\s*(true|:)(\s|;|\}|\)|$)/.test(code)) problems.push('|| true / || :');
   if (/(^|[\s;&|({!`])grep(\s|$)/.test(code) && !/(^|[\s;&|({!])(git|neutral_git|ng_real\s+git)\s+grep(\s|$)/.test(code)) problems.push('bare grep');
+  if (escaped) problems.push('escaped grep');
+  if (/(^|[\s;&|({!`])(egrep|fgrep)(\s|$)/.test(code) || /(^|[\s;&|({!`])(command|exec|env)\s+(e|f)?grep(\s|$)|\/(e|f)?grep(\s|$)/.test(code)) problems.push('grep by another name');
+  if (/(^|[\s;&|({!`])eval(\s|$)/.test(code)) problems.push('eval');
+  if (/(^|[\s;&|({!`])(sh|bash|dash|ksh|zsh)\s+(-[a-zA-Z]*c)(\s|$)/.test(code)) problems.push('sh -c');
+  for (const g of groupsWithSemicolons(code)) problems.push(g);
   return { marked: false, problems };
+}
+
+/**
+ * A one-line group `{ a; b; }` or `( a; b )` whose combined status or output is used: followed by a redirect, `&&`, `||` or `)`
+ * (the end of a `$( )`), or preceded by `if`, `while`, `until`, `!` or `$(`. Only the last command's status is the group's, so each
+ * command must count (`a && b`). A group after `||` is an error handler and its status is not used. Function bodies are skipped.
+ */
+function groupsWithSemicolons(code) {
+  const out = [];
+  for (let i = 0; i < code.length; i++) {
+    const open = code[i];
+    let close;
+    if (open === '{') {
+      if (!(i === 0 || /[\s(;&|!]/.test(code[i - 1])) || !/\s/.test(code[i + 1] || '')) continue;
+      if (/\)\s*$/.test(code.slice(0, i))) continue; // name() { ... }
+      close = '}';
+    } else if (open === '(') {
+      if (code[i - 1] === '$' || code[i - 1] === '(' || code[i + 1] === '(' || code[i + 1] === ')') continue;
+      if (!(i === 0 || /[\s;&|!]/.test(code[i - 1]))) continue;
+      close = ')';
+    } else continue;
+    let depth = 0;
+    let j = i + 1;
+    for (; j < code.length; j++) {
+      if (code[j] === open && (open === '(' || /\s/.test(code[j - 1] || ' '))) depth++;
+      else if (code[j] === close) { if (depth === 0) break; depth--; }
+    }
+    if (j >= code.length) continue; // closes on another line: not seen
+    const content = code.slice(i + 1, j).replace(/;;/g, '').replace(/[;\s]+$/, '');
+    if (!content.includes(';')) continue;
+    const before = code.slice(0, i);
+    const after = code.slice(j + 1);
+    if (/\|\|\s*$/.test(before) && !/\b(if|elif|while|until)\s/.test(before)) continue; // an error handler (not when it is part of a condition)
+    if (/^\s*(\d*[<>]|&&|\|\||\))/.test(after) || /(\b(if|while|until)|!|\$\()\s*$/.test(before) || /\b(if|elif|while|until)\s[^;]*$/.test(before)) out.push('group with ; whose status or output is used');
+  }
+  return out;
 }
 
 function hasUnmatchedCloseAfter(code, from) {
@@ -96,13 +146,15 @@ describe('no pipelines, no `|| true`, no bare grep in the scripts that decide (r
   it('the detector finds what it must and passes what it must', () => {
     const bad = [
       'a | b', 'x=$(a | b)', 'x=$(a) | b', '"$(a | b)"', 'foo || true', 'foo || : ', 'if grep -q x f; then', '! grep -q x f',
-      'grep x f && y', 'x=$(grep x f)', 'sort -u f | while read x; do', '( cd d && a | b )',
+      'grep x f && y', 'x=$(grep x f)',
+      '{ printf x; cat f; } > out || return 1', '( a; b ) || c', 'x=$({ a; b; })', 'if { a; b; }; then', 'if x || (a; b); then', 'egrep x f', 'fgrep x f', '\\grep x f', 'command grep x f', '/bin/grep x f', 'eval "$x"', 'sh -c "x"', 'sort -u f | while read x; do', '( cd d && a | b )',
     ];
     for (const l of bad) assert.ok(inspect(l).problems.length > 0, `should be flagged: ${l}`);
     const good = [
       '# a | b || true grep', "awk '$1 == 1 || $2 { a | b }' f", 'echo "a | b || true grep"', 'case $x in 0 | 1) return 1 ;; esac',
       'a || b', 'grep_q -q x f', 'scan_grep -q x f', 'neutral_git grep -q x', 'x=$(git grep -q y)', 'x=$((a + b))',
       'echo ok # a | b', 'grep_q() { true; } # GATE-EXCEPTION: the one helper', 'tr "|" "\\n"', 'foo || [ $? = 1 ]',
+      '{ a && b; } > out || return 1', 'a || { echo x; exit 2; }', 'f() { a; b; }', 'x=$(cd d && a)', '( cd d && a ) > out || rc=$?', 'echo "eval and sh -c"',
     ];
     for (const l of good) assert.deepEqual(inspect(l).problems, [], `should pass: ${l}`);
   });

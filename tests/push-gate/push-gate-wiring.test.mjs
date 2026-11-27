@@ -1094,6 +1094,10 @@ describe('push-gate.sh: review round 1 (what gitleaks reads, quiet logs, failure
         assert.ok((p.stdout + p.stderr).includes('scan-public: ERROR'), p.stdout + p.stderr);
       });
     });
+    it('the gate\'s list-id check: a sha256sum that fails is exit 2, never a pass (review round 21, AB1)', () => {
+      shimFail('sha256sum', '', 1);
+      stops(runGate(sb, ['--mode', 'general', '--all', '--list-id', 'a'.repeat(64)]), 2, 'push-gate: the commits to scan are not the list');
+    });
     describe('one trap per script, holding the cleanup and the exit guard (review round 19, X2)', () => {
       it('scan-public: a command that fails with exit 1 late in the run (sed) is exit 2, and so is the gate that runs it', () => {
         writeWords(sb);

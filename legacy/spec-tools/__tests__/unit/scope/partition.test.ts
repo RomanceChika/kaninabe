@@ -78,7 +78,7 @@ describe('implemented: [] — 何も範囲に入れない', () => {
     expect(result.report?.declared).toBe(0);
     expect(result.report?.kinds).toEqual({ action: 3, screen: 1 });
     expect(result.report?.relieved).toBe(3);
-    expect(result.report?.owners).toEqual(expect.arrayContaining(UNIVERSE));
+    expect(result.report?.owners).toEqual(expect.arrayContaining([...UNIVERSE]));
     expect(result.report?.owners).toHaveLength(UNIVERSE.length);
   });
 

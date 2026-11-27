@@ -199,7 +199,28 @@ elif [ -z "$e_basis" ]; then
   [ "$mb_got" = "$mb_n" ] || could_not "the merge bases were cut short"
   case $mb_rc:$mb_n in
     1:0) find "the pull request shares no history with the base" ;;
-    0:1) classify_range "$origin" "$head"
+    0:1) # one line is not proof of one merge base (an answer cut from 2 lines to 1 looks the same): prove it is the only one.
+         # Every common ancestor is an ancestor of the origin exactly when |ancestors(base)| + |ancestors(head)| - |their union| = |ancestors(origin)|.
+         for mp_side in "$base" "$head"; do
+           mp_rc=0
+           gitc merge-base --is-ancestor "$origin" "$mp_side" > "$tmp/mp" 2> "$tmp/mp.err" || mp_rc=$?
+           [ "$mp_rc" = 0 ] || could_not "the merge base could not be proved to be the only one"
+         done
+         mp_a= mp_b= mp_u= mp_o=
+         gitc rev-list --count "$base" > "$tmp/mp_a" 2> "$tmp/mp.err" || could_not "the merge base could not be proved to be the only one"
+         read -r mp_a < "$tmp/mp_a" || could_not "the merge base could not be proved to be the only one"
+         gitc rev-list --count "$head" > "$tmp/mp_b" 2> "$tmp/mp.err" || could_not "the merge base could not be proved to be the only one"
+         read -r mp_b < "$tmp/mp_b" || could_not "the merge base could not be proved to be the only one"
+         gitc rev-list --count "$base" "$head" > "$tmp/mp_u" 2> "$tmp/mp.err" || could_not "the merge base could not be proved to be the only one"
+         read -r mp_u < "$tmp/mp_u" || could_not "the merge base could not be proved to be the only one"
+         gitc rev-list --count "$origin" > "$tmp/mp_o" 2> "$tmp/mp.err" || could_not "the merge base could not be proved to be the only one"
+         read -r mp_o < "$tmp/mp_o" || could_not "the merge base could not be proved to be the only one"
+         for mp_v in "$mp_a" "$mp_b" "$mp_u" "$mp_o"; do
+           case $mp_v in '' | *[!0-9]*) could_not "the merge base could not be proved to be the only one" ;; esac
+         done
+         same_as "$tmp/mp_a" "$mp_a" && same_as "$tmp/mp_b" "$mp_b" && same_as "$tmp/mp_u" "$mp_u" && same_as "$tmp/mp_o" "$mp_o" || could_not "the merge base could not be proved to be the only one"
+         [ "$((mp_a + mp_b - mp_u))" = "$mp_o" ] || could_not "the merge base could not be proved to be the only one"
+         classify_range "$origin" "$head"
          if [ "$c_basis" -gt 0 ] && [ "$c_impl" -gt 0 ]; then find "record the basis"; else result="basis record: not needed (one kind of path)"; fi ;;
     0:*) if [ "$mb_n" -lt 1 ]; then could_not "the merge base could not be read"; fi
          find "the pull request has several merge bases with the base (rebuild on the base)" ;;

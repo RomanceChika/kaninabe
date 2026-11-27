@@ -188,3 +188,53 @@ scan_history() {
   [ "$sh_seen" = "$sh_expect" ] || { hist_err="could not run (the list of commits was not read to the end)"; return 2; }
   return 0
 }
+# ---- the exclusion list (scripts/scan-exclusions.tsv) and the checks that read it ----
+# excl_read <list> <out>: the one reader of the exclusion list. Every line is `kind TAB path TAB value TAB reason` (kind binary, keys or
+# mail; the rest of the grammar is in tests/push-gate/scan-exclusions.test.mjs). On success <out> holds `kind TAB path TAB value` per line.
+# An empty file is an empty list; a missing file, a NUL byte, a line that is not valid UTF-8, a malformed line and an exact duplicate
+# (same kind, path and value) return 1 with a fixed reason in $ex_err (which names scan-exclusions.tsv and a line number, never a line).
+excl_read() {
+  ex_err="scan-exclusions.tsv could not be read"; ex_t=$2.chk
+  [ -f "$1" ] && [ -r "$1" ] || { ex_err="scan-exclusions.tsv is missing or cannot be read"; return 1; }
+  # a NUL byte (grep -P: a NUL can be matched, whatever the length of the line)
+  ex_rc=0; (LC_ALL=C && export LC_ALL && grep_q -qaP '\x00' "$1") || ex_rc=$?
+  case $ex_rc in 0) ex_err="scan-exclusions.tsv contains a NUL byte"; return 1 ;; 1) ;; *) return 1 ;; esac
+  printf 'caf\351\n' > "$ex_t" || return 1
+  ex_rc=0; (LC_ALL=C.UTF-8 && export LC_ALL && grep_q -qav '^.*$' "$ex_t") || ex_rc=$?
+  [ "$ex_rc" = 0 ] || { ex_err="scan-exclusions.tsv cannot be checked for UTF-8 here"; return 1; }
+  ex_rc=0; (LC_ALL=C.UTF-8 && export LC_ALL && grep_q -qav '^.*$' "$1") || ex_rc=$?
+  case $ex_rc in 0) ex_err="scan-exclusions.tsv is not valid UTF-8"; return 1 ;; 1) ;; *) return 1 ;; esac
+  : > "$2" || return 1
+  ex_rc=0
+  LC_ALL=C awk '
+    function check(line,    f, nf, kind, p, v) {
+      if (index(line, "\r")) return "a carriage return"
+      nf = split(line, f, "\t")
+      if (nf != 4) return nf " fields, not 4"
+      kind = f[1]; p = f[2]; v = f[3]
+      if (kind != "binary" && kind != "keys" && kind != "mail") return "an unknown kind"
+      if (p == "") return "an empty path"
+      if (p ~ /[*?]/ || index(p, "[") || index(p, "]")) return "a glob character in the path"
+      if (substr(p, 1, 1) == "/") return "a leading slash"
+      if (substr(p, length(p), 1) == "/") return "a trailing slash"
+      if (p == "." || p == ".." || p ~ /^\.\.?\// || p ~ /\/\.\.?\// || p ~ /\/\.\.?$/ || index(p, "//")) return "an empty, . or .. segment in the path"
+      if (p ~ /[\001-\037\177]/) return "a control character in the path"
+      if (kind == "mail") {
+        if (length(v) != 71 || substr(v, 1, 7) != "sha256:" || substr(v, 8) !~ /^[0-9a-f]+$/) return "a mail value that is not sha256: and 64 hex digits"
+      } else if (length(v) != 40 || v !~ /^[0-9a-f]+$/) return "a " kind " value that is not a blob id"
+      if (f[4] ~ /^[ \t]*$/) return "an empty reason"
+      return ""
+    }
+    { if (msg != "") next
+      m = check($0)
+      if (m == "") { split($0, g, "\t"); k = g[1] "\t" g[2] "\t" g[3]; if (k in seen) m = "an exact duplicate"; seen[k] = 1 }
+      if (m != "") { msg = "scan-exclusions.tsv line " NR ": " m; next }
+      split($0, g, "\t"); print g[1] "\t" g[2] "\t" g[3] }
+    END { if (msg != "") { print msg > "/dev/stderr"; exit 1 } }
+  ' "$1" > "$2" 2> "$2.err" || ex_rc=$?
+  if [ "$ex_rc" = 1 ]; then ex_err=$(cat "$2.err") || ex_err="scan-exclusions.tsv has a line that does not fit"; return 1; fi
+  [ "$ex_rc" = 0 ] || return 1
+  rm -f "$ex_t" "$2.err" || return 1
+}
+# excl_kind <list-read> <kind> <out>: the `path TAB value` lines of one kind from what excl_read wrote.
+excl_kind() { LC_ALL=C awk -F'\t' -v k="$2" '$1 == k { print $2 "\t" $3 }' "$1" > "$3"; }

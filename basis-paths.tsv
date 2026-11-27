@@ -1,0 +1,14 @@
+basis	*/__tests__/*	hand-written test code and what tests read stays basis even where it sits inside an implementation tree
+basis	*/testing/*	test helpers, fakes and fixtures that the packages keep beside their source
+implementation	legacy/spec-tools/lib/*	source of the verifier and generator
+implementation	legacy/spec-tools/cli/*	command line entry points of the verifier and generator
+implementation	framework/runtime/src/*	source of the runtime package
+implementation	framework/runtime/scripts/*	build and check scripts of the runtime package
+implementation	framework/adapters/*/src/*	source of the adapter packages
+implementation	framework/lint-config/src/*	source of the lint configuration package
+implementation	scripts/*.sh	shell scripts of the gates and helpers
+implementation	scripts/*.mjs	node scripts of the gates and helpers
+implementation	bin/*	command line entry point
+implementation	.githooks/*	git hooks, code that runs on a developer's machine
+implementation	.github/*	workflows and templates are code that a test-first change edits after its tests
+generated	supabase/migrations/*	SQL that the generator writes from the specs, regenerated and compared in the same change

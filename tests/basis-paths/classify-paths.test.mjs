@@ -326,7 +326,7 @@ describe('classify-paths.sh: --range on a temporary git repository (3)', () => {
   it('a rename is the delete of the old path and the add of the new one: both are reported, the old one is counted', () => {
     const d = newRepo({ 'impl/a.sh': 'line one\nline two\nline three\n', 'impl/b.sh': 'other\ncontent\nhere\nmore\n' });
     const a = git(d, 'rev-parse', 'HEAD');
-    mkdirSync(path.join(d, 'docs')); git(d, 'mv', 'impl/a.sh', 'docs/a.sh');
+    mkdirSync(path.join(d, 'docs')); mkdirSync(path.join(d, 'gen')); git(d, 'mv', 'impl/a.sh', 'docs/a.sh');
     git(d, 'mv', 'impl/b.sh', 'gen/b.sh'); put(d, 'gen/b.sh', 'other\ncontent\nhere\nmore\nchanged\n');
     const b = commit(d);
     git(d, 'config', 'diff.renames', 'copies');

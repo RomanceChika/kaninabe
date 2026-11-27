@@ -9,7 +9,7 @@
  * 題材は中立な `library`(認証の関門・画面 6 枚)。実装の木は、`generate` が書く生成物に、画面ごとの最小の page と器を足して組む
  * (手で書く部分の最小形。器の最初の `await` が関門であること・`vercel.json` の許可表・枠の設定まで、緑の側の対照で実測してある)。
  *
- * 計画: step 3b の section 3(test 8)と section 4(CLI)・Designer decisions の N3。**子プロセスを起こす**ので重い組に載せる。
+ * **子プロセスを起こす**ので重い組に載せる。
  */
 
 import { cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -66,13 +66,16 @@ beforeAll(() => {
 }, SLOW);
 
 /** 木を写して、ケースごとの形にする。 */
-function caseTree(label: string, options: { readonly implemented?: readonly string[]; readonly withoutItemList?: boolean; readonly undeclaredRoute?: boolean }): string {
+function caseTree(label: string, options: { readonly implemented?: readonly string[]; readonly implementedRaw?: readonly string[]; readonly withoutItemList?: boolean; readonly undeclaredRoute?: boolean }): string {
   const root = temp(`gate-${label}`);
   cpSync(template, root, { recursive: true });
   if (options.withoutItemList === true) rmSync(path.join(root, 'app/src/app/items/page.tsx'));
   if (options.undeclaredRoute === true) {
     mkdirSync(path.join(root, 'app/src/app/secret'), { recursive: true });
     cpSync(path.join(root, 'app/src/app/mfa/page.tsx'), path.join(root, 'app/src/app/secret/page.tsx'));
+  }
+  if (options.implementedRaw !== undefined) {
+    editFile(root, PRODUCT_DECL_FILE, (text) => text.replace('  - design_tokens\n---', `  - design_tokens\n${options.implementedRaw?.join('\n') ?? ''}\n---`));
   }
   if (options.implemented !== undefined) {
     const lines = options.implemented.length === 0 ? 'implemented: []' : `implemented:\n${options.implemented.map((id) => `  - ${id}`).join('\n')}`;
@@ -114,6 +117,13 @@ describe('ビルドの関所と実装の範囲', () => {
 
   it('範囲の中の画面に実ルートが無ければ、範囲を宣言していても赤', () => {
     const run = gate(caseTree('in-scope', { withoutItemList: true, implemented: [...OTHERS, 'screen-item-list'] }));
+
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('/items に対応する実ルートが app/src/app にありません');
+  }, SLOW);
+
+  it('`implemented:`(値が無い)は壊れた宣言で、範囲は「全部」: 実ルートの無い画面があれば赤(壊れた宣言が「何も入れない」に化けて、関所を通さない)', () => {
+    const run = gate(caseTree('null-scope', { withoutItemList: true, implementedRaw: ['implemented:'] }));
 
     expect(run.status).toBe(1);
     expect(run.stderr).toContain('/items に対応する実ルートが app/src/app にありません');

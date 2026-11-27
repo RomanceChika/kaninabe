@@ -5,11 +5,11 @@
  * 消しうる面が広がるので、一覧は閉じていて、足すときは文書(C26)とこのテストを一緒に直す。突合は 3 つ。
  *   ① ソースで印を付ける検査 ID(`absentFor(` を呼ぶ、または `checkTestCaseTrace` に `null` でない持ち主を渡す)の集合 = C26 の一覧
  *   ② 一覧にある ID は全部、実在するソースで印を付けている(腐った行を残さない)
- *   ③ 印を付けてはいけない場所(ホストの設定・孤児と重複の検査・仕組み自身の台帳 Z3)には、印も持ち主もいない
+ *   ③ 印を付けてよい文面の閉じた表(`helpers/absence-templates.ts`)の検査 ID も、同じ一覧と一致する
+ *   ④ 印を付けてはいけない場所(ホストの設定・孤児と重複の検査・仕組み自身の台帳 Z3)には、印も持ち主もいない
  * 検査 ID はファイル名の頭(`a6-…` → A6)から引く。引けないファイルが印を付けていたら、名指しで赤にする(一覧の外へ漏らさない)。
  * 文書は生成物ではないので、ここは `matrix-range-parity.test.ts` と同じ流儀で、文書の本文を読む。
  *
- * 計画: step 3b の section 1(閉じた一覧)・section 3(test 6)。
  */
 
 import { readFileSync } from 'node:fs';
@@ -17,6 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { walkFiles } from '../../../lib/io/paths.js';
+import { ABSENCE_TEMPLATES } from '../../helpers/absence-templates.js';
 
 /** リポジトリルート(このファイルは legacy/spec-tools/__tests__/unit/gates/ にある)。 */
 const REPO_ROOT = fileURLToPath(new URL('../../../../../', import.meta.url));
@@ -34,6 +35,7 @@ const SHARED_FILES: readonly string[] = ['kernel/scope-owner.ts', 'testcase/test
 const NEVER_TAGGED: readonly string[] = [
   'targets/vercel/job/j2-host-config.ts', // ホストの設定(next.config / vercel.json)は、不在も常に error
   'targets/vercel/job/j2-host.ts',
+  'targets/vercel/job/j2-schedule-parity.ts', // 登録の食い違い(宣言した口が vercel.json に無い)は「あるが食い違う」
   'trace/verifiers/a6-orphans.ts', // 孤児と @tc の重複は「不在」ではない
   'guarantee/verifiers/z3-framework-scan.ts', // 仕組み自身の台帳(持ち主 null)
 ];
@@ -130,6 +132,18 @@ describe('実装の範囲で外せる検査の閉じた一覧 ⇔ ソースで�
 
   it('文書の一覧に同じ ID が 2 回出ない', () => {
     expect(new Set(documentedList()).size).toBe(documentedList().length);
+  });
+
+  it('許す文面の表(absence-templates)の検査 ID が、C26 の閉じた一覧と一致する(両方向)', () => {
+    expect(Object.keys(ABSENCE_TEMPLATES).sort()).toEqual([...new Set(documentedList())].sort());
+  });
+
+  it('`absentFor` の付け方は 1 か所だけ: lib の下で、kernel/scope-owner.ts の外に `absentFor:` のキーも `.absentFor =` の代入も無い(`absentFor(` の呼び出しを通さない付け方で、印の入口をすり抜けない)', () => {
+    const bypass = libSources()
+      .filter((relative) => relative !== 'kernel/scope-owner.ts')
+      .filter((relative) => /\babsentFor\s*:|\.absentFor\s*=[^=]|\[\s*['"]absentFor['"]\s*\]/u.test(read(relative)));
+
+    expect(bypass).toEqual([]);
   });
 
   it('`checkTestCaseTrace` の呼び出しは全部、持ち主を明示する(5 つ目の引数が必須。省略して印を外さない)', () => {

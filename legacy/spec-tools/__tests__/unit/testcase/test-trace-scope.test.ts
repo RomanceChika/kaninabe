@@ -7,7 +7,7 @@
  * `@tc` が 1 つでもあれば(別のファイル・名前の食い違い・`spec_ids` の食い違い)、範囲の外でも突合の全部を行い、印は付けない。
  * 持ち主が `null` の呼び出し(仕組み自身の見張りテストの台帳)は、いつでも印を付けない(免除されない)。
  *
- * 計画: step 3b の section 1(Test-existence class)。`owner` は必須の引数で、全部の呼び手が明示する。
+ * `owner` は必須の引数で、全部の呼び手が明示する。
  */
 
 import { describe, expect, it } from 'vitest';

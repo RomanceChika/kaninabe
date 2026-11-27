@@ -7,7 +7,6 @@
  *   - 知らない id・`uses` に無い種類の id・何も持たない id(access の id や `surface` など。一覧に居ない)→ P13(error)
  * 宣言なし(`declared: false`)は何も言わない。
  *
- * 計画: step 3b の section 2(P13)。
  */
 
 import { describe, expect, it } from 'vitest';
@@ -68,12 +67,35 @@ describe('P13 implemented の id の実在', () => {
     expect(findings.map((finding) => finding.message)).toEqual(['implemented の room-create-action は実装の範囲に入れられる仕様の id ではありません']);
   });
 
-  it('カタログの id も、そのカタログの種類を採っていなければ P13', () => {
-    const uses = SPEC_KINDS.filter((kind) => kind !== 'jobs');
+  /** 持ち主 → その id を書くのに要る `uses` の種類(`null` はドメイン仕様の持ち主で、`uses` に依らない)。 */
+  const REQUIRED_USES: readonly (readonly [string, string | null])[] = [
+    ['room-create-action', 'actions'],
+    ['query-room-list', 'queries'],
+    ['screen-room-admin', 'screens'],
+    ['table-rooms', 'data_tables'],
+    ['usecase-book-room', 'usecases'],
+    ['booking-expire', 'actions'],
+    ['INV-BOOKING-001', null],
+    ['job-catalog', 'jobs'],
+    ['auth-flow', 'auth'],
+    ['guarantee-catalog', 'guarantees'],
+    ['external-catalog', 'external'],
+    ['config-catalog', 'config'],
+    ['design-tokens', 'design_tokens'],
+  ];
 
-    const findings = verifyImplementedIds({ scope: { declared: true, ids: ['job-catalog', 'auth-flow'] }, owners: ONE_PER_KIND, uses });
+  it.each(REQUIRED_USES.filter(([, kind]) => kind !== null))('%s は、その種類(%s)を採っていなければ P13', (id, kind) => {
+    const uses = SPEC_KINDS.filter((candidate) => candidate !== kind);
 
-    expect(findings.map((finding) => finding.message)).toEqual(['implemented の job-catalog は実装の範囲に入れられる仕様の id ではありません']);
+    const findings = verifyImplementedIds({ scope: { declared: true, ids: [id] }, owners: ONE_PER_KIND, uses });
+
+    expect(findings.map((finding) => finding.message)).toEqual([`implemented の ${id} は実装の範囲に入れられる仕様の id ではありません`]);
+    // 他の種類を採っていれば、同じ id が受理される(落ちた理由はこの種類だけ)。
+    expect(verifyImplementedIds({ scope: { declared: true, ids: [id] }, owners: ONE_PER_KIND, uses: SPEC_KINDS })).toEqual([]);
+  });
+
+  it('不変条件の id はドメイン仕様の持ち主で、`uses: []` でも受理される', () => {
+    expect(verifyImplementedIds({ scope: { declared: true, ids: ['INV-BOOKING-001'] }, owners: ONE_PER_KIND, uses: [] })).toEqual([]);
   });
 
   it.each([['surface'], ['room-access'], ['domain-roles'], ['screen-room-admin ']])('何も持たない id(%s)は P13 — 持ち主の一覧に居ない', (id) => {

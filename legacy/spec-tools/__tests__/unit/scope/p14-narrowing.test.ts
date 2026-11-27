@@ -8,9 +8,10 @@
  *   - head にキーが無い(範囲が「全部」になる)→ 通る(広がる向き)
  *   - base の file が読めない・YAML が壊れている・`implemented` が壊れている → **error。読み飛ばさない**(比べられないまま通さない)
  *   - base にキーが無い → error ではなく 1 行(キーを入れるのは持ち主が承認する基準の変更。N1)
+ *   - **「仕様から消えた」と数えるのは、head でその種類を error なく読めたときだけ**(`unloaded` = 読めなかった種類)。読めなかった種類が
+ *     あるとき、owners に居ない base の id は、消えたのか読めないだけなのか分からないので P14(error)にする
  * 1 行の文面に **id は出さない**(公開の log に載りうる。件数だけ)。
  *
- * 計画: step 3b の section 2(P14)と Designer decisions の N1 / N2。
  */
 
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -19,6 +20,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ScopeOwner } from '../../../lib/kernel/scope-owner.js';
 import type { ProductImplemented } from '../../../lib/model/product/implemented.js';
+import type { SpecKind } from '../../../lib/model/product/uses.js';
 import { readBaseScope } from '../../../lib/scope/base.js';
 import { verifyNarrowing } from '../../../lib/scope/verifiers/p14-narrowing.js';
 
@@ -48,8 +50,8 @@ function baseFile(frontmatterTail: readonly string[]): string {
 }
 
 /** base を読んで head と比べる。 */
-function narrowing(base: string, head: ProductImplemented, owners: readonly ScopeOwner[] = OWNERS) {
-  return verifyNarrowing({ head, base: readBaseScope(base), owners });
+function narrowing(base: string, head: ProductImplemented, owners: readonly ScopeOwner[] = OWNERS, unloaded: readonly SpecKind[] = []) {
+  return verifyNarrowing({ head, base: readBaseScope(base), owners, unloaded });
 }
 
 describe('P14 範囲は広がる向きにしか動かない', () => {
@@ -84,16 +86,25 @@ describe('P14 範囲は広がる向きにしか動かない', () => {
     expect(result.findings.map((finding) => finding.verifier)).toEqual(['P14', 'P14']);
   });
 
-  it('base の id が消え、仕様も無い → 通る。件数は 1 行に数え、id は書かない', () => {
-    const base = baseFile(['implemented:', '  - room-create-action', '  - room-retired-action']);
+  it('base の id が消え、仕様も無い → 通る。件数(2 件)は 1 行に数え、id は書かない', () => {
+    const base = baseFile(['implemented:', '  - room-create-action', '  - room-retired-action', '  - room-renamed-action']);
 
     const result = narrowing(base, { declared: true, ids: ['room-create-action'] });
 
     expect(result.findings).toEqual([]);
-    expect(result.gone).toBe(1);
-    expect(result.note).not.toBeNull();
-    expect(result.note).toContain('1');
+    expect(result.gone).toBe(2);
+    expect(result.note).toContain('2 件');
     expect(result.note).not.toContain('room-retired-action');
+    expect(result.note).not.toContain('room-renamed-action');
+  });
+
+  it('消えた id が 1 件なら「1 件」と言う(件数と単位が揃う)', () => {
+    const base = baseFile(['implemented:', '  - room-create-action', '  - room-retired-action']);
+
+    const result = narrowing(base, { declared: true, ids: ['room-create-action'] });
+
+    expect(result.gone).toBe(1);
+    expect(result.note).toContain('1 件');
   });
 
   it('消えた id が 0 件なら、数える行は出さない(宣言のある base と比べて何も無いときに log を増やさない)', () => {
@@ -115,6 +126,43 @@ describe('P14 範囲は広がる向きにしか動かない', () => {
     const base = baseFile(['implemented: []']);
 
     expect(narrowing(base, { declared: true, ids: [] }).findings).toEqual([]);
+  });
+});
+
+describe('head で読めなかった種類(unloaded)の id は「仕様から消えた」と数えない', () => {
+  it('読めなかった種類があり、base の id が owners に居ない → P14(消えたのか読めないだけなのか分からない)', () => {
+    const base = baseFile(['implemented:', '  - room-create-action', '  - room-retired-action']);
+
+    const result = narrowing(base, { declared: true, ids: ['room-create-action'] }, [], ['actions']);
+
+    expect(result.findings.map((finding) => [finding.verifier, finding.severity])).toEqual([['P14', 'error'], ['P14', 'error']]);
+    expect(result.gone).toBe(0);
+  });
+
+  it('読めなかった種類があっても、head に残っている id は通る(owners が空でも、head の宣言に載っている id は狭まっていない)', () => {
+    const base = baseFile(['implemented:', '  - room-create-action']);
+
+    expect(narrowing(base, { declared: true, ids: ['room-create-action'] }, [], ['actions']).findings).toEqual([]);
+  });
+
+  it('読めなかった種類があっても、owners に居る id が消えていれば、いつもの P14(消えた id を名指す)', () => {
+    const base = baseFile(['implemented:', '  - room-create-action', '  - room-delete-action']);
+
+    const result = narrowing(base, { declared: true, ids: ['room-create-action'] }, OWNERS, ['queries']);
+
+    expect(result.findings.map((finding) => finding.message)).toEqual(['base の実装の範囲にあった room-delete-action が範囲から消えています(仕様を廃止するときだけ消せます)']);
+  });
+
+  it('全部の種類を error なく読めていれば(unloaded が空)、owners に居ない id は「仕様から消えた」で通る', () => {
+    const base = baseFile(['implemented:', '  - room-create-action', '  - room-retired-action']);
+
+    expect(narrowing(base, { declared: true, ids: ['room-create-action'] }, OWNERS, []).findings).toEqual([]);
+  });
+
+  it('head の宣言が無い(範囲が全部)ときは、読めなかった種類があっても通る(広がる向き)', () => {
+    const base = baseFile(['implemented:', '  - room-create-action']);
+
+    expect(narrowing(base, { declared: false }, [], ['actions']).findings).toEqual([]);
   });
 });
 
@@ -165,7 +213,7 @@ describe('比べられない base は error(読み飛ばさない)', () => {
   });
 });
 
-describe('base にキーが無い(N1)', () => {
+describe('base にキーが無い', () => {
   it('error にはせず、1 行だけ言う(キーを入れる変更は持ち主が承認する基準の変更)', () => {
     const base = baseFile([]);
 
@@ -174,6 +222,9 @@ describe('base にキーが無い(N1)', () => {
     expect(result.findings).toEqual([]);
     expect(result.note).not.toBeNull();
     expect(result.note).not.toContain('room-create-action');
+    // CLI の通しの試験が行を見つける手がかり: base と実装の範囲を名指す 1 行。
+    expect(result.note).toContain('base');
+    expect(result.note).toContain('実装の範囲');
   });
 
   it('head にも無ければ、何も言わない', () => {

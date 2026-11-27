@@ -8,7 +8,7 @@
  *      「一部だけ」に化けて、検査を黙って外さない**(根と `uses` は読めたまま、全部の検査が走る)
  *   ④ 書ける値は仕様の id の文字列だけ(種類も wildcard も無い)。空・空白・制御文字・重複は 1 件ずつ指す
  *
- * 計画: step 3b の section 2(Parsing and grammar)。`TEST_ROOTS` は使わない —— 宣言そのものの読み方を試すので自分でフィクスチャを組む。
+ * `TEST_ROOTS` は使わない —— 宣言そのものの読み方を試すので自分でフィクスチャを組む。
  */
 
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -93,6 +93,9 @@ describe('implemented を読む', () => {
     ['空白だけの要素', ['implemented:', '  - "   "'], 'implemented[0]'],
     ['途中に空白がある要素', ['implemented:', '  - "room create"'], 'implemented[0]'],
     ['前後に空白がある要素', ['implemented:', '  - " room-create-action"'], 'implemented[0]'],
+    ['全角の空白(U+3000)を含む要素', ['implemented:', '  - "room\\u3000create"'], 'implemented[0]'],
+    ['改行なしの空白(U+00A0)を含む要素', ['implemented:', '  - "room\\u00A0create"'], 'implemented[0]'],
+    ['先頭が全角の空白の要素', ['implemented:', '  - "\\u3000room-create-action"'], 'implemented[0]'],
     ['制御文字(タブ)を含む要素', ['implemented:', '  - "room\\tcreate"'], 'implemented[0]'],
     ['制御文字(改行)を含む要素', ['implemented:', '  - "room\\ncreate"'], 'implemented[0]'],
     ['重複', ['implemented:', '  - room-create-action', '  - room-create-action'], 'implemented[1]'],

@@ -14,7 +14,7 @@
  *     テストはあるが名前が違う(Z1)は、`[]` でも残る。rooms にはジョブ・連携・保証が無いので、負例の後ろ 3 つは `library` / `stores` で見る
  *
  * 題材は仕組みと同じ配布物の中の中立な題材(rooms)で、書き換えるのは一時ツリーの写しだけ。
- * 計画: step 3b の section 3(test 7)。**重い組**(別プロセスの CLI を起こし、全検査を何度も回す)なので `vitest.heavy.config.ts` に載せる。
+ * **重い組**(別プロセスの CLI を起こし、全検査を何度も回す)なので `vitest.heavy.config.ts` に載せる。
  */
 
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -24,6 +24,7 @@ import { runAllVerifications, type PipelineResult } from '../../lib/compose/veri
 import type { Finding } from '../../lib/kernel/finding.js';
 import { PRODUCT_DECL_FILE } from '../../lib/io/paths.js';
 import { formatScopeSummary } from '../../lib/scope/summary.js';
+import { matchesAbsenceTemplate } from '../helpers/absence-templates.js';
 import { cliPath, SLOW } from '../helpers/book-entry-fixture.js';
 import { TEST_VERIFY_INPUTS } from '../helpers/platform.js';
 import { runToolCli, TOOL_TREE } from '../helpers/run-tool-cli.js';
@@ -84,6 +85,22 @@ const taggedOf = (findings: readonly Finding[]): readonly Finding[] => findings.
 /** error だけ。 */
 const errorsOf = (findings: readonly Finding[]): readonly Finding[] => findings.filter((finding) => finding.severity === 'error');
 
+/** 印のついた指摘のうち、その検査の許す文面(`absence-templates.ts`)に当たらないもの(あれば、付けてはいけない枝に印が付いている)。 */
+const offTemplate = (findings: readonly Finding[]): readonly string[] =>
+  taggedOf(findings)
+    .filter((finding) => !matchesAbsenceTemplate(finding.verifier, finding.message))
+    .map((finding) => `${finding.verifier}: ${finding.message}`);
+
+/** ファイルを書き換え、元に戻す関数を返す。 */
+function edit(tree: Tree, relative: string, change: (text: string) => string): () => void {
+  const file = path.join(tree.root, relative);
+  const before = readFileSync(file, 'utf-8');
+  const after = change(before);
+  if (after === before) throw new Error(`${relative} の書き換えが空振りしました`);
+  writeFileSync(file, after);
+  return () => writeFileSync(file, before);
+}
+
 const trees: Tree[] = [];
 
 afterAll(() => {
@@ -109,6 +126,8 @@ describe('実装の範囲の宣言を rooms の生成の後の木に通す', () 
     expect(tagged.every((finding) => finding.severity === 'error')).toBe(true);
     expect(tagged.some((finding) => finding.verifier === 'A6' && finding.absentFor?.id === IN_SCOPE)).toBe(true);
     expect(tagged.some((finding) => finding.verifier === 'A6' && finding.absentFor?.id === OUT_OF_SCOPE)).toBe(true);
+    // 印は、その検査の許す文面(閉じた表)の指摘にだけ付いている。
+    expect(offTemplate(baseline.findings)).toEqual([]);
   }, SLOW);
 
   it('印の持ち主は全部、持ち主の一覧(scopeOwners)の中に居る', () => {
@@ -232,6 +251,45 @@ describe('実装の範囲の宣言を rooms の生成の後の木に通す', () 
     expect(quiet.status).toBe(1);
   }, SLOW);
 
+  it('`implemented:`(値が無い)は P0 の error で、何も外れない(範囲は「全部」。壊れた宣言が「何も入れない」に化けない)', async () => {
+    declare(tree, ['implemented:']);
+
+    const { result } = await verifyAll(tree);
+
+    expect(result.findings.some((finding) => finding.verifier === 'P0' && finding.severity === 'error' && finding.message.includes('implemented'))).toBe(true);
+    expect(result.relieved).toEqual([]);
+    expect(result.scopeReport).toBeNull();
+    expect(taggedOf(result.findings).length).toBe(taggedOf(baseline.findings).length);
+  }, SLOW);
+
+  it('負例(Q6): 読み取りに integration のテストケースが無い(checkIntegration)は `[]` でも残る(あるべき種類のテストが宣言に無いのは、テストが無いこととは別)', async () => {
+    declare(tree, ['implemented: []']);
+    const restore = edit(tree, 'docs/specs/backend/queries/room/room_list.md', (text) => text.replaceAll('type: integration', 'type: unit'));
+    try {
+      const { result } = await verifyAll(tree);
+
+      expect(errorsOf(result.findings).some((finding) => finding.verifier === 'Q6' && finding.message === 'room_list に type: integration のテストケースがありません')).toBe(true);
+      expect(result.relieved.some((finding) => finding.message.includes('type: integration'))).toBe(false);
+    } finally {
+      restore();
+    }
+  }, SLOW);
+
+  it('負例(S7): 画面の route が置き場の配置から辿れない(unreachableRoutes)は `[]` でも残る(「実ルートが無い」とは別の指摘)', async () => {
+    declare(tree, ['implemented: []']);
+    const restore = edit(tree, 'docs/specs/frontend/screens/booking/booking_list.md', (text) => text.replace('route: /bookings\n', 'route: /_hidden/bookings\n'));
+    try {
+      const { result } = await verifyAll(tree);
+
+      expect(errorsOf(result.findings).some((finding) => finding.verifier === 'S7' && finding.message.includes('逆引きでは同じキーに戻りません'))).toBe(true);
+      expect(result.relieved.some((finding) => finding.message.includes('逆引き'))).toBe(false);
+      // 同じ画面の「実ルートが無い」は、不在なので範囲の外へ移る。
+      expect(result.relieved.some((finding) => finding.verifier === 'S7' && finding.message.includes('/_hidden/bookings に対応する実ルートが'))).toBe(true);
+    } finally {
+      restore();
+    }
+  }, SLOW);
+
   it('負例(S7): 宣言の無い実ルートは `[]` でも残る(範囲が外すのは「無い」ことだけで、「余計にある」ことは外さない)', async () => {
     plant(tree, 'app/src/app/secret/page.tsx', 'export default function Page() {\n  return null;\n}\n');
     declare(tree, ['implemented: []']);
@@ -243,21 +301,40 @@ describe('実装の範囲の宣言を rooms の生成の後の木に通す', () 
   }, SLOW);
 });
 
-describe('負例: ホストの設定の許可表の外(J2)と、テストはあるが名前が違う(Z1)は、範囲で消えない(題材 library)', () => {
+describe('負例(題材 library): ホストの設定・テスト名の食い違い・宣言の無い口・proxy の被覆は、範囲で消えない', () => {
   let tree: Tree;
+  let baseline: PipelineResult;
 
   beforeAll(async () => {
     tree = await openTree('library');
     trees.push(tree);
-    // ホストの設定: 許可表の外の欄(`headers`)。不在ではなく「あるが許されない」ので、いつも error。
+    declare(tree, null);
+    baseline = (await verifyAll(tree)).result;
+  }, SLOW);
+
+  it('キーが無い: 印のついた指摘は全部、許す文面の表に当たる(J2 のホストの設定の不在・H6 などは印の外)', () => {
+    expect(taggedOf(baseline.findings).length).toBeGreaterThan(0);
+    expect(offTemplate(baseline.findings)).toEqual([]);
+    expect(errorsOf(baseline.findings).some((finding) => finding.verifier === 'J2' && finding.message.startsWith('app/vercel.json がありません'))).toBe(true);
+    expect(errorsOf(baseline.findings).some((finding) => finding.verifier === 'H6')).toBe(true);
+  });
+
+  it('`implemented: []`: ホストの設定の不在(J2)・H6 は残り、印のついた不在(Z1 / H2 / H3 / G7 / G8 / S7 …)は移る', async () => {
+    declare(tree, ['implemented: []']);
+
+    const { result } = await verifyAll(tree);
+    const errors = errorsOf(result.findings);
+
+    expect(errors.some((finding) => finding.verifier === 'J2' && finding.message.startsWith('app/vercel.json がありません'))).toBe(true);
+    expect(errors.some((finding) => finding.verifier === 'H6')).toBe(true);
+    for (const verifier of ['Z1', 'H2', 'H3', 'S7']) expect(result.relieved.some((finding) => finding.verifier === verifier)).toBe(true);
+    expect(errors.every((finding) => finding.absentFor === undefined)).toBe(true);
+  }, SLOW);
+
+  it('負例(J2 / Z1): 許可表の外の欄・テスト名の食い違いは、`[]` でも残る', async () => {
     plant(tree, 'app/vercel.json', '{"git":{"deploymentEnabled":{"**":false}},"headers":[]}\n');
     // 保証 TC-GUAR-LOANS-001 の見張りテストを、テスト名だけ違う形で置く(他の 2 件は不在のまま)。
     plant(tree, 'app/src/infrastructure/__tests__/guarantees/loans-rls.test.ts', "// @spec guarantee-catalog @tc TC-GUAR-LOANS-001\nit('別の名前', () => {\n  expect(1).toBe(1);\n});\n");
-  }, SLOW);
-
-  it('`implemented: []`: 許可表の外の欄(J2)・テスト名の食い違い(Z1)は残り、保証の見張りテストの不在(Z1)は範囲の外へ移る', async () => {
-    declare(tree, null);
-    const { result: baseline } = await verifyAll(tree);
     declare(tree, ['implemented: []']);
 
     const { result } = await verifyAll(tree);
@@ -268,22 +345,79 @@ describe('負例: ホストの設定の許可表の外(J2)と、テストはあ�
     // 不在の側(TC-GUAR-CEILING-001 など)は保証台帳の持ち主で範囲の外へ。
     expect(result.relieved.some((finding) => finding.verifier === 'Z1' && finding.absentFor?.id === 'guarantee-catalog')).toBe(true);
     expect(errors.some((finding) => finding.verifier === 'Z1' && finding.message.includes('テストファイルがありません'))).toBe(false);
-    // キー無しでは、同じ J2 / Z1 の error が全部ある(前提の実測)。
-    expect(errorsOf(baseline.findings).some((finding) => finding.verifier === 'Z1' && finding.message.includes('テストファイルがありません'))).toBe(true);
-    expect(errorsOf(baseline.findings).some((finding) => finding.verifier === 'J2')).toBe(true);
   }, SLOW);
-});
 
-describe('負例: 宣言の無い連携の置き場(X1)は範囲で消えない(題材 stores)', () => {
-  it('`implemented: []` でも、どの分類にも当たらないディレクトリの error は残る', async () => {
-    const tree = await openTree('stores');
-    trees.push(tree);
-    plant(tree, 'app/src/infrastructure/external/stray.ts', 'export const stray = 1;\n');
+  it('負例(J2 の入口の閉世界 / S7 の被覆): 宣言の無い HTTP の入口・proxy の matcher に覆われない認証の画面は、`[]` でも残る', async () => {
+    plant(tree, 'app/src/app/api/stray/route.ts', 'export async function POST() {\n  return new Response();\n}\n');
+    plant(tree, 'app/src/proxy.ts', "export const config = { matcher: ['/nothing'] };\nexport async function proxy() {}\n");
     declare(tree, ['implemented: []']);
 
     const { result } = await verifyAll(tree);
+    const errors = errorsOf(result.findings);
 
-    expect(errorsOf(result.findings).some((finding) => finding.verifier === 'X1' && finding.message.includes('どの分類'))).toBe(true);
-    expect(result.relieved.some((finding) => finding.message.includes('infrastructure/external'))).toBe(false);
+    expect(errors.some((finding) => finding.verifier === 'J2' && finding.message.includes('どの宣言にも当たりません'))).toBe(true);
+    expect(errors.some((finding) => finding.verifier === 'S7' && finding.message.includes('proxy の matcher に覆われていません'))).toBe(true);
+    expect(result.relieved.some((finding) => finding.message.includes('matcher') || finding.message.includes('どの宣言にも'))).toBe(false);
+  }, SLOW);
+
+  it('G8: アイコンのファイルの不在は error のとき(placeholder 無し)だけ印が付く。`brand.placeholder` があれば warning で、印も throw も無い', async () => {
+    declare(tree, ['implemented: []']);
+    const withoutPlaceholder = (await verifyAll(tree)).result;
+    const restore = edit(tree, 'docs/specs/frontend/design/tokens.md', (text) => text.replace('  icon: app/src/app/icon.png', '  icon: app/src/app/icon.png\n  placeholder: 実物のロゴができるまでの仮のアイコン'));
+    try {
+      const { result } = await verifyAll(tree);
+
+      expect(withoutPlaceholder.relieved.some((finding) => finding.verifier === 'G8' && finding.severity === 'error' && finding.absentFor?.id === 'design-tokens')).toBe(true);
+      const g8 = result.findings.filter((finding) => finding.verifier === 'G8' && finding.message.includes('が指すファイル'));
+      expect(g8.map((finding) => finding.severity)).toEqual(['warning']);
+      expect(g8[0]?.absentFor).toBeUndefined();
+      expect(result.relieved.some((finding) => finding.verifier === 'G8' && finding.message.includes('が指すファイル'))).toBe(false);
+    } finally {
+      restore();
+    }
+  }, SLOW);
+});
+
+describe('負例(題材 stores): 宣言の無い連携の置き場・設定の読み・登録の食い違いは、範囲で消えない', () => {
+  let tree: Tree;
+
+  beforeAll(async () => {
+    tree = await openTree('stores');
+    trees.push(tree);
+  }, SLOW);
+
+  it('キーが無い: 印のついた指摘は全部、許す文面の表に当たる', async () => {
+    declare(tree, null);
+
+    const { result } = await verifyAll(tree);
+
+    expect(taggedOf(result.findings).length).toBeGreaterThan(0);
+    expect(offTemplate(result.findings)).toEqual([]);
+  }, SLOW);
+
+  it('`implemented: []`: 宣言していない設定の読み(K1)・口の登録の食い違い(J2)・ホストの設定の不在(J2)は残る', async () => {
+    declare(tree, ['implemented: []']);
+
+    const { result } = await verifyAll(tree);
+    const errors = errorsOf(result.findings);
+
+    expect(errors.some((finding) => finding.verifier === 'K1' && finding.message.includes('が設定カタログにありません'))).toBe(true);
+    expect(errors.some((finding) => finding.verifier === 'J2' && finding.message.includes('に登録されていません'))).toBe(true);
+    expect(errors.some((finding) => finding.verifier === 'J2' && finding.message.startsWith('app/vercel.json がありません'))).toBe(true);
+    // ジョブの実装と endpoint の Route Handler の不在は不在なので範囲の外へ移る。
+    expect(result.relieved.some((finding) => finding.verifier === 'J2' && finding.absentFor?.id === 'job-catalog')).toBe(true);
+  }, SLOW);
+
+  it('負例(X1 / J3): どの分類にも当たらないディレクトリ・宣言に無い pg_cron の登録は、`[]` でも残る', async () => {
+    plant(tree, 'app/src/infrastructure/external/stray.ts', 'export const stray = 1;\n');
+    plant(tree, 'supabase/migrations/20990101000000_stray_cron.sql', "select cron.schedule('stray_job', '0 * * * *', $$select 1$$);\n");
+    declare(tree, ['implemented: []']);
+
+    const { result } = await verifyAll(tree);
+    const errors = errorsOf(result.findings);
+
+    expect(errors.some((finding) => finding.verifier === 'X1' && finding.message.includes('どの分類'))).toBe(true);
+    expect(errors.some((finding) => finding.verifier === 'J3' && finding.message.includes('scheduler: database として宣言されていません'))).toBe(true);
+    expect(result.relieved.some((finding) => finding.message.includes('infrastructure/external') || finding.message.includes('pg_cron'))).toBe(false);
   }, SLOW);
 });

@@ -5,10 +5,9 @@
  *   ① 宣言が無ければ入力と同じものが返り、報告も無い(既存の製品は何も変わらない)
  *   ② 範囲の外の持ち主に印(`absentFor`)が付いた **error だけ**が報告へ移る。印の無い指摘は、種類を問わず絶対に移らない
  *   ③ 範囲の中の持ち主の error は残る
- *   ④ 印が **warning** に付いていたら throw する(印は「不在の error」専用。付け間違いを黙って通さない)
+ *   ④ 印が **warning** に付いていたら throw する(印は「不在の error」専用。宣言が無いときも。付け間違いを黙って通さない)
  *   ⑤ 印の持ち主が持ち主の一覧(`scopeOwners` の結果)に無ければ、範囲の外とは扱わず残す(一覧と印が食い違った形を、免除に倒さない)
  *
- * 計画: step 3b の section 0 / 2 / 6。
  */
 
 import { describe, expect, it } from 'vitest';
@@ -122,6 +121,12 @@ describe('印の付け間違いと、一覧に無い持ち主は、免除に倒�
 
     expect(() => partitionByScope([warning], NOTHING, UNIVERSE)).toThrow();
     expect(() => partitionByScope([warning], { declared: true, ids: ['room-create-action'] }, UNIVERSE)).toThrow();
+  });
+
+  it('宣言が無いときも、warning の印は throw する(付け間違いは範囲の宣言に依らず見つける。宣言の無い製品で黙って通り、宣言した日に初めて落ちる形を作らない)', () => {
+    const warning: Finding = { ...makeFinding('A6', { severity: 'warning', message: '警告', location: { file: 'x.md' }, suggestion: '直す' }), absentFor: ROOM_CREATE };
+
+    expect(() => partitionByScope([warning], NOT_DECLARED, UNIVERSE)).toThrow();
   });
 
   it('印の持ち主が持ち主の一覧に無ければ、範囲の外とは扱わず残す', () => {

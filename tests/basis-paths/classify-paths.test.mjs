@@ -634,7 +634,7 @@ describe('classify-paths.sh: the output is complete, and agrees with an independ
  * top-level directory, a new package or a new kind of file therefore fails this test until its place is chosen: a line in
  * basis-paths.tsv (implementation, generated) or a group here (basis on purpose). A stale group fails too.
  */
-const UNMATCHED_FILES = ['.gitignore', '.gitleaksignore', '.nvmrc', 'AGENTS.md', 'CLAUDE.md', 'LICENSE', 'README.md', 'package-lock.json', 'package.json', 'product.md', 'vitest.config.mts',
+const UNMATCHED_FILES = ['basis-paths.tsv', '.gitignore', '.gitleaksignore', '.nvmrc', 'AGENTS.md', 'CLAUDE.md', 'LICENSE', 'README.md', 'package-lock.json', 'package.json', 'product.md', 'vitest.config.mts',
   'framework/guarantees.md', 'scripts/push-gate.gitleaks.toml', 'scripts/scan-exclusions.tsv'];
 const UNMATCHED_DIRS = ['.claude/', 'docs/', 'tests/', 'legacy/', 'framework/adapters/', 'framework/lint-config/', 'framework/runtime/'];
 describe('classify-paths.sh: this repository (7)', () => {

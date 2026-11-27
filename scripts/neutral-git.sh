@@ -280,6 +280,103 @@ keys_count() {
   [ "$kc_seen" = "$kc_expect" ] || return 1
 }
 
+# ---- files that cannot be read as text (known-gaps 16(e)) ----
+# A file is unreadable when it holds a NUL byte anywhere (git itself looks only at the first 8000 bytes) or is not valid UTF-8; the word
+# scans, the mail scan and gitleaks read text, so such a file is not scanned, and it is red unless a `binary` entry names its blob id at its
+# path. Not red: valid UTF-8 text, an empty file, a symlink, a submodule gitlink. The candidates of a commit are what it adds or changes
+# (`diff-tree -c`: for a merge only the paths that differ from every parent); the candidates of the tree are all its files.
+# Every file name is checked too: a name with a control character (a line feed, a tab ...) or a byte that is not UTF-8 cannot be written in
+# the list, so it stops the scan (status 3 of the two candidate readers below and of unr_names_utf8).
+# (a control character is found in the awk programs below; a byte that is not UTF-8 is found afterwards by unr_names_utf8 on the names they write)
+# unr_commit_cands <commit> <cands>: appends `commit TAB blob TAB path` per file the commit adds or changes. Returns 2 when the commit cannot
+# be read, 3 for a file name that cannot be named.
+unr_commit_cands() {
+  neutral_git diff-tree -c --root -r --no-renames -z --no-commit-id --no-ext-diff "$1" > "$2.raw" 2>/dev/null || return 2
+  uc_rc=0
+  LC_ALL=C awk -v RS='\0' -v c="$1" -v nf="$2.names" '
+    NR % 2 == 1 { meta = $0; next }
+    { if ($0 ~ /[\001-\037\177]/) { bad = 1; exit 3 }
+      print $0 >> nf
+      nc = 0; s = meta
+      while (substr(s, 1, 1) == ":") { nc++; s = substr(s, 2) }
+      if (split(s, a, " ") != 2 * nc + 3) { bad = 2; exit 4 }
+      mode = a[nc + 1]
+      if (mode == "000000" || mode == "120000" || mode == "160000") next
+      print c "\t" a[2 * nc + 2] "\t" $0 }
+    END { if (!bad && NR % 2 != 0) exit 4 }
+  ' "$2.raw" >> "$2" || uc_rc=$?
+  case $uc_rc in 0) return 0 ;; 3) return 3 ;; *) return 2 ;; esac
+}
+# unr_tree_cands <tree> <cands>: appends `tree TAB blob TAB path` for every regular file of the tree. Returns 2 / 3 as above.
+unr_tree_cands() {
+  neutral_git ls-tree -r -z "$1" > "$2.raw" 2>/dev/null || return 2
+  uc_rc=0
+  LC_ALL=C awk -v RS='\0' -v nf="$2.names" '
+    { i = index($0, "\t")
+      if (!i) { bad = 2; exit 4 }
+      p = substr($0, i + 1)
+      if (p ~ /[\001-\037\177]/) { bad = 1; exit 3 }
+      print p >> nf
+      if (split(substr($0, 1, i - 1), a, " ") != 3) { bad = 2; exit 4 }
+      if (a[2] != "blob" || a[1] == "120000") next
+      print "tree\t" a[3] "\t" p }
+  ' "$2.raw" >> "$2" || uc_rc=$?
+  case $uc_rc in 0) return 0 ;; 3) return 3 ;; *) return 2 ;; esac
+}
+# unr_names_utf8 <names>: the names that the two readers above wrote (one per line, no control character in any): returns 0 when every
+# one is valid UTF-8, 3 when one is not, 1 when the check cannot run (a self-test line that is not UTF-8 must be found first, or the locale
+# does not do what the check needs).
+unr_names_utf8() {
+  printf 'caf\351\n' > "$1.canary" || return 1
+  nu_rc=0; (LC_ALL=C.UTF-8 && export LC_ALL && grep_q -qav '^.*$' "$1.canary") || nu_rc=$?
+  [ "$nu_rc" = 0 ] || return 1
+  nu_rc=0; (LC_ALL=C.UTF-8 && export LC_ALL && grep_q -qav '^.*$' "$1") || nu_rc=$?
+  case $nu_rc in 0) return 3 ;; 1) return 0 ;; *) return 1 ;; esac
+}
+# unr_bad_blobs <cands...-file> <out>: the blob ids of the candidates that are not readable as text, one per line, into <out>. All the
+# distinct blobs are put into ONE throwaway tree (names b1, b2 ...) that `git grep` reads twice (NUL byte; a line that is not valid UTF-8),
+# which is how thousands of files are read in seconds. A canary of each kind is in the tree and must come out as it should, or the check
+# itself does not work here (no PCRE in git, no UTF-8 locale) and returns 1: a check that cannot run is never "nothing unreadable".
+unr_bad_blobs() {
+  ub=$ng_dir/ub
+  LC_ALL=C awk -F'\t' '{ print $2 }' "$1" > "$ub.ids" || return 1
+  LC_ALL=C sort -u "$ub.ids" > "$ub.blobs" || return 1
+  LC_ALL=C awk '{ print "100644 " $0 "\tb" NR }' "$ub.blobs" > "$ub.info" || return 1
+  for ub_k in 1 2 3; do
+    case $ub_k in
+      1) printf 'plain\000text\n' > "$ub.canary" || return 1 ;;
+      2) printf 'caf\351 plain words\n' > "$ub.canary" || return 1 ;;
+      3) printf 'caf\303\251 \346\227\245\346\234\254\350\252\236\n' > "$ub.canary" || return 1 ;;
+    esac
+    ub_id=$(ng_env GIT_DIR="$ng_dir" git hash-object -w "$ub.canary" 2>/dev/null) || return 1
+    printf '100644 %s\tc%s\n' "$ub_id" "$ub_k" >> "$ub.info" || return 1
+  done
+  rm -f "$ng_dir/ub-index" || return 1
+  ng_env GIT_DIR="$ng_dir" GIT_INDEX_FILE="$ng_dir/ub-index" git update-index --add --index-info < "$ub.info" > /dev/null 2>&1 || return 1
+  ub_tree=$(ng_env GIT_DIR="$ng_dir" GIT_INDEX_FILE="$ng_dir/ub-index" git write-tree 2>/dev/null) || return 1
+  : > "$ub.hits" || return 1
+  ub_rc=0; ng_env LC_ALL=C GIT_DIR="$ng_dir" git grep -a -l -P '\x00' "$ub_tree" > "$ub.nul" 2>/dev/null || ub_rc=$?
+  case $ub_rc in 0 | 1) ;; *) return 1 ;; esac
+  ub_rc=0; ng_env GIT_DIR="$ng_dir" git grep -a -l -v -e '^.*$' "$ub_tree" > "$ub.utf" 2>/dev/null || ub_rc=$?
+  case $ub_rc in 0 | 1) ;; *) return 1 ;; esac
+  LC_ALL=C awk '{ print substr($0, index($0, ":") + 1) }' "$ub.nul" > "$ub.nul.n" || return 1
+  LC_ALL=C awk '{ print substr($0, index($0, ":") + 1) }' "$ub.utf" > "$ub.utf.n" || return 1
+  grep_q -qxF c1 "$ub.nul.n" || return 1
+  grep_q -qxF c2 "$ub.utf.n" || return 1
+  if grep_q -qxF c3 "$ub.nul.n" || grep_q -qxF c3 "$ub.utf.n"; then return 1; fi
+  cat "$ub.nul.n" "$ub.utf.n" > "$ub.names" || return 1
+  LC_ALL=C awk 'FILENAME == ARGV[1] { b[NR] = $0; next } { n = substr($0, 2); if ($0 ~ /^b[0-9]+$/) print b[n] }' "$ub.blobs" "$ub.names" > "$2" || return 1
+}
+# unr_count <bad-blobs> <binary-entries> <cands>: sets $ur_n to the number of candidates whose blob is in <bad-blobs> and that no `binary`
+# entry (`path TAB blob id`) names with that path and that blob.
+unr_count() {
+  ur_n=$(LC_ALL=C awk -F'\t' '
+    FILENAME == ARGV[1] { bad[$1] = 1; next }
+    FILENAME == ARGV[2] { ok[$1 "\t" $2] = 1; next }
+    { if (($2 in bad) && !(($3 "\t" $2) in ok)) n++ }
+    END { print n + 0 }' "$1" "$2" "$3") || return 1
+  case $ur_n in '' | *[!0-9]*) return 1 ;; esac
+}
 # neutral_commit_tree <tree>: a commit of <tree> with no parent, a fixed identity and a fixed date, in the neutral repository only, so that
 # gitleaks can read the tree the way it reads a commit. Sets $nct_id to its id; returns 1 on failure.
 neutral_commit_tree() {

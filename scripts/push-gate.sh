@@ -83,6 +83,7 @@ cgit() { clean GIT_DIR="$repo_gitdir" git "$@"; }
 # A list that is missing or does not fit is exit 2, whatever else is true; `keys` and `binary` entries are used below, `mail` entries by scan-public.
 excl_read "$here/scan-exclusions.tsv" "$tmp/excl" || die "$ex_err"
 excl_kind "$tmp/excl" keys "$tmp/excl.keys" || die "scan-exclusions.tsv could not be read"
+excl_kind "$tmp/excl" binary "$tmp/excl.binary" || die "scan-exclusions.tsv could not be read"
 hist_keys=$tmp/excl.keys
 
 if [ "$mode" = words ]; then
@@ -250,11 +251,61 @@ if [ "$count" -gt 0 ]; then
 fi
 elapsed "$t_seg"; gl_secs=$el
 
+# Step 3: files that cannot be read as text (a NUL byte anywhere, or not valid UTF-8): the scans read text, so such a file is not scanned.
+# Red unless a `binary` entry of the list names that blob at that path. The files that the commits of the range add or change, and every file
+# of the tree of HEAD, are counted separately. A file name that cannot be written in the list (a control character, a byte that is not UTF-8)
+# is exit 2. Counts only are printed.
+tick; t_step=$now_t
+tree_id=$(neutral_git rev-parse --verify -q "$head_sha^{tree}" 2>/dev/null) || die "step unreadable could not run (the tree of HEAD could not be read)"
+: > "$tmp/ur.range" || die "step unreadable could not run (could not make a result file)"
+: > "$tmp/ur.tree" || die "step unreadable could not run (could not make a result file)"
+: > "$tmp/ur.range.names" || die "step unreadable could not run (could not make a result file)"
+: > "$tmp/ur.tree.names" || die "step unreadable could not run (could not make a result file)"
+c_seen=0
+while IFS= read -r c; do
+  c_seen=$((c_seen + 1))
+  [ -n "$c" ] || continue
+  rc=0; unr_commit_cands "$c" "$tmp/ur.range" || rc=$?
+  case $rc in
+    0) ;;
+    3) die "step unreadable could not run (a file name has a control character or a byte that is not UTF-8, so it cannot be named in scan-exclusions.tsv)" ;;
+    *) die "step unreadable could not run (could not read the files of a commit)" ;;
+  esac
+done < "$tmp/commits"
+[ "$c_seen" = "$count" ] || die "step unreadable could not run (the list of commits was not read to the end)"
+rc=0; unr_tree_cands "$tree_id" "$tmp/ur.tree" || rc=$?
+case $rc in
+  0) ;;
+  3) die "step unreadable could not run (a file name in the tree of HEAD has a control character or a byte that is not UTF-8, so it cannot be named in scan-exclusions.tsv)" ;;
+  *) die "step unreadable could not run (the tree of HEAD could not be read)" ;;
+esac
+cat "$tmp/ur.range.names" "$tmp/ur.tree.names" > "$tmp/ur.names" || die "step unreadable could not run (could not join the lists of names)"
+rc=0; unr_names_utf8 "$tmp/ur.names" || rc=$?
+case $rc in
+  0) ;;
+  3) die "step unreadable could not run (a file name has a byte that is not UTF-8, so it cannot be named in scan-exclusions.tsv)" ;;
+  *) die "step unreadable could not run (the file names could not be checked)" ;;
+esac
+cat "$tmp/ur.range" "$tmp/ur.tree" > "$tmp/ur.all" || die "step unreadable could not run (could not join the lists of files)"
+unr_bad_blobs "$tmp/ur.all" "$tmp/ur.bad" || die "step unreadable could not run (the files could not be checked for text)"
+unr_count "$tmp/ur.bad" "$tmp/excl.binary" "$tmp/ur.range" || die "step unreadable could not run (could not count the files)"; ur_range_n=$ur_n
+unr_count "$tmp/ur.bad" "$tmp/excl.binary" "$tmp/ur.tree" || die "step unreadable could not run (could not count the files)"; ur_tree_n=$ur_n
+elapsed "$t_step"
+if [ "$ur_range_n" -gt 0 ] || [ "$ur_tree_n" -gt 0 ]; then
+  ur_parts=
+  if [ "$ur_range_n" -gt 0 ]; then ur_parts="unreadable file(s): $ur_range_n"; fi
+  if [ "$ur_tree_n" -gt 0 ]; then ur_parts="${ur_parts:+$ur_parts, }unreadable file(s) in the tree of HEAD: $ur_tree_n"; fi
+  echo "push-gate: step unreadable: FAILED ($ur_parts) in $el s"
+  echo "  (a file with a NUL byte, or one that is not UTF-8, is not read by the scans: change it, or name its blob in scripts/scan-exclusions.tsv with kind binary)"
+  failed="${failed:+$failed, }unreadable"
+else
+  echo "push-gate: step unreadable: ok in $el s"
+fi
+
 # The tree of HEAD is scanned as one synthetic root commit of the neutral repository (a fixed identity and date), by the same
 # one-commit-at-a-time run as the history, so that a file is read the way a commit's patch is (no default allowlist, no chunking of a
 # long line). `gitleaks dir` is not used. It runs for an empty range too; a failing step of it is exit 2, never a clean tree.
 tick; t_seg=$now_t
-tree_id=$(neutral_git rev-parse --verify -q "$head_sha^{tree}" 2>/dev/null) || die "step gitleaks could not run (the tree of HEAD could not be read)"
 neutral_commit_tree "$tree_id" || die "step gitleaks could not run (the tree of HEAD could not be read)"
 printf '%s\n' "$nct_id" > "$tmp/tree.commits" || die "step gitleaks could not run (the tree of HEAD could not be read)"
 scan_history "$tmp/tree.commits" "$tmp/gitleaks.tpl.f" "$tmp" || die "step gitleaks $hist_err"

@@ -95,7 +95,11 @@ jobs:
           n=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH") || stop "cannot read the pull request number"
           head=$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH") || stop "cannot read the head sha"
           sha256sum < "$text" > "$text.sum" || stop "cannot hash the title and body"
-          read -r hash rest < "$text.sum" || stop "cannot read the hash"
+          IFS= read -r line < "$text.sum" || stop "cannot read the hash record"
+          rec=$(cat "$text.sum") || stop "cannot read the hash record"
+          [ "$rec" = "$line" ] || stop "the hash record is not exactly one line"
+          hash=${line%  -}
+          [ "$hash" != "$line" ] || stop "the hash record does not end in two blanks and a dash"
           case $n in ''|*[!0-9]*) stop "the pull request number is not a number" ;; esac
           is_hex "$head" 40 || stop "the head sha is not 40 hex characters"
           is_hex "$GITHUB_SHA" 40 || stop "the base sha is not 40 hex characters"

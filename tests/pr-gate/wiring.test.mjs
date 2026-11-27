@@ -81,6 +81,7 @@ export function parseYaml(text) {
     return inner.split(',').map((x) => {
       const t = x.trim();
       if (!/^[a-z_]+$/.test(t)) throw new Error(`yaml: unsupported flow item: ${JSON.stringify(x)}`);
+      if (TYPED.test(t)) throw new Error(`yaml: a flow item that YAML types differently: ${t}`);
       return t;
     });
   };
@@ -325,6 +326,13 @@ describe('pr-gate.yml: wiring', () => {
     assert.equal(code.split('${{').length - 1, found.length, 'an expression that the pattern did not read');
   });
 
+  it('the reader refuses a flow item that YAML would type (true, no, on, null ...), not only a typed scalar', () => {
+    for (const w of ['true', 'false', 'yes', 'no', 'on', 'off', 'y', 'n', 'null']) {
+      assert.throws(() => parseYaml(`name: x\njobs:\n  gate:\n    steps: [opened, ${w}]\n`), /types differently/, w);
+    }
+    assert.deepEqual(parseYaml('name: x\njobs:\n  gate:\n    steps: [opened, edited]\n').jobs.gate.steps, ['opened', 'edited']);
+  });
+
   it('has a fork step that turns a pull request from another repository red', () => {
     const fork = runs.filter((s) => s.run.includes('head.repo.full_name'));
     assert.equal(fork.length, 1);
@@ -513,6 +521,11 @@ describe('pr-gate.yml: the run blocks, executed', () => {
       ['prints a leading blank', `printf '%s\\n' " ${'0'.repeat(64)}  -"`],
       ['prints no final line feed', `printf '%s' "${'0'.repeat(64)}  -"`],
       ['prints an empty line first', `printf '\\n%s\\n' "${'0'.repeat(64)}  -"`],
+      // what a shell drops when it reads (trailing line feeds in a substitution, NUL bytes) is still part of the record
+      ['prints an empty line after the record', `printf '%s\\n\\n' "${'0'.repeat(64)}  -"`],
+      ['prints two empty lines after the record', `printf '%s\\n\\n\\n' "${'0'.repeat(64)}  -"`],
+      ['prints a NUL byte after the record', `printf '%s\\n\\000' "${'0'.repeat(64)}  -"`],
+      ['prints a NUL byte inside the hash', `printf '%s\\000%s  -\\n' "${'0'.repeat(32)}" "${'0'.repeat(32)}"`],
     ];
     for (const [what, body] of cases) {
       it(`${what}: exit 2, could not run, no passed line`, () => {

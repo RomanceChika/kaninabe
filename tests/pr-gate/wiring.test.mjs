@@ -139,6 +139,71 @@ describe('the YAML subset parser fails loudly on what it does not understand', (
   });
 });
 
+// ---- 0. the shape: every key must be on a list of allowed ones (a key that changes the verdict is not on it) ----
+
+const sameKeys = (obj, allowed, where, out) => {
+  for (const k of Object.keys(obj)) if (!allowed.includes(k)) out.push(`${where}: key "${k}" is not allowed`);
+};
+
+/** The problems of a parsed workflow's shape. Allowed: only what is listed here; anything else (continue-on-error, if, shell, defaults, ...) is a problem. */
+function shapeProblems(doc) {
+  const out = [];
+  const required = (obj, keys, where) => { for (const k of keys) if (!(k in obj)) out.push(`${where}: key "${k}" is missing`); };
+  if (doc === null || typeof doc !== 'object') return ['the workflow is not a map'];
+  sameKeys(doc, ['name', 'on', 'permissions', 'concurrency', 'jobs'], 'workflow', out);
+  required(doc, ['name', 'on', 'permissions', 'concurrency', 'jobs'], 'workflow');
+  const j = doc.jobs?.gate;
+  if (!j || Object.keys(doc.jobs).length !== 1) { out.push('jobs: exactly one job, named gate'); return out; }
+  sameKeys(j, ['runs-on', 'timeout-minutes', 'steps'], 'job gate', out);
+  required(j, ['runs-on', 'timeout-minutes', 'steps'], 'job gate');
+  (j.steps ?? []).forEach((st, n) => {
+    const where = `step ${n + 1}`;
+    if ('uses' in st) {
+      sameKeys(st, ['uses', 'with'], where, out);
+      sameKeys(st.with ?? {}, ['ref', 'persist-credentials'], `${where} with`, out);
+    } else {
+      sameKeys(st, ['name', 'run', 'env'], where, out);
+      required(st, ['name', 'run'], where);
+      sameKeys(st.env ?? {}, ['SCAN_WORDS', 'HEAD_SHA'], `${where} env`, out);
+    }
+  });
+  return out;
+}
+
+describe('pr-gate.yml: the shape is closed (only allowed keys)', () => {
+  it('the workflow has only allowed keys at every level', () => {
+    assert.deepEqual(shapeProblems(wf), []);
+  });
+
+  /** Each mutation edits the text of the workflow in the test (never the file) and must be seen. */
+  const mutations = [
+    ['continue-on-error on the job', '    timeout-minutes: 5\n', '    timeout-minutes: 5\n    continue-on-error: true\n'],
+    ['continue-on-error on the scan step', '        env:\n          SCAN_WORDS:', '        continue-on-error: true\n        env:\n          SCAN_WORDS:'],
+    ['if: always() on the last step', '      - name: Tie the result to what was checked\n', "      - name: Tie the result to what was checked\n        if: always()\n"],
+    ['if on the first step', '      - name: Name the pull request', "      - if: false\n        name: Name the pull request"],
+    ['shell on a step', '      - name: The review record names the head commit\n', '      - name: The review record names the head commit\n        shell: sh\n'],
+    ['working-directory on a step', '      - name: The review record names the head commit\n', '      - name: The review record names the head commit\n        working-directory: /tmp\n'],
+    ['defaults at the top', 'permissions:\n  contents: read\n', 'permissions:\n  contents: read\ndefaults:\n  run:\n    shell: sh\n'],
+    ['env at the top', 'permissions:\n  contents: read\n', 'permissions:\n  contents: read\nenv:\n  X: y\n'],
+    ['a key nobody listed on the job', '    timeout-minutes: 5\n', '    timeout-minutes: 5\n    outputs:\n      x: y\n'],
+    ['an env name that is not allowed', '          HEAD_SHA: ${{ github.event.pull_request.head.sha }}\n', '          HEAD_SHA: ${{ github.event.pull_request.head.sha }}\n          TITLE: x\n'],
+    ['a with key that is not allowed', '          persist-credentials: false\n', '          persist-credentials: false\n          fetch-depth: 0\n'],
+    ['a second job', 'jobs:\n', 'jobs:\n  other:\n    runs-on: ubuntu-latest\n    steps:\n      - name: x\n        run: |\n          true\n'],
+  ];
+  for (const [what, from, to] of mutations) {
+    it(`fires on: ${what}`, () => {
+      assert.ok(workflowText.includes(from), `the anchor for "${what}" is not in the workflow`);
+      const problems = shapeProblems(parseYaml(workflowText.replace(from, to)));
+      assert.ok(problems.length > 0, `not seen: ${what}`);
+    });
+  }
+  it('fires on a mutated parsed structure as well', () => {
+    const copy = JSON.parse(JSON.stringify(wf));
+    copy.jobs.gate.steps.at(-1)['continue-on-error'] = 'true';
+    assert.ok(shapeProblems(copy).length > 0);
+  });
+});
+
 // ---- 1. wiring ----
 
 describe('pr-gate.yml: wiring', () => {
@@ -289,11 +354,11 @@ function expand(value, ctx) {
  * Options: ev (the event), words (SCAN_WORDS), base (GITHUB_SHA), shims (name -> sh body, placed first on the PATH), only (a predicate
  * on a step: steps that do not pass are not run), pre (called with the dir before the steps run).
  */
-function runJob({ ev = event(), words = LIST, base = BASE, shims = {}, only = () => true, pre = () => {}, rawEvent } = {}) {
+function runJob({ ev = event(), words = LIST, base = BASE, shims = {}, only = () => true, pre = () => {}, rawEvent, runnerName = 'runner-temp' } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'pr-gate-'));
   try {
     const bin = path.join(dir, 'bin');
-    const runnerTemp = path.join(dir, 'runner-temp');
+    const runnerTemp = path.join(dir, runnerName);
     const tmp = path.join(dir, 'tmp');
     for (const d of [bin, runnerTemp, tmp]) mkdirSync(d);
     for (const [name, body] of Object.entries(shims)) { writeFileSync(path.join(bin, name), `#!/bin/sh\n${body}\n`); chmodSync(path.join(bin, name), 0o755); }
@@ -335,6 +400,12 @@ describe('pr-gate.yml: the run blocks, executed', () => {
     assert.deepEqual(lines, [`pr-gate: passed pr 42 head ${HEAD} base ${BASE} text sha256 ${hexOf(hashedBytes(TITLE, BODY))}`]);
     assert.ok(r.out.includes('pr-gate: pr 42'), 'the first step names the pull request');
     assert.ok(!r.out.includes('qjmarker') && !r.out.includes('hitword'), 'the word list is never printed');
+  });
+
+  it('still passes with the right hash when RUNNER_TEMP has a backslash in its path (sha256sum prints a backslash before the hash for such a file name)', () => {
+    const r = runJob({ runnerName: 'runner\\temp' });
+    assert.equal(r.status, 0, r.out);
+    assert.ok(r.out.includes(`text sha256 ${hexOf(hashedBytes(TITLE, BODY))}\n`), r.out);
   });
 
   it('hashes a title and a body with several lines, an empty body and a body without a final line feed', () => {
@@ -379,17 +450,24 @@ describe('pr-gate.yml: the run blocks, executed', () => {
 
   describe('jq', () => {
     it('fails on any one of its calls: exit 2, could not run, no passed line', () => {
-      let calls = 0;
-      for (let n = 1; n <= 12; n++) {
-        const r = runJob({
-          pre: ({ dir }) => writeFileSync(path.join(dir, 'jq-n'), '0'),
-          shims: { jq: `n=$(cat "$RUNNER_TEMP/../jq-n") || exit 3; n=$((n + 1)); echo $n > "$RUNNER_TEMP/../jq-n"; if [ $n = ${n} ]; then exit 1; fi; exec ${REAL.jq} "$@"` },
-        });
-        if (r.status === 0) break; // fewer than n calls: every call has been tried
-        calls = n;
-        stopsAs2(r, `jq call ${n} fails`);
+      // first, an uncut good run counts the calls; then every one of them 1..count is made to fail
+      const counter = mkdtempSync(path.join(tmpdir(), 'pr-gate-count-'));
+      try {
+        const countFile = path.join(counter, 'calls');
+        writeFileSync(countFile, '');
+        const good = runJob({ shims: { jq: `echo x >> "${countFile}"; exec ${REAL.jq} "$@"` } });
+        assert.equal(good.status, 0, good.out);
+        const count = readFileSync(countFile, 'utf8').split('\n').filter((l) => l === 'x').length;
+        assert.ok(count >= runs.length, `a full run calls jq at least once per step (saw ${count} calls, ${runs.length} steps)`);
+        for (let n = 1; n <= count; n++) {
+          const nFile = path.join(counter, `n-${n}`);
+          writeFileSync(nFile, '0');
+          const r = runJob({ shims: { jq: `k=$(cat "${nFile}") || exit 3; k=$((k + 1)); echo $k > "${nFile}"; if [ $k = ${n} ]; then exit 1; fi; exec ${REAL.jq} "$@"` } });
+          stopsAs2(r, `jq call ${n} of ${count} fails`);
+        }
+      } finally {
+        rmSync(counter, { recursive: true, force: true });
       }
-      assert.ok(calls >= 3, `jq is called at least 3 times in a good run (saw ${calls})`);
     });
 
     it('prints garbage: exit 2 for a number that is not digits, with no passed line', () => {

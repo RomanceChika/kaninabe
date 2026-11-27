@@ -50,7 +50,7 @@ cd "$repo_top"
 
 # Git for everything but the question to the destination runs without the caller's environment and configuration.
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+trap 'rc=$?; rm -rf "$tmp"; guard_exit "$rc"' EXIT
 mkdir "$tmp/home"
 cg() {
   env -i PATH="$PATH" HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/home/.config" TMPDIR="$tmp" LC_ALL=C.UTF-8 \
@@ -104,7 +104,7 @@ neutral_git rev-list $revs > "$tmp/commits" 2>/dev/null || die "the history cann
 neutral_git rev-list --objects --missing=print $revs > "$tmp/objects" 2>/dev/null || die "the history cannot be read to the end"
 if grep_q -q '^?' "$tmp/objects"; then die "objects are missing here, so the history cannot be read to the end"; fi
 
-n=$(wc -l < "$tmp/commits" | tr -d ' ')
+wc_num -l "$tmp/commits" || die "could not count the commits"; n=$wc_v
 # The identity of this range: the URL contacted, the head and the exact ordered list (range-id.sh). Computed here, from the
 # same resolved inputs the list came from; the gate is handed the list id and checks it against the list it scans.
 list_id=$(range_list_id "$head_sha" "$tmp/commits")

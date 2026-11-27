@@ -82,6 +82,14 @@ neutral_commit_text() {
   LC_ALL=C tr '\000' '\n' < "$2.raw" > "$2" || return 1
   rm -f "$2.raw"
 }
+# wc_num <-l|-c> <file>: sets $wc_v to the lines or bytes of <file>, from ONE `wc` (no pipe), status checked, leading blanks
+# dropped, digits only. Returns 1 when wc fails or prints anything else: a count that cannot be read is never a number, so the
+# caller stops (exit 2). Every number the scripts compare or add comes from here, from x_count, or from gl_scanned (checked).
+wc_num() {
+  wc_v=$(wc "$1" < "$2" 2>/dev/null) || return 1
+  while :; do case $wc_v in ' '*) wc_v=${wc_v# } ;; *) break ;; esac; done
+  case $wc_v in '' | *[!0-9]*) return 1 ;; esac
+}
 now_secs() { now_t=$(date +%s 2>/dev/null) || return 1; case $now_t in '' | *[!0-9]*) return 1 ;; esac; }
 # grep_q <grep arguments...>: grep for a condition: 0 = found, 1 = not found, and any other status (a bad pattern, an unreadable
 # input, an I/O error) calls grep_failed, which the caller defines and which does not return: a search that failed is never
@@ -92,14 +100,20 @@ grep_q() { gq_rc=0; grep "$@" || gq_rc=$?; case $gq_rc in 0 | 1) return "$gq_rc"
 x_count() { LC_ALL=C awk -v who=x_count '$0 == "" { next } $0 != "x" { bad = 1 } { n++ } END { if (bad || !n) exit 1; print n }' "$1"; }
 # word_list_read <list> <pattern-out> <scoped-out>: the one reader of the word list. Lines that are not comments or blank and do
 # not begin with '@' go to <pattern-out>, the '@' lines to <scoped-out>. Every status is checked (no pipe), and a list with a NUL
-# byte or a line that is not valid UTF-8 is refused (a grep in a UTF-8 locale silently drops such a line, so it would leave the
+# byte, a CR in any line, a UTF-8 byte order mark at the start of a line or a line that is not valid UTF-8 is refused (a grep in a UTF-8 locale silently drops such a line, so it would leave the
 # list). On failure returns 1 with a fixed reason in $wl_err; a line of the list is never shown.
 word_list_read() {
   wl_err="could not be read"; wl_t=$2.chk
   [ -f "$1" ] && [ -r "$1" ] || return 1
   tr -d '\000' < "$1" > "$wl_t" 2>/dev/null || return 1
-  wl_a=$(wc -c < "$1") && wl_b=$(wc -c < "$wl_t") || return 1
+  wc_num -c "$1" || return 1; wl_a=$wc_v; wc_num -c "$wl_t" || return 1; wl_b=$wc_v
   if [ "$wl_a" != "$wl_b" ]; then wl_err="contains a NUL byte"; return 1; fi
+  tr -d '\r' < "$1" > "$wl_t" 2>/dev/null || return 1
+  wc_num -c "$wl_t" || return 1
+  if [ "$wl_a" != "$wc_v" ]; then wl_err="contains a carriage return"; return 1; fi
+  wl_bom=$(printf '\357\273\277') || return 1
+  wl_rc=0; (LC_ALL=C; export LC_ALL; grep -qa "^$wl_bom" "$1") || wl_rc=$?
+  case $wl_rc in 0) wl_err="begins a line with a byte order mark"; return 1 ;; 1) ;; *) return 1 ;; esac
   # in C.UTF-8 a line that is not valid UTF-8 is not matched by '^.*$': with -v -a it is the one that is selected. A self-test
   # first, so that a system without that locale (where every byte is a character) does not pass everything.
   printf 'caf\351\n' > "$wl_t" || return 1

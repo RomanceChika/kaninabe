@@ -9,14 +9,15 @@
 set -eu
 . "$(dirname "$0")/scan-rules.sh"
 scan_name=scan-pr-text
-trap 'rc=$?; rm -f "$scan_err"; guard_exit "$rc"' EXIT
+pat=; scoped=
+trap 'rc=$?; scan_cleanup; guard_exit "$rc"' EXIT
 f=${1:?usage: scan-pr-text.sh <file>}
 [ -f "$f" ] && [ -r "$f" ] || { echo "scan-pr-text: cannot read the input"; exit 2; }
 fail=0
 if [ -n "${SCAN_WORDS_FILE:-}" ]; then
   # a list that is named must be readable and acceptable (word_list_read): exit 2 otherwise, never a scan without it
   [ -s "$SCAN_WORDS_FILE" ] || { echo "scan-pr-text: the word list is missing or empty"; echo "scan-pr-text: ERROR"; exit 2; }
-  pat=$(mktemp); scoped=$(mktemp); trap 'rc=$?; rm -f "$pat" "$pat".* "$scoped" "$scan_err"; guard_exit "$rc"' EXIT
+  pat=$(mktemp); scoped=$(mktemp)
   word_list_read "$SCAN_WORDS_FILE" "$pat" "$scoped" || { echo "scan-pr-text: the word list $wl_err"; echo "scan-pr-text: ERROR"; exit 2; }
   scan_check_patterns "$pat"
   if [ -s "$pat" ] && scan_grep -qiE -f "$pat" "$f"; then echo "word list: pull request title or body"; fail=1; fi

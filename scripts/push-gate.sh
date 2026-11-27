@@ -115,7 +115,7 @@ esac
 
 # The list is written to a file and the status checked: a failing rev-list is not an empty range.
 neutral_git rev-list $revs > "$tmp/commits" 2>/dev/null || die "could not list the commits"
-count=$(wc -l < "$tmp/commits" | tr -d ' ')
+wc_num -l "$tmp/commits" || die "could not count the commits"; count=$wc_v
 # The list that the range id was computed from (push-range.sh) is the list scanned here, or nothing is scanned.
 if [ -n "$want_list" ] && [ "$(range_list_id "$head_sha" "$tmp/commits")" != "$want_list" ]; then
   die "the commits to scan are not the list the range id was computed from"
@@ -178,7 +178,8 @@ if [ "$count" -gt 0 ]; then
   for c in $commit_ids; do
     neutral_commit_text "$c" "$tmp/text" || die "step gitleaks could not run (could not read the text of a commit)"
     # every text is followed by one separator line break, whatever the text ends with, and that byte counts toward the bound
-    text_bytes=$(( $(wc -c < "$tmp/text" | tr -d ' ') + 1 ))
+    wc_num -c "$tmp/text" || die "step gitleaks could not run (could not measure the text of a commit)"
+    text_bytes=$((wc_v + 1))
     [ "$text_bytes" -le 65536 ] || die "step gitleaks could not run (the text of a commit is over 64 KiB)"
     if [ $((batch_bytes + text_bytes)) -gt 65536 ]; then flush_batch; fi
     { cat "$tmp/text" && printf '\n'; } >> "$tmp/batch" || die "step gitleaks could not run (could not make a batch)"
@@ -234,8 +235,8 @@ files=$(cat "$tmp/lsfiles") || die "step workflows could not run (could not list
 if [ -z "$files" ]; then
   elapsed "$t_step"; echo "push-gate: step workflows: ok (no workflow files) in $el s"
 else
-  nfiles=$(printf '%s\n' "$files" | wc -l | tr -d ' ')
   printf '%s\n' "$files" > "$tmp/workflow.names" || die "step workflows could not run (could not write the list of files)"
+  wc_num -l "$tmp/workflow.names" || die "step workflows could not run (could not count the files)"; nfiles=$wc_v
   # (a file, not a pipe: a grep that fails inside a pipe would only end the pipe's subshell)
   if grep_q -qvE '^[A-Za-z0-9._/-]+$' "$tmp/workflow.names"; then
     die "step workflows could not run (a workflow file name has an unsupported character)"
@@ -253,7 +254,8 @@ else
     0) elapsed "$t_step"; echo "push-gate: step workflows: ok ($nfiles file(s)) in $el s" ;;
     1)
       [ -s "$tmp/actionlint.out" ] && ! grep -qvE '^.+:[0-9]+: \[.*\]$' "$tmp/actionlint.out" || die "step workflows could not read the result"
-      elapsed "$t_step"; echo "push-gate: step workflows: FAILED ($(wc -l < "$tmp/actionlint.out" | tr -d ' ') problem(s)) in $el s"
+      wc_num -l "$tmp/actionlint.out" || die "step workflows could not read the result"
+      elapsed "$t_step"; echo "push-gate: step workflows: FAILED ($wc_v problem(s)) in $el s"
       # In CI (a public log) the count only; anywhere else, the places.
       if [ -z "${CI:-}" ]; then sed 's/^/  at /' "$tmp/actionlint.out" | head -50; fi
       failed="${failed:+$failed, }workflows" ;;

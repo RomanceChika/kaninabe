@@ -20,6 +20,13 @@ scan_ident_ok='^(([0-9]+\+)?[A-Za-z0-9_-]+@users\.noreply\.github\.com|noreply@g
 # scan at scan_finish. A pipeline runs it in a subshell, where `exit` alone would only end that subshell.
 scan_err=$(mktemp)
 . "$(dirname "$0")/neutral-git.sh"
+# scan_cleanup: the cleanup of the ONE EXIT trap of a scan script, `trap 'rc=$?; scan_cleanup; guard_exit "$rc"' EXIT` (a second trap
+# on EXIT replaces the first, so it would drop guard_exit or part of the cleanup). Names a script has not set yet are empty.
+scan_cleanup() {
+  for sc_f in "${pat:-}" "${scoped:-}" "${commits:-}" "${gg_out:-}" "${ng_work:-}" "${scan_err:-}"; do
+    [ -z "$sc_f" ] || rm -rf "$sc_f" "$sc_f".*
+  done
+}
 grep_failed() { echo "scan: grep failed (exit $1): an invalid pattern or an unreadable input"; echo x >> "$scan_err"; echo "${scan_name:-scan}: ERROR"; exit 2; }
 scan_grep() { grep_q "$@"; }
 # scan_filter <in> <out> <grep arguments...>: the lines of <in> that grep selects, into <out>; "no line" (status 1) is a result, a failed

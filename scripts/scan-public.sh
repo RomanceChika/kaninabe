@@ -33,7 +33,9 @@ fi
 # resolved here, once, in the real repository with replace refs ignored; the history is then read from the neutral repository.
 if [ "${1:-}" = "--revs" ]; then shift; range="$*"; resolve_names=0; else base_name=${1:-}; resolve_names=1; fi
 scan_name=scan-public
-pat=$(mktemp); scoped=$(mktemp); trap 'rc=$?; rm -f "$pat" "$pat".* "$scoped" "$scan_err"; guard_exit "$rc"' EXIT
+pat=; scoped=; commits=; gg_out=; ng_work=
+trap 'rc=$?; scan_cleanup; guard_exit "$rc"' EXIT
+pat=$(mktemp); scoped=$(mktemp)
 # A list that is named (SCAN_WORDS_FILE set and not empty) must be a readable, non-empty file that word_list_read accepts: a list
 # that cannot be read is exit 2, never a scan without it. No name = a scan without a list (the generic checks only).
 if [ -n "${SCAN_WORDS_FILE:-}" ]; then
@@ -47,7 +49,6 @@ generic='/Users/[A-Za-z]|/home/[a-z]+/|C:\\Users|BEGIN [A-Z ]*PRIVATE KEY'
 email=$scan_email
 email_ok=$scan_email_ok
 commits=$(mktemp); gg_out=$(mktemp); ng_work=$(mktemp -d)
-trap 'rm -rf "$pat" "$scoped" "$commits" "$gg_out" "$ng_work" "$scan_err"' EXIT
 # git grep runs in a neutral repository (no attributes from the tree or the clone, no user config): see neutral-git.sh.
 neutral_git_setup "$ng_work" || { echo "scan: $ng_error"; echo "scan-public: ERROR"; exit 2; }
 # A rev-list that fails is not an empty range: it stops the scan (exit 2), it does not read as "clean".
@@ -66,7 +67,9 @@ gg() {
   rc=0; neutral_git grep "$@" > "$gg_out" 2>/dev/null || rc=$?
   if [ "$rc" -gt 1 ]; then echo "scan: git grep failed (exit $rc)"; echo "scan-public: ERROR"; exit 2; fi
 }
-lines() { wc -l < "$gg_out" | tr -d ' '; }
+scan_wc_failed() { echo "scan: could not count lines"; echo "scan-public: ERROR"; exit 2; }
+# lines: sets $n to the number of lines of the last gg
+lines() { wc_num -l "$gg_out" || scan_wc_failed; n=$wc_v; }
 # show_at: the places (path:line) of the last gg -n; not printed when SCAN_QUIET is set (a public log: counts only).
 show_at() { [ -n "${SCAN_QUIET:-}" ] || { cut -d: -f2,3 "$gg_out" | head -50 | sed "s|^|  at |"; }; }
 text=$ng_work/text; text_mail=$ng_work/text-mail
@@ -82,7 +85,7 @@ for c in $commit_ids; do
   LC_ALL=C awk 'function strip(l,  i, j) { i = index(l, "<"); if (!i) return l; j = index(substr(l, i + 1), ">"); if (!j) return l; return substr(l, 1, i - 1) substr(l, i + j + 1) }
     BEGIN { h = 1 } h && /^$/ { h = 0 } h && /^author / && !a { a = 1; print strip($0); next } h && /^committer / && !m { m = 1; print strip($0); next } { print }' "$text" > "$text_mail" || { echo "scan: could not read a commit"; echo "scan-public: ERROR"; exit 2; }
   if [ -s "$pat" ]; then
-    gg -IlE -f "$pat" "$c"; n=$(lines)
+    gg -IlE -f "$pat" "$c"; lines
     if [ "$n" != "0" ]; then echo "word list: $n file(s) in $short"; gg -InE -f "$pat" "$c"; show_at; fail=1; fi
     # the raw text of the commit (every header, the whole message): in the locale of the scan and byte for byte (a pattern's `.`
     # matches a byte that is not valid UTF-8 only in the second run). A word in an encoding that is not UTF-8 does not match.
@@ -90,7 +93,7 @@ for c in $commit_ids; do
   fi
   while IFS= read -r line; do
     prefix=${line%% *}; prefix=${prefix#@}; re=${line#* }
-    gg -IlE "$re" "$c" -- "$prefix"; n=$(lines)
+    gg -IlE "$re" "$c" -- "$prefix"; lines
     if [ "$n" != "0" ]; then if [ -n "${SCAN_QUIET:-}" ]; then echo "scoped word list: $n file(s) in $short"; else echo "scoped word list: $n file(s) under $prefix in $short"; fi; gg -InE "$re" "$c" -- "$prefix"; show_at; fail=1; fi
   done < "$scoped"
   if scan_attribution < "$text"; then echo "attribution line in $short"; fail=1; fi
@@ -99,23 +102,24 @@ for c in $commit_ids; do
   neutral_git log -1 --format='%an%n%cn' "$c" > "$ng_work/names" 2>/dev/null && neutral_git log -1 --format='%ae%n%ce' "$c" > "$ng_work/addrs" 2>/dev/null \
     || { echo "scan: could not read a commit"; echo "scan-public: ERROR"; exit 2; }
   # An address that is empty (no <...>, or one that is not closed) is not a noreply address: every line must match, so it is red.
+  wc_num -l "$ng_work/addrs" || scan_wc_failed; naddrs=$wc_v
   bad_addrs=$({ scan_grep -cvE "$scan_ident_ok" "$ng_work/addrs" || true; })
-  if scan_grep -qiE "$scan_ai" "$ng_work/names" || [ "${bad_addrs:-0}" != 0 ] || [ "$(wc -l < "$ng_work/addrs" | tr -d ' ')" != 2 ]; then
+  if scan_grep -qiE "$scan_ai" "$ng_work/names" || [ "${bad_addrs:-0}" != 0 ] || [ "$naddrs" != 2 ]; then
     echo "author or committer not allowed in $short"; fail=1
   fi
   if scan_bad_email < "$text_mail"; then echo "email-like string in the message of $short"; fail=1; fi
-  gg -IlE "$generic" "$c" -- . ':!package-lock.json' ':!**/package-lock.json'; n=$(lines)
+  gg -IlE "$generic" "$c" -- . ':!package-lock.json' ':!**/package-lock.json'; lines
   if [ "$n" != "0" ]; then
     gg -IhoE '/Users/[A-Za-z0-9_.-]+|/home/[a-z0-9_.-]+/|C:\\Users|BEGIN [A-Z ]*PRIVATE KEY' "$c" -- . ':!package-lock.json' ':!**/package-lock.json'
     sed 's/^[^:]*://' "$gg_out" > "$ng_work/hits" || { echo "scan: could not read the hits"; echo "scan-public: ERROR"; exit 2; }
     scan_filter "$ng_work/hits" "$ng_work/hits.f" -vE '^/home/(u|a|user|x|me|app|runner|node)/$'
-    m=$(wc -l < "$ng_work/hits.f" | tr -d ' ')
+    wc_num -l "$ng_work/hits.f" || scan_wc_failed; m=$wc_v
     if [ "$m" != "0" ]; then echo "local path or key shape: $m hit(s) in $short"; fail=1; fi
   fi
   gg -IhoE "$email" "$c" -- . ':!package-lock.json' ':!**/package-lock.json'
   sed 's/^[^:]*://' "$gg_out" > "$ng_work/hits" || { echo "scan: could not read the hits"; echo "scan-public: ERROR"; exit 2; }
   scan_filter "$ng_work/hits" "$ng_work/hits.f" -vE "$email_ok"
-  m=$(wc -l < "$ng_work/hits.f" | tr -d ' ')
+  wc_num -l "$ng_work/hits.f" || scan_wc_failed; m=$wc_v
   if [ "$m" != "0" ]; then echo "email-like string: $m hit(s) in $short"; fail=1; fi
 done
 scan_finish scan-public "$fail"

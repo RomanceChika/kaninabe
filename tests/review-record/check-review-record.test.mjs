@@ -295,9 +295,9 @@ describe('check-review-record.sh: a stage output that is cut short is exit 2, wh
     const real = tool === 'awk' ? which('awk') : which(tool);
     const cut = k === 'all' ? ': > "$U"' : `${which('head')} -n -${k} "$T" > "$U"`;
     // every command of the shim itself is checked: a failure of the test's own I/O is written to `.err` and fails the test, so that
-    // it is never counted as "the script noticed the cut"; cmp is read as 0 (same), 1 (changed) or anything else (could not compare)
+    // it is never counted as "the script noticed the cut" (the mark that the output changed is written last, after everything else succeeded); cmp is read as 0 (same), 1 (changed) or anything else (could not compare)
     const shim = `bad() { echo "$1" >> ${cnt}.err; exit 3; }\nc=0\nif [ -f ${cnt} ]; then read c < ${cnt} || bad count-read; fi\nc=$((c+1))\necho $c > ${cnt} || bad count-write\n`
-      + `if [ "$c" = ${n} ]; then\n  T=$(${which('mktemp')}) || bad mktemp\n  U=$(${which('mktemp')}) || bad mktemp\n  ${real} "$@" > "$T" || bad real-tool\n  ${cut} || bad cut\n  rc=0; ${which('cmp')} -s "$T" "$U" || rc=$?\n  case $rc in 0) ;; 1) echo changed > ${cnt}.chg || bad mark ;; *) bad cmp ;; esac\n  ${which('cat')} "$U" || bad hand-on\n  ${which('rm')} -f "$T" "$U" || bad rm\n  exit 0\nfi\nexec ${real} "$@"`;
+      + `if [ "$c" = ${n} ]; then\n  T=$(${which('mktemp')}) || bad mktemp\n  U=$(${which('mktemp')}) || bad mktemp\n  ${real} "$@" > "$T" || bad real-tool\n  ${cut} || bad cut\n  rc=0; ${which('cmp')} -s "$T" "$U" || rc=$?\n  case $rc in 0 | 1) ;; *) bad cmp ;; esac\n  ${which('cat')} "$U" || bad hand-on\n  ${which('rm')} -f "$T" "$U" || bad rm\n  if [ "$rc" = 1 ]; then echo changed > ${cnt}.chg || bad mark; fi\n  exit 0\nfi\nexec ${real} "$@"`;
     toolPath = makeBin(root, { shim: { [tool]: shim } });
     const r = check(body);
     let calls = 0;

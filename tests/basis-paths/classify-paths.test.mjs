@@ -1009,6 +1009,8 @@ describe('classify-paths.sh: this repository (7)', () => {
     assert.equal(cls('templates/workflows/pr-gate.product.yml'), 'implementation', 'a workflow that a product copies and runs');
     assert.equal(cls('templates/README.md'), 'basis', 'only the workflow templates are code');
     assert.equal(cls('templates/workflows/README.md'), 'basis', 'prose beside a workflow template');
+    assert.equal(cls('templates/workflows/sub/x.yml'), 'implementation', 'the * crosses /: a template in a directory below is code too');
+    assert.equal(cls('templates/workflows/x.yaml'), 'basis', 'templates are written as .yml only: no line matches .yaml, and the unmatched test above turns red on such a file');
     assert.equal(cls('supabase/migrations/20260912120201_ddl_items.sql'), 'basis', 'migrations are basis until CI proves them fresh');
     assert.equal(cls('.github/pull_request_template.md'), 'basis', 'prose, not code');
     assert.equal(cls('framework/runtime/scripts/check-node.mjs'), 'implementation');

@@ -990,7 +990,7 @@ describe('classify-paths.sh: this repository (7)', () => {
     const staleDirs = UNMATCHED_DIRS.filter((d) => !unmatched.some((p) => p.startsWith(d)));
     assert.deepEqual([...staleFiles, ...staleDirs], [], 'a group that holds no unmatched path any more');
     // source never falls through silently: nothing unmatched sits in a source directory or is a script that runs
-    const sourceLike = unmatched.filter((p) => /(^|\/)src\//.test(p) || /^legacy\/spec-tools\/(lib|cli)\//.test(p) || /^(bin|scripts)\/.*\.(sh|mjs)$/.test(p) || /^\.github\/workflows\//.test(p));
+    const sourceLike = unmatched.filter((p) => /(^|\/)src\//.test(p) || /^legacy\/spec-tools\/(lib|cli)\//.test(p) || /^(bin|scripts)\/.*\.(sh|mjs)$/.test(p) || /^\.github\/workflows\//.test(p) || /^templates\/workflows\/.*\.ya?ml$/.test(p));
     assert.deepEqual(sourceLike, []);
   });
   it('the lines that carry the design: tests inside an implementation tree stay basis, and the list, docs and configs are basis', () => {
@@ -1006,6 +1006,9 @@ describe('classify-paths.sh: this repository (7)', () => {
     assert.equal(cls('scripts/scan-exclusions.tsv'), 'basis');
     assert.equal(cls('bin/kaninabe.mjs'), 'implementation');
     assert.equal(cls('.github/workflows/pr-gate.yml'), 'implementation');
+    assert.equal(cls('templates/workflows/pr-gate.product.yml'), 'implementation', 'a workflow that a product copies and runs');
+    assert.equal(cls('templates/README.md'), 'basis', 'only the workflow templates are code');
+    assert.equal(cls('templates/workflows/README.md'), 'basis', 'prose beside a workflow template');
     assert.equal(cls('supabase/migrations/20260912120201_ddl_items.sql'), 'basis', 'migrations are basis until CI proves them fresh');
     assert.equal(cls('.github/pull_request_template.md'), 'basis', 'prose, not code');
     assert.equal(cls('framework/runtime/scripts/check-node.mjs'), 'implementation');

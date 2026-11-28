@@ -11,8 +11,9 @@ name: pr-gate
 #     pins. The list of basis paths is the product's own `basis-paths.tsv` at the base. Nothing of the head is checked out or run;
 #   - there is no word list: the title and body are scanned by the general rules only;
 #   - the head commit is not fetched. The checkout has the whole history of every branch of the repository (fetch depth zero), and a
-#     pull request from a fork is red, so the head commit of a same-repository pull request is already in the object store. One
-#     `git cat-file -e` line proves it; a commit that is not there is "could not run" (exit 2), never a pass;
+#     pull request from a fork is red, so the head commit of a same-repository pull request is normally already in the object
+#     store (not when its branch was rewritten or deleted after the event). One `git cat-file -e` line decides; a commit that is
+#     not there is "could not run" (exit 2), never a pass;
 #   - this file names no token and no secret: `permissions` is `contents: read` and nothing more. The checkout action uses the job's
 #     token to fetch and does not keep it (`persist-credentials: false`);
 #   - the framework must be in the checkout: the first step that needs it stops with `pr-gate: could not run (the framework is not in

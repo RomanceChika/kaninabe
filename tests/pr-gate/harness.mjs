@@ -155,6 +155,22 @@ export function logicalLines(run) {
   return out;
 }
 
+/**
+ * The files through which a step can change what the NEXT steps run or read (the environment, the path, the outputs, the state, and
+ * BASH_ENV, which makes every later bash start by running a file). No run block of a gate may name them: a write of the pull request's
+ * text there would make a later step run it as shell. Quotes and backslashes are taken out before the match, so that `GITHUB_E""NV`
+ * is seen; the form `"${GITHUB_ENV:-/dev/null}"` is seen by the word boundary.
+ */
+export const RUNNER_FILE_WORDS = /\b(GITHUB_ENV|GITHUB_PATH|GITHUB_OUTPUT|GITHUB_STATE|BASH_ENV)\b/;
+/** The problems of one run block: the lines that name one of those words (raw or with quotes and backslashes removed). */
+export function runnerFileProblems(run) {
+  const out = [];
+  logicalLines(run).forEach((line, k) => {
+    if (RUNNER_FILE_WORDS.test(line) || RUNNER_FILE_WORDS.test(line.replace(/["'\\]/g, ''))) out.push(`line ${k + 1} names a file that changes what later steps run: ${line.trim()}`);
+  });
+  return out;
+}
+
 export const codeLines = (run) => logicalLines(run).map((l) => l.trim()).filter((l) => l !== '' && !l.startsWith('#'));
 
 export const hexOf = (text) => createHash('sha256').update(text).digest('hex');
@@ -189,9 +205,10 @@ export const COULD_NOT = /^pr-gate: could not run \(.+\)$/m;
  *   shims       name -> sh body, placed first on the PATH
  *   only        a predicate on a step: steps that do not pass are not run
  *   pre         called with the dirs (`work` among them) before the steps run
+ *   env         more environment for every step (for example GITHUB_ACTIONS and CI, which a runner sets)
  * Returns the results of the steps run, their output, the last status, and the contents of the files left in RUNNER_TEMP.
  */
-export function runJob({ steps, makeWork, ctx, ev, base, repo, shims = {}, only = () => true, pre = () => {}, rawEvent, runnerName = 'runner-temp' }) {
+export function runJob({ steps, makeWork, ctx, ev, base, repo, shims = {}, only = () => true, pre = () => {}, rawEvent, runnerName = 'runner-temp', env: extraEnv = {} }) {
   const dir = mkdtempSync(path.join(tmpdir(), 'pr-gate-'));
   try {
     const bin = path.join(dir, 'bin');
@@ -210,7 +227,7 @@ export function runJob({ steps, makeWork, ctx, ev, base, repo, shims = {}, only 
       writeFileSync(file, s.run);
       const env = {
         PATH: `${bin}:/usr/bin:/bin`, HOME: dir, TMPDIR: tmp, RUNNER_TEMP: runnerTemp, GITHUB_EVENT_PATH: eventPath,
-        GITHUB_SHA: base, GITHUB_REPOSITORY: repo, GITHUB_WORKSPACE: work, ...(s.env ? Object.fromEntries(Object.entries(s.env).map(([k, v]) => [k, expand(v, ctx)])) : {}),
+        GITHUB_SHA: base, GITHUB_REPOSITORY: repo, GITHUB_WORKSPACE: work, ...extraEnv, ...(s.env ? Object.fromEntries(Object.entries(s.env).map(([k, v]) => [k, expand(v, ctx)])) : {}),
       };
       const r = spawnSync('bash', ['-e', file], { cwd: work, env, encoding: 'utf8' });
       results.push({ name: s.name ?? '(unnamed)', status: r.status, out: r.stdout + r.stderr, step: s });

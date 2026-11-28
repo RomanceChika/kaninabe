@@ -25,7 +25,7 @@ import { describe, it } from 'node:test';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { COULD_NOT, PASSED, REAL, codeLines, gitIn, hexOf, inspect, logicalLines, parseYaml, repoRoot, runJob as runJobWith } from './harness.mjs';
+import { COULD_NOT, PASSED, REAL, codeLines, gitIn, hexOf, inspect, logicalLines, parseYaml, repoRoot, runJob as runJobWith, runnerFileProblems } from './harness.mjs';
 
 // The detector, the YAML reader, the executor of run blocks and the git helpers are shared with the test of the product template: ./harness.mjs.
 const workflowText = readFileSync(path.join(repoRoot, '.github/workflows/pr-gate.yml'), 'utf8');
@@ -412,6 +412,21 @@ describe('pr-gate.yml: the class rule on every run block', () => {
       }
     }));
     assert.deepEqual(offences, []);
+  });
+
+  it('names none of GITHUB_ENV, GITHUB_PATH, GITHUB_OUTPUT, GITHUB_STATE, BASH_ENV in any run block (a write there changes what a later step runs)', () => {
+    assert.deepEqual(runs.flatMap((s, n) => runnerFileProblems(s.run).map((p) => `run ${n + 1}: ${p}`)), []);
+  });
+
+  it('sees each of those words in each run block, in the forms that hid them (a default, a quote split, a plain redirect)', () => {
+    const forms = [
+      'printf \'BASH_ENV=%s\\n\' "$text" >> "${GITHUB_ENV:-/dev/null}" || stop "x"', 'echo x >> "$GITHUB_PATH"', 'echo x >> $GITHUB_OUTPUT', 'echo x >> "${GITHUB_STATE}"',
+      'BASH_ENV=/x', 'echo x >> "$GITHUB_E""NV"', "echo x >> \"$GITHUB_'P'ATH\"", 'echo x >> $GITHUB_\\ENV',
+    ];
+    for (const [n, s] of runs.entries()) {
+      for (const form of forms) assert.ok(runnerFileProblems(`${form}\n${s.run}`).length > 0, `not seen in run ${n + 1}: ${form}`);
+    }
+    for (const ok of ['echo "$GITHUB_SHA"', 'echo "$GITHUB_EVENT_PATH"', 'x="$GITHUB_REPOSITORY"', 'echo MY_GITHUB_ENVIRON']) assert.deepEqual(runnerFileProblems(ok), [], ok);
   });
 
   it('the extra rule finds what it must', () => {

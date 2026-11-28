@@ -5,7 +5,8 @@
  * gate (tests/pr-gate/wiring.test.mjs, whose reader, detector and executor this file shares through ./harness.mjs). The template is
  * product-neutral: it names no product; its only fixed names are `kaninabe/` (the mount) and `basis-paths.tsv` (the product's list).
  *   1. wiring: triggers and the job condition, permissions, no secret and no token, the checkout, the order of the steps, how the
- *      scripts are called, and the drift guard against the framework's gate;
+ *      scripts are called, and the drift guard against the framework's gate; and EVERY step pinned as exact lines (the file is copied
+ *      byte for byte, so a change to it changes this test first), with no run block naming a file that changes what later steps run;
  *   2. the class rule applied mechanically to every `run:` block, and the one git line pinned;
  *   3. behaviour: the run blocks are executed the way Actions runs them (`bash -e`) in a fixture PRODUCT repository (a gitlink
  *      `kaninabe`, a working-tree copy of this repository's real scripts under `kaninabe/scripts`, the product's own
@@ -21,7 +22,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { COULD_NOT, PASSED, REAL, codeLines, gitIn, hexOf, inspect, logicalLines, parseYaml, repoRoot, runJob as runJobWith } from './harness.mjs';
+import { COULD_NOT, PASSED, REAL, codeLines, gitIn, hexOf, inspect, logicalLines, parseYaml, repoRoot, runJob as runJobWith, runnerFileProblems } from './harness.mjs';
 
 const TEMPLATE_PATH = 'templates/workflows/pr-gate.product.yml';
 const FRAMEWORK_GATE_PATH = '.github/workflows/pr-gate.yml';
@@ -153,7 +154,7 @@ describe('the product template: the shape is closed (only allowed keys), the wir
     ['recursive submodules', '          submodules: true\n', '          submodules: recursive\n'],
     ['fetch-depth 1', 'fetch-depth: 0', 'fetch-depth: 1'],
     ['the fetch depth removed', '          fetch-depth: 0\n', ''],
-    ['persist-credentials true', 'persist-credentials: false', 'persist-credentials: true'],
+    ['persist-credentials true', '          persist-credentials: false\n', '          persist-credentials: true\n'],
     ['the head of the pull request checked out', 'ref: ${{ github.sha }}', 'ref: ${{ github.event.pull_request.head.sha }}'],
     ['another version of the checkout action', 'uses: actions/checkout@v4', 'uses: actions/checkout@v3'],
     ['another action', 'uses: actions/checkout@v4', 'uses: actions/cache@v4'],
@@ -298,10 +299,16 @@ describe('the product template: wiring', () => {
     assert.match(fork[0].run, /GITHUB_REPOSITORY/);
   });
 
-  it('states why a fork is red in a product, in a comment: the job\'s token and the base\'s code (not a word list)', () => {
-    const comments = need().text.split('\n').filter((l) => l.trim().startsWith('#')).join('\n');
-    assert.match(comments, /fork/);
-    assert.match(comments, /token/);
+  it('states why a fork is red in a product, in a comment: the run works with the base\'s rights and the gate needs a head commit that is in the repository (it does not say that a fork receives the token)', () => {
+    const comments = need().text.split('\n').filter((l) => l.trim().startsWith('#')).join('\n').replace(/\n#\s*/g, ' ');
+    assert.match(comments, /pull request from a fork is red first, with a clear message/);
+    assert.match(comments, /works with the base's rights/);
+    assert.match(comments, /head commit that is in the repository itself/);
+    assert.match(comments, /not in the checkout/);
+    assert.ok(!/(gives|hands|passes|receives)[^.]*token[^.]*fork|fork[^.]*(gets|receives)[^.]*token/i.test(comments), 'a claim that a fork gets the token');
+    assert.match(comments, /names no token and no secret/);
+    assert.match(comments, /Where the product has no ruleset/);
+    assert.match(comments, /cmp/);
   });
 });
 
@@ -342,9 +349,9 @@ describe('the product template: the steps it shares with the framework gate do n
     edit('the fork step: the message', (c) => { const s = find(c, /head\.repo/); s.run = s.run.replace('is not gated here', 'is gated here'); });
     edit('the fork step: the exit', (c) => { const s = find(c, /head\.repo/); s.run = s.run.replace('exit 1; }', 'exit 0; }'); });
     edit('the name step: the first line', (c) => { const s = find(c, /pr-gate: pr /); s.run = s.run.replace('echo "pr-gate: pr $n"', 'echo "pr $n"'); });
-    edit('the review step: the call', (c) => { const s = find(c, /check-review-record/); s.run = s.run.replace('"$body" "$HEAD_SHA"', '"$body"'); });
-    edit('the review step: its name', (c) => { find(c, /check-review-record/).name = 'Review'; });
-    edit('the review step: an env added', (c) => { find(c, /check-review-record/).env.X = 'y'; });
+    edit('the review step: the call', (c) => { const s = find(c, /check-review-record\.sh/); s.run = s.run.replace('"$body" "$HEAD_SHA"', '"$body"'); });
+    edit('the review step: its name', (c) => { find(c, /check-review-record\.sh/).name = 'Review'; });
+    edit('the review step: an env added', (c) => { find(c, /check-review-record\.sh/).env.X = 'y'; });
     edit('the tie step: an env added', (c) => { find(c, /pr-gate: passed/).env = { HEAD_SHA: 'x' }; });
     // a framework gate that changes its own tie step is seen as well (the template must then be updated with it)
     const fw = JSON.parse(JSON.stringify(FW_STEPS));
@@ -432,7 +439,7 @@ const BASIS_STEP = { name: 'The basis record matches the commits of the pull req
 function runClosureProblems(list) {
   const out = [];
   const rs = list.filter((s) => s.run !== undefined);
-  const basis = rs.filter((s) => s.run.includes('check-basis-record'));
+  const basis = rs.filter((s) => s.run.includes('check-basis-record.sh'));
   if (basis.length !== 1) out.push(`${basis.length} steps run the basis check`);
   else if (JSON.stringify(codeLines(basis[0].run)) !== JSON.stringify(BASIS_STEP_LINES)) out.push('the basis step is not exactly the pinned lines');
   const gitLines = rs.flatMap((s) => codeLines(s.run)).filter((l) => /\bgit\b/.test(l));
@@ -451,12 +458,12 @@ function runClosureProblems(list) {
 }
 /** The steps of the real template with the specified basis step in place of the basis step (or put before the last step), then `mutate(copy)`. */
 const withReference = (steps, mutate = () => {}) => {
-  const copy = JSON.parse(JSON.stringify(steps)).filter((s) => !(s.run ?? '').includes('check-basis-record'));
+  const copy = JSON.parse(JSON.stringify(steps)).filter((s) => !(s.run ?? '').includes('check-basis-record.sh'));
   copy.splice(copy.length - 1, 0, JSON.parse(JSON.stringify(BASIS_STEP)));
   mutate(copy);
   return copy;
 };
-const basisOf = (list) => list.find((s) => (s.run ?? '').includes('check-basis-record'));
+const basisOf = (list) => list.find((s) => (s.run ?? '').includes('check-basis-record.sh'));
 
 describe('the product template: the run blocks are of the closed shape', () => {
   it('has a basis step that is exactly the pinned lines (and its name and env), one git line that is the pinned cat-file line, and nothing that unpacks or runs other code', () => {
@@ -521,7 +528,7 @@ describe('the product template: the run blocks are of the closed shape', () => {
       }
     });
     it('the same lines in any other step are seen as well: a second git, a fetch, tar, bash, a dot command, source, another sh', () => {
-      const review = (list) => list.find((s) => (s.run ?? '').includes('check-review-record'));
+      const review = (list) => list.find((s) => (s.run ?? '').includes('check-review-record.sh'));
       const seenIn = [
         ['a second line with git', '/usr/bin/git archive -o "$h.tar" "$HEAD_SHA"', /word git is on 2 lines/],
         ['a fetch', 'git fetch origin "$HEAD_SHA"', /word git is on 2 lines/],
@@ -545,6 +552,144 @@ describe('the product template: the run blocks are of the closed shape', () => {
         assert.ok(problems.some((p) => re.test(p)), `${what}: ${problems.join(' // ')}`);
       }
     });
+  });
+});
+
+/**
+ * EVERY step of the template as exact lines, and the workflow's name, runner and timeout. The template is copied byte for byte by a
+ * product, so a change to it must change this test first; a closed list of words that must not appear cannot name every way to
+ * make a step run something else (a write to the file named by GITHUB_ENV that a later step reads, for one), so the lines are the
+ * specification. Comments are not code and are not pinned. The name, fork, review and tie steps are also held equal to the framework
+ * gate's (the drift guard above).
+ */
+const HEAD_ENV = { HEAD_SHA: '${{ github.event.pull_request.head.sha }}' };
+const STOP = 'stop() { echo "pr-gate: could not run ($1)"; exit 2; }';
+const NUMBER_CHECK = 'case $n in \'\'|*[!0-9]*) stop "the pull request number is not a number" ;; esac';
+const SPEC_STEPS = [
+  { name: 'Name the pull request (first, so that a run that fails later can still be told apart)', lines: [
+    STOP,
+    'n=$(jq -r \'.pull_request.number\' "$GITHUB_EVENT_PATH") || stop "cannot read the pull request number"',
+    NUMBER_CHECK,
+    'echo "pr-gate: pr $n"',
+  ] },
+  { uses: 'actions/checkout@v4', with: { ref: '${{ github.sha }}', 'persist-credentials': 'false', 'fetch-depth': '0', submodules: 'true' } },
+  { name: 'Only pull requests from this repository', lines: [
+    STOP,
+    'from=$(jq -r \'.pull_request.head.repo.full_name // ""\' "$GITHUB_EVENT_PATH") || stop "cannot read the head repository"',
+    '[ "$from" = "$GITHUB_REPOSITORY" ] || { echo "pr-gate: a pull request from a fork is not gated here (push the branch to this repository)"; exit 1; }',
+  ] },
+  { name: 'Scan the title and body (the squash commit message)', lines: [
+    STOP,
+    'for f in scan-pr-text check-review-record check-basis-record; do',
+    '[ -f "kaninabe/scripts/$f.sh" ] || stop "the framework is not in the checkout"',
+    'done',
+    'text="$RUNNER_TEMP/pr-text"; umask 077',
+    'jq -r \'.pull_request.title, "", (.pull_request.body // "")\' "$GITHUB_EVENT_PATH" > "$text" || stop "cannot read the title and body"',
+    'rc=0',
+    'sh kaninabe/scripts/scan-pr-text.sh "$text" || rc=$?',
+    'case $rc in',
+    '0|1|2) exit "$rc" ;;',
+    '*) stop "the scan ended with status $rc" ;;',
+    'esac',
+  ] },
+  { name: 'The review record names the head commit', env: HEAD_ENV, lines: [
+    STOP,
+    'body="$RUNNER_TEMP/pr-body"',
+    'jq -r \'.pull_request.body // ""\' "$GITHUB_EVENT_PATH" > "$body" || stop "cannot read the body"',
+    'sh kaninabe/scripts/check-review-record.sh "$body" "$HEAD_SHA"',
+  ] },
+  { name: BASIS_STEP.name, env: BASIS_STEP.env, lines: BASIS_STEP_LINES },
+  { name: 'Tie the result to what was checked', lines: [
+    STOP,
+    'is_hex() { case $1 in \'\'|*[!0-9a-f]*) return 1 ;; esac; [ "${#1}" = "$2" ]; }',
+    'text="$RUNNER_TEMP/pr-text"',
+    'n=$(jq -r \'.pull_request.number\' "$GITHUB_EVENT_PATH") || stop "cannot read the pull request number"',
+    'head=$(jq -r \'.pull_request.head.sha\' "$GITHUB_EVENT_PATH") || stop "cannot read the head sha"',
+    'sha256sum < "$text" > "$text.sum" || stop "cannot hash the title and body"',
+    'IFS= read -r line < "$text.sum" || stop "cannot read the hash record"',
+    'hash=${line%  -}',
+    '[ "$hash" != "$line" ] || stop "the hash record does not end in two blanks and a dash"',
+    'printf \'%s  -\\n\' "$hash" > "$text.want" || stop "cannot write the expected hash record"',
+    'cmp -s "$text.want" "$text.sum" || stop "the hash record is not exactly one line"',
+    NUMBER_CHECK,
+    'is_hex "$head" 40 || stop "the head sha is not 40 hex characters"',
+    'is_hex "$GITHUB_SHA" 40 || stop "the base sha is not 40 hex characters"',
+    'is_hex "$hash" 64 || stop "the hash is not 64 hex characters"',
+    'printf \'pr-gate: passed pr %s head %s base %s text sha256 %s\\n\' "$n" "$head" "$GITHUB_SHA" "$hash"',
+  ] },
+];
+
+/** What differs from the pinned template: the workflow name, the runner and timeout, and every step (name, env, with, code lines). */
+function pinProblems(doc) {
+  const out = [];
+  if (doc.name !== 'pr-gate') out.push('the workflow name is not pr-gate');
+  const j = doc.jobs?.gate ?? {};
+  if (j['runs-on'] !== 'ubuntu-latest') out.push('runs-on is not ubuntu-latest');
+  if (j['timeout-minutes'] !== '5') out.push('timeout-minutes is not 5');
+  const actual = (j.steps ?? []).map((s) => (s.uses !== undefined ? { uses: s.uses, with: s.with } : { name: s.name, ...(s.env ? { env: s.env } : {}), lines: codeLines(s.run ?? '') }));
+  if (actual.length !== SPEC_STEPS.length) out.push(`${actual.length} steps, not ${SPEC_STEPS.length}`);
+  SPEC_STEPS.forEach((want, k) => {
+    if (JSON.stringify(actual[k]) !== JSON.stringify(want)) out.push(`step ${k + 1} is not the pinned step`);
+  });
+  return out;
+}
+/** A mutated template text, seen by the pin, by the words that change what later steps run, or by the reader (empty = not seen). */
+function pinSeen(text) {
+  try {
+    const doc = parse(text);
+    return [...pinProblems(doc), ...(doc.jobs?.gate?.steps ?? []).filter((s) => s.run).flatMap((s) => runnerFileProblems(s.run))];
+  } catch (e) { return [`the reader refuses it: ${e.message}`]; }
+}
+
+describe('the product template: every step is pinned as exact lines', () => {
+  it('is exactly the pinned template: name, runner, timeout, and the name, env, keys and code lines of every step', () => {
+    assert.deepEqual(pinProblems(need().doc), []);
+  });
+
+  it('names none of GITHUB_ENV, GITHUB_PATH, GITHUB_OUTPUT, GITHUB_STATE, BASH_ENV in any run block', () => {
+    assert.deepEqual(need().runs.flatMap((s, n) => runnerFileProblems(s.run).map((p) => `run ${n + 1}: ${p}`)), []);
+  });
+
+  /** Each mutation edits the template text in the test (never the file) and must be seen. */
+  const SCAN_CALL = '          rc=0\n          sh kaninabe/scripts/scan-pr-text.sh "$text" || rc=$?\n';
+  const injected = (line) => [SCAN_CALL, `          ${line}\n${SCAN_CALL}`];
+  const pinMutations = [
+    ['a write to the file of GITHUB_ENV with a default, in the scan step (the form that passed the class rule)', ...injected('printf \'BASH_ENV=%s\\n\' "$text" >> "${GITHUB_ENV:-/dev/null}" || stop "x"')],
+    ['a write to GITHUB_PATH', ...injected('echo x >> "$GITHUB_PATH" || stop "x"')],
+    ['a write to GITHUB_OUTPUT', ...injected('echo x >> "$GITHUB_OUTPUT" || stop "x"')],
+    ['a write to GITHUB_STATE', ...injected('echo x >> "$GITHUB_STATE" || stop "x"')],
+    ['BASH_ENV set', ...injected('BASH_ENV=/x')],
+    ['an harmless extra line', ...injected('true')],
+    ['the scan call with another argument', 'sh kaninabe/scripts/scan-pr-text.sh "$text" || rc=$?', 'sh kaninabe/scripts/scan-pr-text.sh "$text" x || rc=$?'],
+    ['the scan exit mapping widened', 'case $rc in\n            0|1|2) exit "$rc" ;;\n            *) stop "the scan ended', 'case $rc in\n            0|1|2|3) exit "$rc" ;;\n            *) stop "the scan ended'],
+    ['the framework check removed', '          for f in scan-pr-text check-review-record check-basis-record; do\n            [ -f "kaninabe/scripts/$f.sh" ] || stop "the framework is not in the checkout"\n          done\n', ''],
+    ['the framework check with another message', 'stop "the framework is not in the checkout"', 'stop "no framework"'],
+    ['the framework check without a script', 'for f in scan-pr-text check-review-record check-basis-record; do', 'for f in scan-pr-text check-basis-record; do'],
+    ['the runner changed', 'runs-on: ubuntu-latest', 'runs-on: ubuntu-22.04'],
+    ['the timeout changed', 'timeout-minutes: 5', 'timeout-minutes: 6'],
+    ['the workflow renamed', 'name: pr-gate\n\n#', 'name: gate\n\n#'],
+    ['a step renamed', '      - name: Only pull requests from this repository', '      - name: Only pull requests from here'],
+    ['the fork exit changed', 'exit 1; }', 'exit 0; }'],
+    ['a line of the tie step', 'is_hex "$hash" 64 || stop "the hash is not 64 hex characters"', 'is_hex "$hash" 63 || stop "the hash is not 64 hex characters"'],
+    ['a line of the review step', 'jq -r \'.pull_request.body // ""\' "$GITHUB_EVENT_PATH" > "$body" || stop "cannot read the body"\n          sh kaninabe/scripts/check-review-record.sh', 'jq -r \'.pull_request.body // ""\' "$GITHUB_EVENT_PATH" > "$body" || stop "cannot read the body"\n          true\n          sh kaninabe/scripts/check-review-record.sh'],
+    ['a line of the name step', 'echo "pr-gate: pr $n"', 'echo "pr-gate: pr $n"; true'],
+    ['a line of the basis step', 'case $rc in\n            0|1|2) exit "$rc" ;;\n            *) stop "the basis check', 'case $rc in\n            0|1|2|3) exit "$rc" ;;\n            *) stop "the basis check'],
+    ['the umask line', 'text="$RUNNER_TEMP/pr-text"; umask 077', 'text="$RUNNER_TEMP/pr-text"; umask 022'],
+  ];
+  for (const [what, from, to] of pinMutations) {
+    it(`fires on: ${what}`, () => {
+      const { text } = need();
+      assert.ok(text.includes(from), `the anchor for "${what}" is not in the template`);
+      assert.equal(text.split(from).length - 1, 1, `the anchor for "${what}" is not unique`);
+      assert.ok(pinSeen(text.replace(from, to)).length > 0, `not seen: ${what}`);
+    });
+  }
+  it('the words that change what later steps run are seen by the shared check alone as well, in every run block of the template', () => {
+    for (const [n, s] of need().runs.entries()) {
+      for (const form of ['printf \'BASH_ENV=%s\\n\' "$text" >> "${GITHUB_ENV:-/dev/null}" || stop "x"', 'echo x >> "$GITHUB_PATH"', 'echo x >> $GITHUB_OUTPUT', 'echo x >> "${GITHUB_STATE}"', 'BASH_ENV=/x', 'echo x >> "$GITHUB_E""NV"']) {
+        assert.ok(runnerFileProblems(`${form}\n${s.run}`).length > 0, `not seen in run ${n + 1}: ${form}`);
+      }
+    }
   });
 });
 
@@ -625,9 +770,9 @@ function event({ title = TITLE, body = BODY, number = 42, head = HEAD, repo = RE
  * Runs the run blocks of the template with the shared executor. Options: ev, base (GITHUB_SHA), shims, only, pre, rawEvent,
  * runnerName as there; `main` runs in the workspace that has the base's branch only (the head commits are not in its object store).
  */
-function runJob({ ev = event(), base = BASE, shims = {}, only = () => true, pre = () => {}, rawEvent, runnerName = 'runner-temp', main = false } = {}) {
+function runJob({ ev = event(), base = BASE, shims = {}, only = () => true, pre = () => {}, rawEvent, runnerName = 'runner-temp', main = false, env } = {}) {
   return runJobWith({
-    steps: need().steps, ev, base, repo: REPO, shims, only, pre, rawEvent, runnerName,
+    steps: need().steps, ev, base, repo: REPO, shims, only, pre, rawEvent, runnerName, env,
     ctx: { 'github.event.pull_request.head.sha': ev.pull_request?.head?.sha ?? '', 'github.sha': base },
     makeWork: (dir) => { const work = path.join(dir, 'work'); cpSync(main ? FIX.workMain : FIX.workAll, work, { recursive: true }); return work; },
   });
@@ -719,6 +864,27 @@ describe('the product template: the run blocks, executed', () => {
     assert.ok(!r.out.includes('someone'), 'the matched text is not printed');
   });
 
+  it('a finding in the BODY only (the title is clean) is red (exit 1) with no passed line, and the matched text is not printed', () => {
+    const localPath = ['', 'Users', 'someone', 'x'].join('/'); // built at run time: this file is scanned too
+    const r = runJob({ ev: event({ title: 'A clean title', body: `see ${localPath}\n\n## Review\n- opus: ${HEAD}\n- codex: ${HEAD}\n` }), only: (s) => !isReview(s) && !isBasis(s) });
+    assert.equal(r.status, 1, r.out);
+    assert.ok(!PASSED.test(r.out), r.out);
+    assert.ok(!r.out.includes('someone'), 'the matched text is not printed');
+    lastIs(r, isScan);
+  });
+
+  it('gives the same results with GITHUB_ACTIONS=true and CI=true in the environment as without (a good run, a mixed change without a record, a finding in the text, a fork)', () => {
+    const localPath = ['', 'Users', 'someone', 'x'].join('/');
+    const cases = [['good', {}], ['mixed', { ev: pr(FIX.heads.mixed) }], ['finding', { ev: event({ title: `see ${localPath}` }), only: (s) => !isReview(s) && !isBasis(s) }], ['fork', { ev: event({ repo: 'someone/fork' }) }]];
+    for (const [what, opts] of cases) {
+      const plain = runJob(opts);
+      const ci = runJob({ ...opts, env: { GITHUB_ACTIONS: 'true', CI: 'true' } });
+      assert.equal(ci.status, plain.status, `${what}: ${ci.out}`);
+      assert.equal(ci.out, plain.out, what);
+    }
+    assert.equal(runJob({ env: { GITHUB_ACTIONS: 'true', CI: 'true' } }).status, 0);
+  });
+
   describe('the basis step (the head commit is proved present, never fetched; the base\'s scripts and list decide)', () => {
     it('a mixed change (basis and implementation) without a record is red (exit 1) with the finding and no passed line', () => {
       const r = runJob({ ev: pr(FIX.heads.mixed) });
@@ -799,7 +965,7 @@ describe('the product template: the run blocks, executed', () => {
           lastIs(r, isBasis);
         });
       }
-      for (const [what, body, status, fixed] of [['exits 3', 'exit 3', 2, true], ['exits 127', 'exit 127', 2, true], ['is killed (a signal)', 'kill -KILL $$', 2, true], ['exits 1 (found something)', 'exit 1', 1, false], ['exits 2', 'exit 2', 2, false]]) {
+      for (const [what, body, status, fixed] of [['exits 3', 'exit 3', 2, true], ['exits 4', 'exit 4', 2, true], ['exits 127', 'exit 127', 2, true], ['exits 143', 'exit 143', 2, true], ['is killed (a signal)', 'kill -KILL $$', 2, true], ['exits 1 (found something)', 'exit 1', 1, false], ['exits 2', 'exit 2', 2, false]]) {
         it(`the scan script ${what}: exit ${status}, no passed line`, () => {
           const r = runJob(stub(body, 'scan-pr-text.sh'));
           assert.equal(r.status, status, r.out);
@@ -812,11 +978,46 @@ describe('the product template: the run blocks, executed', () => {
         assert.equal(runJob(stub('exit 0')).status, 0);
       });
 
-      it('basis-paths.tsv is not there at the base: exit 2, no passed line (a base without a list is not "everything is basis")', () => {
+      it('basis-paths.tsv is MISSING at the base (no file): exit 2, no passed line (a base without a list file is not "everything is basis")', () => {
         const r = runJob({ pre: ({ work }) => rmSync(path.join(work, 'basis-paths.tsv')) });
         stopsAs2(r, 'no list');
         lastIs(r, isBasis);
       });
+
+      it('an EMPTY basis-paths.tsv is a valid list in which every path is basis: a mixed change needs no record and passes (deliberate; written in development-flow.md; a change to the list is reviewed as its own pull request)', () => {
+        const r = runJob({ ev: pr(FIX.heads.mixed), pre: ({ work }) => writeFileSync(path.join(work, 'basis-paths.tsv'), '') });
+        assert.equal(r.status, 0, r.out);
+        assert.ok(r.out.includes('basis record: not needed (one kind of path)'), r.out);
+        assert.ok(PASSED.test(r.out), r.out);
+      });
+
+      it('a list that holds only a comment line is not a list: exit 2, no passed line', () => {
+        const r = runJob({ ev: pr(FIX.heads.mixed), pre: ({ work }) => writeFileSync(path.join(work, 'basis-paths.tsv'), '# no lines here\n') });
+        stopsAs2(r, 'comment-only list');
+        lastIs(r, isBasis);
+      });
+
+      it('a list with CRLF line ends is refused: exit 2, no passed line', () => {
+        const r = runJob({ ev: pr(FIX.heads.mixed), pre: ({ work }) => writeFileSync(path.join(work, 'basis-paths.tsv'), PRODUCT_LIST.split('\n').join('\r\n')) });
+        stopsAs2(r, 'CRLF list');
+        lastIs(r, isBasis);
+      });
+
+      it('the framework is not in the checkout (the submodule was not taken: kaninabe/ is an empty directory): exit 2 with the exact message, from the first step that needs it, and no passed line', () => {
+        const r = runJob({ pre: ({ work }) => { rmSync(path.join(work, 'kaninabe'), { recursive: true }); mkdirSync(path.join(work, 'kaninabe')); } });
+        assert.equal(r.status, 2, r.out);
+        assert.equal(r.out, 'pr-gate: pr 42\npr-gate: could not run (the framework is not in the checkout)\n');
+        lastIs(r, isScan);
+      });
+
+      for (const script of ['scan-pr-text.sh', 'check-review-record.sh', 'check-basis-record.sh']) {
+        it(`the framework is there but ${script} is missing: exit 2 with the exact message before any script runs, and no passed line`, () => {
+          const r = runJob({ pre: ({ work }) => rmSync(path.join(work, 'kaninabe/scripts', script)) });
+          assert.equal(r.status, 2, r.out);
+          assert.equal(r.out, 'pr-gate: pr 42\npr-gate: could not run (the framework is not in the checkout)\n');
+          lastIs(r, isScan);
+        });
+      }
 
       it('kaninabe/scripts is not there (the submodule was not checked out): the full job ends in exit 2, never a pass and never 127', () => {
         const r = runJob({ pre: ({ work }) => rmSync(path.join(work, 'kaninabe/scripts'), { recursive: true }) });

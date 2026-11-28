@@ -28,7 +28,7 @@ scope: common
 
 この流れの検査が相手にしているのは 2 つである: **書き込める側の間違い**(古い review のまま merge する、検査を回し忘れる、secret を書いてしまう)と、**書き込めない外の人**(fork からの PR)。書き込める側が workflow の定義をわざと書き換えることは、機械では守れない。PR の CI は PR 自身の定義で動き、定義は自分に書き込みの権限を与えられるので、`dev` への push も tag の作成も、検査の定義そのものの書き換えもできる。これは 1 つの種類として、次の 4 つで扱う(検査を 1 つずつ足して追いかけない)。
 
-- `.github/**` を変える PR は、**どちらのリポジトリでも、ほかの変更と混ぜず、2 人の reviewer に「必要な検査が飛ばされる経路」と「権限(`permissions` と、書き込みをする step)」を必ず見てもらう**。merge したら、何を変えたかを持ち主に知らせる(承認を待つ種類ではない)。
+- `.github/**` を変える PR は、**どちらのリポジトリでも、ほかの変更と混ぜず、2 人の reviewer に「必要な検査が飛ばされる経路」と「権限(`permissions` と、書き込みをする step)」を必ず見てもらう**。その workflow を検査する test と、その workflow を説明する文書の行は、同じ変更として数える(別の目的の変更は混ぜない)。merge したら、何を変えたかを持ち主に知らせる(承認を待つ種類ではない)。
 - **書き込み・secret・production に届く job は、review を受けた定義からしか動かさない。** review を受けた定義とは、base 側の定義で動くもの(pr-gate、`dev` への push の CI、`dev` の定義で起動する tag と release の workflow)である。PR や branch への push で動く workflow(review の前の定義で動く)は、読み取りの権限だけにし、secret を参照しない。語の一覧による走査は pr-gate と `dev` への push の CI に置き、pr-gate は PR の commit を fetch して data として読んで走査する(実行しない。PR の code を base の checkout に混ぜない)。PR を開く前の branch への push には、CI の側の語の一覧の走査が入らない。そこを見るのは push の前の手元の走査だけである(known gaps に書く)。この形を守らせるために、pr-gate が PR の workflow の file を data として読み、起動の種類ごとに次を確かめて、破れていれば赤にする。同じ検査を push の前に手元でも回す(決まり)。
   - `pull_request` と、`dev` 以外への `push` で動く workflow: 書き込みの権限も secret も求めない。
   - `workflow_dispatch` で動く workflow(起動する ref を選べ、その ref の定義で動く): 書き込みの権限か secret を求めるなら、それを使うどの job も、最初の step で `github.ref` が `dev` でなければ失敗して終わる。**これは、正しい定義を間違った ref で起動する操作の誤りを止めるだけである。** 書き換えられた ref の定義は、この step ごと消せる。権限を渡す側の制約は別に置く: secret は、使える plan では、`dev` と `main` からの起動だけに渡す設定(environment の branch の制限)に入れる。書き込みの先(`dev`、`main`、tag)は、使える plan では ruleset で守る。どちらも使えないリポジトリでは、渡す側の制約は無く、守るのは pr-gate の静的な検査と「`dev` のほかの ref から起動しない」という決まりだけである(known gaps に書く)。
@@ -142,7 +142,7 @@ PR をどう切るか、どの順に書くか、review で何を読むかを決�
   - **最初の記録から `basis` までの途中も、全部見る。** そのあいだの commit のうち、基準の file に触れるものは、基準と生成物だけに触れている。基準に触れる commit の最後が `basis` である。つまり、途中の改訂のどれにも実装が混ざらず、最新の記録より前の改訂も検査から外れない。
   - 2 人の答えは起点から `basis` までの基準の差分の全部に対するものなので、途中の改訂は、最新の答えが覆う。
 - **test が先に書かれたことは、事実で残す。** 基準の commit の時点で、足した test が**期待した理由で**赤であることを確かめ、どの test がどの理由で落ちたかを PR に書く。書き方の誤りや環境の error で落ちたものは、数えない(それは「まだ実装が無いので落ちる」の証拠ではない)。いまのふるまいに test を足すだけのときは、最初から緑が正しいので、そう書く。これは evidence であり、決まりである。
-- **照合が入るまで。** pr-gate の照合は、基準の path の一覧と、それを読む script が入ってから必須にする(「導入の順序」)。それまでは、同じ順番を手順として守り、review が見る。この 2 つ(機械が見ている / 手順だけ)を、PR の本文で区別して書く。 一覧と、分類する script と、記録を照合する script(`scripts/check-basis-record.sh`)は入っているが、pr-gate がまだ呼ばない(呼ぶ変更は、`.github/**` の変更として別の PR で出す)。pr-gate が呼ぶまで、この順番は手順のままで、script は手元で回して確かめるだけで必須の検査ではない。
+- **pr-gate は照合を呼ぶ(予防)。** pr-gate は、基準の path の一覧(`basis-paths.tsv`)と、分類する script(`scripts/classify-paths.sh`)と、記録を照合する script(`scripts/check-basis-record.sh`)を、checkout した base の working tree から呼ぶ(head の side の script や一覧は使わない。同じ PR で書き換えて、自分を軽くできないようにする)。照合に要る commit は、**data として取る**: checkout は `fetch-depth: 0` で base の履歴の全部を持ち、head の commit は `git fetch --no-tags --no-recurse-submodules origin <head の sha>` で 1 回だけ取る(git の出力は file に書き、出さない)。head の commit を checkout も merge も実行もしない。script が読むのは、commit の object と、path の名前と、記録の行だけである。fetch ができない・head の sha が 40 桁の小文字の 16 進でない・script が 0 と 1 以外で終わる、のどれも「動かせなかった」(exit 2)で、passed の行は出ない。**効くのは、この呼び出しを入れた PR が merge されたあとの最初の PR から**である(`pull_request_target` は base 側の workflow を読むので、呼び出しを入れる PR 自身は、まだ呼ばない定義で検査される。その PR は、同じ順番を手順として守り、review が見る)。呼ぶ前に開いた PR は、base が進んだあとに pr-gate が回ると、そこから照合を受ける。**行き詰まったときの出口(未対応の事態への手当て)。** merge のあとで、この step が GitHub 上で動かせないと、直す PR も base 側の定義で検査されるので、直す PR を含むすべての PR が赤になる。そのときは、持ち主が ruleset の bypass で直す PR を merge する。bypass の使い道はこれだけである。そのあとの最初の run は、path・event・head の sha で確かめる。**test が行の一致で固定しているのは、この step だけである。** ほかの step のうち、行として固定しているのは、review の記録を照合する呼び出しの行と、passed の行だけである。ほかの step は全部、step の順番・決まった key だけを持つ形・どの行にも当てる class rule の検査・git は 1 行だけという検査・禁じた語(ほかの code を取り出したり走らせたりする語)・step を実際に走らせる test で見ていて、1 行ずつは固定していない。ほかの step の変更は、引き続き review が見る(`.github/**` の変更の観点)。照合の中身は、known gaps の 20 と 27 に残りがある。
 
 #### product: 仕様の PR と、test と実装の PR
 
@@ -389,9 +389,9 @@ merge-check は merge する側が回すので、回さずに merge すること
 | merge の前に merge-check を回す | **決まり**。回さなかった merge は branch-guard が後から赤にする | 決まり + 検出 |
 | review を受けずに記録を書かない | **決まり**。検査が防げるのは「古い・無い」まで | 決まり |
 | `.github/**` の変更が検査を空にせず、権限を広げない | pr-gate が、PR や branch への push で動く workflow の権限と secret の参照を確かめる(最初の実行の後の検出)。ほかは **決まり**(混ぜない、review の観点の固定、merge 後に持ち主へ知らせる)。毎晩の定期の task が、固定の script で検出をやり直す | 決まり + 検出 |
-| 基準の commit の記録のあとで、仕様と test と test が読むものが変わらない。基準の段階に実装が混ざらない | 「基準」の path の一覧(base 側)と、pr-gate の照合(一覧と、分類する script と、照合する script は入っている。照合を pr-gate が呼ぶまでは手順と review) | 予防 |
+| 基準の commit の記録のあとで、仕様と test と test が読むものが変わらない。基準の段階に実装が混ざらない | 「基準」の path の一覧(base 側)と、pr-gate の照合(pr-gate が、一覧と、分類する script と、照合する script を、base 側の working tree から呼ぶ。効くのは、呼ぶ変更が merge されたあとの最初の PR から) | 予防 |
 | 基準を動かしたら、2 人の答えの記録が新しい基準を指すまで merge できない | pr-gate が、`basis` と 2 人の行の sha の一致と、答えの comment(その PR の comment であること、起点、`basis`)を照合する。2 行が同じ comment なら赤。照合できなければ未確認として赤。merge-check が、merge の直前に comment の id と本文の hash を照合し直す(照合する script は、記録の形と sha の一致と URL の同一性までを見る。comment の中身の照合と、id と本文の hash の出力は、まだ入っていない。known gaps) | 予防(sha と comment の照合まで。本人が読んだことは決まり) |
-| 基準の改訂のどれにも、実装が混ざらない | pr-gate が、最初の記録から `basis` までの commit を全部見る。履歴に merge commit があれば赤(衝突のときは積み直して記録を取り直す)(照合する script は入っている。pr-gate が呼ぶまでは手順と review) | 予防 |
+| 基準の改訂のどれにも、実装が混ざらない | pr-gate が、最初の記録から `basis` までの commit を全部見る。履歴に merge commit があれば赤(衝突のときは積み直して記録を取り直す)(pr-gate が照合する script を呼ぶ。効くのは、呼ぶ変更が merge されたあとの最初の PR から) | 予防 |
 | 記録を動かすとき、実装に合わせて基準を動かしていない | **決まり**と review の観点(本文に理由を書く) | 決まり |
 | test が実装より先に書かれた | 基準の commit で赤だったことを確かめて PR に書く(evidence) | 決まり |
 | 実装の範囲の中では、仕様が名指しする test が全部あり、全部通る。宣言した id が仕様に実在する | verify(framework に足す機能)。範囲の外は毎回出る(手元では名前と件数、公開される場所では種類と件数)。id の実在と重複は P0 / P13 | 予防 |

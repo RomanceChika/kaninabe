@@ -3,9 +3,17 @@ name: pr-gate
 # What a merge writes, checked before the merge, by code the pull request cannot change:
 #   - the title and body, which become the squash commit message (scan-pr-text.sh)
 #   - the review record: Opus and Codex both said nothing more needs fixing at the current head
+#   - the basis record (scripts/check-basis-record.sh): the order basis commits first, then implementation, over the commits of the pull request
 # `pull_request_target` runs this workflow and its scripts from the base branch, so a pull request cannot switch the
 # gate off by editing it. The pull request's code is never checked out or run here: only the event's title, body and
 # head sha are read, as data. A change to this file or to the scripts takes effect once it is on the base branch.
+# The basis step needs the head's commits, as data and nothing else: the checkout has the whole history of the base (its
+# fetch depth is zero, meaning all), and the step fetches the head commit by its sha with one `git fetch` whose output goes
+# to a file that is never printed. Nothing of the head is checked out, merged, applied or run. The scripts and the list of
+# basis paths (basis-paths.tsv) are the base's own files in the workspace, so a pull request cannot loosen the check by
+# editing them. A failed fetch, a head or base sha that is not 40 hex characters, or a script that ends with a status other
+# than 0, 1 or 2 is "could not run" (exit 2): the passed line is not printed. The step takes effect from the first pull
+# request after the one that adds it (this workflow is read from the base branch).
 # A run is found as AGENTS.md says: event `pull_request_target`, workflow path `.github/workflows/pr-gate.yml`, and `head_sha`
 # equal to the pull request's head sha (inside the run, only GITHUB_SHA is the base branch's). What the run checked is
 # tied to it by its log: the first step prints the pull request number, and the last step, reached only when everything
@@ -49,6 +57,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+          fetch-depth: 0
       - name: Only pull requests from this repository
         run: |
           stop() { echo "pr-gate: could not run ($1)"; exit 2; }
@@ -87,6 +96,26 @@ jobs:
           body="$RUNNER_TEMP/pr-body"
           jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > "$body" || stop "cannot read the body"
           sh scripts/check-review-record.sh "$body" "$HEAD_SHA"
+      - name: The basis record matches the commits of the pull request
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          stop() { echo "pr-gate: could not run ($1)"; exit 2; }
+          is_hex() { case $1 in ''|*[!0-9a-f]*) return 1 ;; esac; [ "${#1}" = "$2" ]; }
+          is_hex "$HEAD_SHA" 40 || stop "the head sha is not 40 hex characters"
+          is_hex "$GITHUB_SHA" 40 || stop "the base sha is not 40 hex characters"
+          body="$RUNNER_TEMP/pr-body"
+          jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > "$body" || stop "cannot read the body"
+          n=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH") || stop "cannot read the pull request number"
+          case $n in ''|*[!0-9]*) stop "the pull request number is not a number" ;; esac
+          fetchlog="$RUNNER_TEMP/fetch-log"
+          git fetch --no-tags --no-recurse-submodules origin "$HEAD_SHA" > "$fetchlog" 2>&1 || stop "cannot fetch the head commit"
+          rc=0
+          sh scripts/check-basis-record.sh --body "$body" --head "$HEAD_SHA" --base "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY" --pr "$n" --list basis-paths.tsv || rc=$?
+          case $rc in
+            0|1|2) exit "$rc" ;;
+            *) stop "the basis check ended with status $rc" ;;
+          esac
       - name: Tie the result to what was checked
         run: |
           stop() { echo "pr-gate: could not run ($1)"; exit 2; }

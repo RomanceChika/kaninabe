@@ -11,4 +11,5 @@ implementation	scripts/*.sh	shell scripts of the gates and helpers
 implementation	scripts/*.mjs	node scripts of the gates and helpers
 implementation	bin/*	command line entry point
 implementation	.githooks/*	git hooks, code that runs on a developer's machine
-implementation	.github/workflows/*	workflows are code that a test-first change edits after its tests (the templates beside them are prose and stay basis)
+implementation	.github/workflows/*	workflows are code that a test-first change edits after its tests (the pull request template beside them is prose and stays basis)
+implementation	templates/workflows/*.yml	workflow templates that a product copies byte for byte: code, edited after the tests that pin them

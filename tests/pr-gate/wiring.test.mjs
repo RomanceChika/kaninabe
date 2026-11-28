@@ -398,6 +398,101 @@ describe('pr-gate.yml: wiring', () => {
     assert.ok(steps.at(-1).run.includes('printf \'pr-gate: passed pr %s head %s base %s text sha256 %s\\n\' "$n" "$head" "$GITHUB_SHA" "$hash"'));
   });
 
+  // The specification of the basis step: its non-comment lines, exactly (the workflow is written to be this, line for line). The
+  // shape is closed on purpose: a step that fetches the head commit can be made to run head code with a few more lines (an archive,
+  // an extract, a call), and a list of the words that must not appear cannot name every way.
+  const BASIS_STEP_LINES = [
+    'stop() { echo "pr-gate: could not run ($1)"; exit 2; }',
+    'is_hex() { case $1 in \'\'|*[!0-9a-f]*) return 1 ;; esac; [ "${#1}" = "$2" ]; }',
+    'is_hex "$HEAD_SHA" 40 || stop "the head sha is not 40 hex characters"',
+    'is_hex "$GITHUB_SHA" 40 || stop "the base sha is not 40 hex characters"',
+    'body="$RUNNER_TEMP/pr-body"',
+    'jq -r \'.pull_request.body // ""\' "$GITHUB_EVENT_PATH" > "$body" || stop "cannot read the body"',
+    'n=$(jq -r \'.pull_request.number\' "$GITHUB_EVENT_PATH") || stop "cannot read the pull request number"',
+    'case $n in \'\'|*[!0-9]*) stop "the pull request number is not a number" ;; esac',
+    'fetchlog="$RUNNER_TEMP/fetch-log"',
+    'git fetch --no-tags --no-recurse-submodules origin "$HEAD_SHA" > "$fetchlog" 2>&1 || stop "cannot fetch the head commit"',
+    'rc=0',
+    'sh scripts/check-basis-record.sh --body "$body" --head "$HEAD_SHA" --base "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY" --pr "$n" --list basis-paths.tsv || rc=$?',
+    'case $rc in',
+    '0|1|2) exit "$rc" ;;',
+    '*) stop "the basis check ended with status $rc" ;;',
+    'esac',
+  ];
+  const BASIS_STEP = { name: 'The basis record matches the commits of the pull request', env: { HEAD_SHA: '${{ github.event.pull_request.head.sha }}' }, run: `${BASIS_STEP_LINES.join('\n')}\n` };
+  const codeLines = (run) => logicalLines(run).map((l) => l.trim()).filter((l) => l !== '' && !l.startsWith('#'));
+  /** What is wrong with the run blocks of a list of steps (empty when the shape is the closed one). */
+  function runClosureProblems(list) {
+    const out = [];
+    const rs = list.filter((s) => s.run !== undefined);
+    const basis = rs.filter((s) => s.run.includes('check-basis-record'));
+    if (basis.length !== 1) out.push(`${basis.length} steps run the basis check`);
+    else if (JSON.stringify(codeLines(basis[0].run)) !== JSON.stringify(BASIS_STEP_LINES)) out.push('the basis step is not exactly the pinned lines');
+    const gitLines = rs.flatMap((s) => codeLines(s.run)).filter((l) => /\bgit\b/.test(l));
+    if (gitLines.length !== 1) out.push(`the word git is on ${gitLines.length} lines`);
+    for (const s of rs) {
+      for (const l of codeLines(s.run)) {
+        if (/\b(tar|unzip|bash|source|eval|exec|curl|wget|gh|node|python3?|perl|ruby|xargs|nohup)\b|\/(sh|dash|zsh|ksh|busybox)(?![\w.-])/.test(l)) out.push(`a command that must not be here: ${l}`);
+        if (/(^|[;&({]\s*|\bthen\s+|\bdo\s+)\.\s/.test(l)) out.push(`a dot command: ${l}`);
+        for (const m of l.matchAll(/(?<![\w./$-])sh(?![\w.-])/g)) {
+          if (!/^ scripts\/[a-z][a-z0-9-]*\.sh(?: |$)/.test(l.slice(m.index + 2))) out.push(`a sh that is not "sh scripts/NAME.sh": ${l}`);
+        }
+      }
+    }
+    return out;
+  }
+  /** The steps of the real workflow with the specified basis step in place of the basis step (or put before the last step), then `mutate(copy)`. */
+  const withReference = (mutate = () => {}) => {
+    const copy = JSON.parse(JSON.stringify(steps)).filter((s) => !(s.run ?? '').includes('check-basis-record'));
+    copy.splice(copy.length - 1, 0, JSON.parse(JSON.stringify(BASIS_STEP)));
+    mutate(copy);
+    return copy;
+  };
+  const basisOf = (list) => list.find((s) => (s.run ?? '').includes('check-basis-record'));
+
+  it('has run blocks of the closed shape: the basis step is exactly the pinned lines, git is on one line, and nothing unpacks or runs other code', () => {
+    assert.deepEqual(runClosureProblems(steps), []);
+  });
+
+  it('the pinned lines themselves are inside that shape (so the checks below find a mutation, not the reference)', () => {
+    assert.deepEqual(runClosureProblems(withReference()), []);
+  });
+
+  describe('the closed shape sees a basis step that runs code of the head', () => {
+    const four = (git) => `h=$(mktemp -d) || stop "x"\n${git} archive -o "$h.tar" "$HEAD_SHA" 2> "$h.err" || stop "x"\ntar -x -f "$h.tar" -C "$h" || stop "x"\nif [ -f "$h/run-me.sh" ]; then bash "$h/run-me.sh" > "$h.out" 2>&1 || stop "x"; fi\n`;
+    const inFront = (extra) => (list) => { const b = basisOf(list); b.run = b.run.replace('rc=0\n', `${extra}rc=0\n`); };
+    for (const git of ['git', '"git"', '$(command -v git)', '/usr/bin/git']) {
+      it(`archive, extract and run before the pinned call, git written as ${git}`, () => {
+        const problems = runClosureProblems(withReference(inFront(four(git))));
+        assert.ok(problems.includes('the basis step is not exactly the pinned lines'), problems.join(' // '));
+      });
+    }
+    it('a changed message, an added line, a removed line and a reordered pair in the basis step', () => {
+      const edits = [(r) => r.replace('cannot read the body', 'cannot read it'), (r) => `${r}true\n`, (r) => r.replace('rc=0\n', ''), (r) => r.replace('body="$RUNNER_TEMP/pr-body"\n', '').replace('rc=0\n', 'rc=0\nbody="$RUNNER_TEMP/pr-body"\n')];
+      for (const edit of edits) assert.ok(runClosureProblems(withReference((l) => { const b = basisOf(l); b.run = edit(b.run); })).length > 0);
+    });
+    it('the same lines in any other step are seen as well: a second git, tar, bash, a dot command, source, another sh', () => {
+      const review = (list) => list.find((s) => (s.run ?? '').includes('check-review-record'));
+      const seen = [
+        ['a second line with git', '/usr/bin/git archive -o "$h.tar" "$HEAD_SHA"', /word git is on 2 lines/],
+        ['git inside a quote', 'x="git" y', /word git is on 2 lines/],
+        ['tar', 'tar -x -f "$h.tar" -C "$h"', /must not be here/],
+        ['bash', 'bash "$h/run-me.sh"', /must not be here/],
+        ['source', 'source "$h/run-me.sh"', /must not be here/],
+        ['a dot command', '. "$h/run-me.sh"', /a dot command/],
+        ['a dot command after a semicolon', 'true; . "$h/run-me.sh"', /a dot command/],
+        ['an sh with a path of the head', 'sh "$h/run-me.sh"', /a sh that is not/],
+        ['an sh with another script directory', 'sh tmp/run-me.sh', /a sh that is not/],
+        ['an sh by an absolute path', '/bin/sh "$h/run-me.sh"', /must not be here/],
+        ['unzip', 'unzip x', /must not be here/],
+      ];
+      for (const [what, line, re] of seen) {
+        const problems = runClosureProblems(withReference((list) => { const r = review(list); r.run = `${line}\n${r.run}`; }));
+        assert.ok(problems.some((p) => re.test(p)), `${what}: ${problems.join(' // ')}`);
+      }
+    });
+  });
+
   it('has a fork step that turns a pull request from another repository red', () => {
     const fork = runs.filter((s) => s.run.includes('head.repo.full_name'));
     assert.equal(fork.length, 1);
@@ -505,7 +600,9 @@ const FIX = (() => {
   g(origin, 'config', 'uploadpack.allowAnySHA1InWant', 'true');
   // the workspace has the base's history only (as the checkout with fetch-depth 0 of the base branch has), not the pull request's commits
   g(root, 'clone', '-q', '--single-branch', '--branch', 'main', `file://${origin}`, 'work');
-  return { work: path.join(root, 'work'), base, heads: { ok: ok[0], mixed: mixed[1], record: record[1], evil: evil[0] }, recordBasis: record[0] };
+  // a plain clone: every branch is already there before the fetch (the other shape a checkout can have)
+  g(root, 'clone', '-q', `file://${origin}`, 'work-all');
+  return { work: path.join(root, 'work'), workAll: path.join(root, 'work-all'), base, heads: { ok: ok[0], mixed: mixed[1], record: record[1], evil: evil[0] }, recordBasis: record[0] };
 })();
 
 const HEAD = FIX.heads.ok;
@@ -538,9 +635,9 @@ function expand(value, ctx) {
  * Runs the run blocks of the job in order with `bash -e` (what Actions does by default on Linux), stopping at the first that fails.
  * Options: ev (the event), words (SCAN_WORDS), base (GITHUB_SHA), shims (name -> sh body, placed first on the PATH), only (a predicate
  * on a step: steps that do not pass are not run), pre (called with the dirs, `work` among them, before the steps run).
- * The steps run in `work`, a copy of the fixture base checkout (GITHUB_WORKSPACE).
+ * The steps run in `work`, a copy of the fixture base checkout (GITHUB_WORKSPACE); with `all`, a copy of a plain clone that has every branch.
  */
-function runJob({ ev = event(), words = LIST, base = BASE, shims = {}, only = () => true, pre = () => {}, rawEvent, runnerName = 'runner-temp' } = {}) {
+function runJob({ ev = event(), words = LIST, base = BASE, shims = {}, only = () => true, pre = () => {}, rawEvent, runnerName = 'runner-temp', all = false } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'pr-gate-'));
   try {
     const bin = path.join(dir, 'bin');
@@ -548,7 +645,7 @@ function runJob({ ev = event(), words = LIST, base = BASE, shims = {}, only = ()
     const tmp = path.join(dir, 'tmp');
     for (const d of [bin, runnerTemp, tmp]) mkdirSync(d);
     const work = path.join(dir, 'work');
-    cpSync(FIX.work, work, { recursive: true });
+    cpSync(all ? FIX.workAll : FIX.work, work, { recursive: true });
     for (const [name, body] of Object.entries(shims)) { writeFileSync(path.join(bin, name), `#!/bin/sh\n${body}\n`); chmodSync(path.join(bin, name), 0o755); }
     const eventPath = path.join(dir, 'event.json');
     writeFileSync(eventPath, rawEvent ?? JSON.stringify(ev));
@@ -716,6 +813,16 @@ describe('pr-gate.yml: the run blocks, executed', () => {
         const r = runJob(stub('exit 0'));
         assert.equal(r.status, 0, r.out);
       });
+    });
+
+    it('a workspace that already holds every branch (a plain clone: the head and the evil branch are there before the fetch) gives the same verdicts, with one fetch of the same form', () => {
+      const cases = [['one kind of path', pr(HEAD), 0], ['a mixed change without a record', pr(FIX.heads.mixed), 1], ['a mixed change with a record', pr(FIX.heads.record, FIX.recordBasis), 0], ['the head that rewrites the check and the list', pr(FIX.heads.evil), 1]];
+      for (const [what, ev, status] of cases) {
+        const r = runJob({ ev, all: true, shims: { git: recordingGit } });
+        assert.equal(r.status, status, `${what}: ${r.out}`);
+        assert.equal(PASSED.test(r.out), status === 0, `${what}: ${r.out}`);
+        assert.deepEqual(calls(r), [`fetch --no-tags --no-recurse-submodules origin ${ev.pull_request.head.sha}`], what);
+      }
     });
 
     it('a head or a base that is not 40 lowercase hex characters never reaches git', () => {

@@ -398,6 +398,9 @@ describe('pr-gate.yml: wiring', () => {
     assert.ok(steps.at(-1).run.includes('printf \'pr-gate: passed pr %s head %s base %s text sha256 %s\\n\' "$n" "$head" "$GITHUB_SHA" "$hash"'));
   });
 
+  // Only the basis step is pinned line for line. Of the other steps, the review call and the passed line are pinned as lines;
+  // all of them are held by the step order, the closed key shape, the class-rule check, the one git line, the refused words and
+  // the behaviour tests that run them, not line by line: a change to them stays a matter for review.
   // The specification of the basis step: its non-comment lines, exactly (the workflow is written to be this, line for line). The
   // shape is closed on purpose: a step that fetches the head commit can be made to run head code with a few more lines (an archive,
   // an extract, a call), and a list of the words that must not appear cannot name every way.

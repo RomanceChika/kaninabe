@@ -1030,6 +1030,7 @@ describe('classify-paths.sh: nothing that looks like a test or data drifts into 
   const LOOKS_LIKE = /(\.test\.|\.spec\.|\/fixtures\/|\/__tests__\/|\.json$|\.md$|\.tsv$|\.ya?ml$|\.toml$|\.txt$|\.sql$|\.snap$|\.csv$|\.html$)/;
   const EXCEPTIONS = [
     [/^\.github\/workflows\/[^/]+\.ya?ml$/, 'a workflow is code: it runs, and a test-first change edits it after its tests'],
+    [/^templates\/workflows\/[^/]+\.yml$/, 'a workflow template that a product copies byte for byte is code: it runs there, and a test-first change edits it after the tests that pin it'],
   ];
   it('every implementation and generated path at HEAD is code, or an excepted workflow', () => {
     const r = spawnSync('git', ['ls-tree', '-r', '-z', '--name-only', 'HEAD'], { cwd: repoRoot, env: cleanEnv, encoding: 'utf8', maxBuffer: 1 << 28 });

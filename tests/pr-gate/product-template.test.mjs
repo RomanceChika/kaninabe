@@ -646,6 +646,11 @@ describe('the product template: every step is pinned as exact lines', () => {
     assert.deepEqual(pinProblems(need().doc), []);
   });
 
+  it('is written in printable ASCII with line feeds only (a space that is not ASCII would slip past a pin that trims its lines)', () => {
+    const bad = need().text.split('\n').flatMap((l, n) => (/^[\x20-\x7e]*$/.test(l) ? [] : [`line ${n + 1}`]));
+    assert.deepEqual(bad, []);
+  });
+
   it('names none of GITHUB_ENV, GITHUB_PATH, GITHUB_OUTPUT, GITHUB_STATE, BASH_ENV in any run block', () => {
     assert.deepEqual(need().runs.flatMap((s, n) => runnerFileProblems(s.run).map((p) => `run ${n + 1}: ${p}`)), []);
   });

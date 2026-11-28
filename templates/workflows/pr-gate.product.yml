@@ -1,0 +1,127 @@
+name: pr-gate
+
+# The pr-gate of a product that mounts the framework as the git submodule `kaninabe/`. The product copies this file byte for
+# byte to `.github/workflows/pr-gate.yml`, and its CI compares the copy with the pinned one (`cmp`). Nothing here names a product.
+# It is the framework's own gate (the framework's .github/workflows/pr-gate.yml) with these differences, written in
+# docs/rules/process/common/development-flow.md:
+#   - it starts on `opened`, `edited`, `reopened` and `ready_for_review`, and only for a pull request that is not a draft (a skipped
+#     job costs nothing). There is no `synchronize`: a push to a ready pull request leaves the last passed line naming the old head,
+#     and the merge rule compares the head with it;
+#   - the checkout takes the submodule, and every script is called as `sh kaninabe/scripts/NAME`: the framework commit that the BASE
+#     pins. The list of basis paths is the product's own `basis-paths.tsv` at the base. Nothing of the head is checked out or run;
+#   - there is no word list: the title and body are scanned by the general rules only;
+#   - the head commit is not fetched. The checkout has the whole history of every branch of the repository (fetch depth zero), and a
+#     pull request from a fork is red, so the head commit of a same-repository pull request is normally already in the object
+#     store (not when its branch was rewritten or deleted after the event). One `git cat-file -e` line decides; a commit that is
+#     not there is "could not run" (exit 2), never a pass;
+#   - this file names no token and no secret: `permissions` is `contents: read` and nothing more. The checkout action uses the job's
+#     token to fetch and does not keep it (`persist-credentials: false`);
+#   - the framework must be in the checkout: the first step that needs it stops with `pr-gate: could not run (the framework is not in
+#     the checkout)` (exit 2) when a script it will call is missing (the submodule was not taken).
+# A pull request from a fork is red first, with a clear message: a `pull_request_target` run works with the base's rights, and this
+# gate is written for a head commit that is in the repository itself. The head commit of a fork is not in the checkout.
+# A run is found, and what it checked is tied to the pull request, as in the framework's gate: event `pull_request_target`, workflow
+# path `.github/workflows/pr-gate.yml`, `head_sha` equal to the pull request's head sha; the first step prints the number and
+# the last step, reached only when everything passed, prints
+# `pr-gate: passed pr <n> head <sha> base <sha> text sha256 <hash>`. Merge only when the newest run that names the pull request
+# concluded success and its passed line names the head and the base you merge on, and the hash of the title and body you merge with.
+# The shell is under the same class rule as the scripts it calls (tests/pr-gate/product-template.test.mjs runs it): no pipeline, no
+# `|| true`, every status checked, `pr-gate: could not run (...)` and exit 2 for what cannot be done, the passed line only last.
+# Where the product has no ruleset, this check is not a required check: it detects, and the merge rule is what stops. The `cmp` of the
+# product's copy against the pinned copy is a step of the product's own CI: this repository cannot hold it.
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Name the pull request (first, so that a run that fails later can still be told apart)
+        run: |
+          stop() { echo "pr-gate: could not run ($1)"; exit 2; }
+          n=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH") || stop "cannot read the pull request number"
+          case $n in ''|*[!0-9]*) stop "the pull request number is not a number" ;; esac
+          echo "pr-gate: pr $n"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+          submodules: true
+      - name: Only pull requests from this repository
+        run: |
+          stop() { echo "pr-gate: could not run ($1)"; exit 2; }
+          from=$(jq -r '.pull_request.head.repo.full_name // ""' "$GITHUB_EVENT_PATH") || stop "cannot read the head repository"
+          [ "$from" = "$GITHUB_REPOSITORY" ] || { echo "pr-gate: a pull request from a fork is not gated here (push the branch to this repository)"; exit 1; }
+      # Read from the event file, never from env (the log prints a step's env). The script prints counts only.
+      - name: Scan the title and body (the squash commit message)
+        run: |
+          stop() { echo "pr-gate: could not run ($1)"; exit 2; }
+          for f in scan-pr-text check-review-record check-basis-record; do
+            [ -f "kaninabe/scripts/$f.sh" ] || stop "the framework is not in the checkout"
+          done
+          text="$RUNNER_TEMP/pr-text"; umask 077
+          jq -r '.pull_request.title, "", (.pull_request.body // "")' "$GITHUB_EVENT_PATH" > "$text" || stop "cannot read the title and body"
+          rc=0
+          sh kaninabe/scripts/scan-pr-text.sh "$text" || rc=$?
+          case $rc in
+            0|1|2) exit "$rc" ;;
+            *) stop "the scan ended with status $rc" ;;
+          esac
+      - name: The review record names the head commit
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          stop() { echo "pr-gate: could not run ($1)"; exit 2; }
+          body="$RUNNER_TEMP/pr-body"
+          jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > "$body" || stop "cannot read the body"
+          sh kaninabe/scripts/check-review-record.sh "$body" "$HEAD_SHA"
+      - name: The basis record matches the commits of the pull request
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          stop() { echo "pr-gate: could not run ($1)"; exit 2; }
+          is_hex() { case $1 in ''|*[!0-9a-f]*) return 1 ;; esac; [ "${#1}" = "$2" ]; }
+          is_hex "$HEAD_SHA" 40 || stop "the head sha is not 40 hex characters"
+          is_hex "$GITHUB_SHA" 40 || stop "the base sha is not 40 hex characters"
+          body="$RUNNER_TEMP/pr-body"
+          jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > "$body" || stop "cannot read the body"
+          n=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH") || stop "cannot read the pull request number"
+          case $n in ''|*[!0-9]*) stop "the pull request number is not a number" ;; esac
+          presence="$RUNNER_TEMP/head-presence"
+          git cat-file -e "$HEAD_SHA^{commit}" > "$presence" 2>&1 || stop "the head commit is not in the checkout"
+          rc=0
+          sh kaninabe/scripts/check-basis-record.sh --body "$body" --head "$HEAD_SHA" --base "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY" --pr "$n" --list basis-paths.tsv || rc=$?
+          case $rc in
+            0|1|2) exit "$rc" ;;
+            *) stop "the basis check ended with status $rc" ;;
+          esac
+      - name: Tie the result to what was checked
+        run: |
+          stop() { echo "pr-gate: could not run ($1)"; exit 2; }
+          is_hex() { case $1 in ''|*[!0-9a-f]*) return 1 ;; esac; [ "${#1}" = "$2" ]; }
+          text="$RUNNER_TEMP/pr-text"
+          n=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH") || stop "cannot read the pull request number"
+          head=$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH") || stop "cannot read the head sha"
+          sha256sum < "$text" > "$text.sum" || stop "cannot hash the title and body"
+          IFS= read -r line < "$text.sum" || stop "cannot read the hash record"
+          hash=${line%  -}
+          [ "$hash" != "$line" ] || stop "the hash record does not end in two blanks and a dash"
+          # the record is compared as bytes with what it must be (a shell variable drops trailing line feeds and NUL bytes)
+          printf '%s  -\n' "$hash" > "$text.want" || stop "cannot write the expected hash record"
+          cmp -s "$text.want" "$text.sum" || stop "the hash record is not exactly one line"
+          case $n in ''|*[!0-9]*) stop "the pull request number is not a number" ;; esac
+          is_hex "$head" 40 || stop "the head sha is not 40 hex characters"
+          is_hex "$GITHUB_SHA" 40 || stop "the base sha is not 40 hex characters"
+          is_hex "$hash" 64 || stop "the hash is not 64 hex characters"
+          printf 'pr-gate: passed pr %s head %s base %s text sha256 %s\n' "$n" "$head" "$GITHUB_SHA" "$hash"

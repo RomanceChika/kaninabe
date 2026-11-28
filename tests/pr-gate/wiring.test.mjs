@@ -5,7 +5,9 @@
  *   2. the class rule applied mechanically to every `run:` block (the detector of no-pipes.test.mjs, plus a `$(...)` that sits
  *      directly in an argument of echo / printf, where its status is lost);
  *   3. behaviour: the `run:` blocks are executed the way Actions runs them (`bash -e`), in order, in a temp dir, against a fake
- *      event file and a private PATH, and each tool that can fail is made to fail.
+ *      event file and a private PATH, and each tool that can fail is made to fail. The job runs in a copy of a fixture base checkout
+ *      (the scripts and basis-paths.tsv of this repository, committed; origin is a bare repository that serves any sha), so that the
+ *      basis step really fetches the head commit and really runs scripts/check-basis-record.sh.
  * Division of roles. The syntax of the real file is checked by actionlint (with its shellcheck and pyflakes integrations off): CI
  * installs it pinned and runs scripts/push-gate.sh, whose first step runs actionlint over every workflow file of HEAD
  * (ci.yml, job with `push-gate.sh --mode general --all`); the pre-push hook runs the same script. This test does not check the
@@ -21,7 +23,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { describe, it } from 'node:test';
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -56,7 +58,7 @@ export function parseYaml(text) {
   const skip = () => { while (i < lines.length && (lines[i].trim() === '' || lines[i].trim().startsWith('#'))) i++; };
   const KNOWN_EXPRESSIONS = ['github.sha', 'github.event.pull_request.number', 'github.event.pull_request.head.sha', 'secrets.SCAN_WORDS'];
   // the values YAML would type that this workflow has, pinned by key: nothing else of that kind is accepted
-  const PINNED = { 'persist-credentials': 'false', 'cancel-in-progress': 'true', 'timeout-minutes': '5' };
+  const PINNED = { 'persist-credentials': 'false', 'cancel-in-progress': 'true', 'timeout-minutes': '5', 'fetch-depth': '0' };
   const TYPED = /^(true|false|yes|no|on|off|y|n|null|~)$/i;
   const NUMBERISH = /^[-+.]?[0-9]/;
   const scalar = (raw, key = null) => {
@@ -172,7 +174,7 @@ describe('the YAML subset parser fails loudly on what it does not understand', (
       ['true', 'a: true\n'], ['yes', 'a: yes\n'], ['no', 'a: no\n'], ['off', 'a: off\n'], ['null', 'a: null\n'], ['a tilde', 'a: ~\n'], ['False', 'a: False\n'], ['a number', 'a: 1\n'], ['a float', 'a: 1.5\n'], ['a hex number', 'a: 0x1f\n'],
       ['a character outside the set', 'a: b;c\n'], ['a pipe inside', 'a: b|c\n'], ['a backslash inside', 'a: b\\c\n'], ['an unknown expression', 'a: ${{ github.token }}\n'], ['an unbalanced expression', 'a: ${{ github.sha\n'], ['a bare dollar brace', 'a: x}\n'],
       ['an expression with other spacing', 'a: ${{github.sha}}\n'], ['a trailing blank', 'a: b \n'],
-      ['the wrong value for a pinned key', 'timeout-minutes: 6\n'], ['the right word in another case for a pinned key', 'persist-credentials: False\n'], ['yes for a pinned key', 'persist-credentials: no\n'], ['quoted for a pinned key', 'cancel-in-progress: "true"\n'],
+      ['the wrong value for a pinned key', 'timeout-minutes: 6\n'], ['a fetch depth of 1', 'fetch-depth: 1\n'], ['a fetch depth of 0 in another form', 'fetch-depth: 00\n'], ['the right word in another case for a pinned key', 'persist-credentials: False\n'], ['yes for a pinned key', 'persist-credentials: no\n'], ['quoted for a pinned key', 'cancel-in-progress: "true"\n'],
       ['a key YAML types', 'yes: b\n'], ['a numeric key', '1: b\n'], ['a null key', 'null: b\n'],
       ['a literal block header with a comment', 'a: | # c\n  x\n'],
     ];
@@ -180,11 +182,11 @@ describe('the YAML subset parser fails loudly on what it does not understand', (
       it(`${what}`, () => { assert.throws(() => parseYaml(text), /yaml:/, JSON.stringify(text)); });
     }
     it('accepts the pinned values and the key on', () => {
-      assert.deepEqual(parseYaml('on: x\ntimeout-minutes: 5\npersist-credentials: false\ncancel-in-progress: true\n'), { on: 'x', 'timeout-minutes': '5', 'persist-credentials': 'false', 'cancel-in-progress': 'true' });
+      assert.deepEqual(parseYaml('on: x\ntimeout-minutes: 5\npersist-credentials: false\ncancel-in-progress: true\nfetch-depth: 0\n'), { on: 'x', 'timeout-minutes': '5', 'persist-credentials': 'false', 'cancel-in-progress': 'true', 'fetch-depth': '0' });
     });
     it('refuses the same shapes when they are put into the real workflow text', () => {
       for (const [from, to] of [['timeout-minutes: 5', 'timeout-minutes: 6'], ['runs-on: ubuntu-latest', 'runs-on: ubuntu-latest # c'], ['runs-on: ubuntu-latest', 'runs-on: "ubuntu-latest"'],
-        ['persist-credentials: false', 'persist-credentials: no'], ['ref: ${{ github.sha }}', 'ref: ${{ github.event.pull_request.head.ref }}'], ['runs-on: ubuntu-latest', 'runs-on: ubuntu: latest']]) {
+        ['persist-credentials: false', 'persist-credentials: no'], ['fetch-depth: 0', 'fetch-depth: 1'], ['ref: ${{ github.sha }}', 'ref: ${{ github.event.pull_request.head.ref }}'], ['runs-on: ubuntu-latest', 'runs-on: ubuntu: latest']]) {
         assert.ok(workflowText.includes(from), from);
         assert.throws(() => parseYaml(workflowText.replace(from, to)), /yaml:/, to);
       }
@@ -214,7 +216,7 @@ function shapeProblems(doc) {
     const where = `step ${n + 1}`;
     if ('uses' in st) {
       sameKeys(st, ['uses', 'with'], where, out);
-      sameKeys(st.with ?? {}, ['ref', 'persist-credentials'], `${where} with`, out);
+      sameKeys(st.with ?? {}, ['ref', 'persist-credentials', 'fetch-depth'], `${where} with`, out);
     } else {
       sameKeys(st, ['name', 'run', 'env'], where, out);
       required(st, ['name', 'run'], where);
@@ -241,7 +243,7 @@ describe('pr-gate.yml: the shape is closed (only allowed keys)', () => {
     ['env at the top', 'permissions:\n  contents: read\n', 'permissions:\n  contents: read\nenv:\n  X: val\n'],
     ['a key nobody listed on the job', '    timeout-minutes: 5\n', '    timeout-minutes: 5\n    outputs:\n      x: val\n'],
     ['an env name that is not allowed', '          HEAD_SHA: ${{ github.event.pull_request.head.sha }}\n', '          HEAD_SHA: ${{ github.event.pull_request.head.sha }}\n          TITLE: x\n'],
-    ['a with key that is not allowed', '          persist-credentials: false\n', '          persist-credentials: false\n          fetch-depth: val\n'],
+    ['a with key that is not allowed', '          persist-credentials: false\n', '          persist-credentials: false\n          submodules: val\n'],
     ['a second job', 'jobs:\n', 'jobs:\n  other:\n    runs-on: ubuntu-latest\n    steps:\n      - name: x\n        run: |\n          true\n'],
   ];
   for (const [what, from, to] of mutations) {
@@ -277,10 +279,10 @@ describe('pr-gate.yml: wiring', () => {
     assert.deepEqual(wf.concurrency, { group: 'pr-gate-${{ github.event.pull_request.number }}', 'cancel-in-progress': 'true' });
   });
 
-  it('checks out github.sha only, without credentials, and never the pull request', () => {
+  it('checks out github.sha only, with the whole history of the base, without credentials, and never the pull request', () => {
     const checkouts = steps.filter((s) => (s.uses ?? '').startsWith('actions/checkout@'));
     assert.equal(checkouts.length, 1);
-    assert.deepEqual(checkouts[0].with, { ref: '${{ github.sha }}', 'persist-credentials': 'false' });
+    assert.deepEqual(checkouts[0].with, { ref: '${{ github.sha }}', 'persist-credentials': 'false', 'fetch-depth': '0' });
     assert.ok(steps.filter((s) => s.uses !== undefined).every((s) => s === checkouts[0]), 'no other action is used');
     for (const forbidden of ['github.event.pull_request.head.ref', 'refs/pull/', 'github.head_ref', 'github.event.pull_request.head.repo']) {
       const where = workflowText.split('\n').map((l, k) => [l, k + 1]).filter(([l]) => !l.trim().startsWith('#') && l.includes(forbidden));
@@ -316,13 +318,13 @@ describe('pr-gate.yml: wiring', () => {
     assert.equal(job.env ?? null, null);
   });
 
-  it('has no expression inside any run block, and the expressions it has are exactly the four known ones', () => {
+  it('has no expression inside any run block, and the expressions it has are exactly the known four (the head sha is read twice: by the review step and by the basis step)', () => {
     // An expression is substituted into the script text before the shell runs, so one that holds text from the pull request
     // (a branch name, a label) is script injection in a job that runs with the base repository's rights.
     for (const s of runs) assert.ok(!s.run.includes('${{'), `the run block of "${s.name}" holds an expression`);
     const code = workflowText.split('\n').filter((l) => !l.trim().startsWith('#')).join('\n');
     const found = [...code.matchAll(/\$\{\{\s*(.*?)\s*\}\}/g)].map((m) => m[1]).sort();
-    assert.deepEqual(found, ['github.event.pull_request.head.sha', 'github.event.pull_request.number', 'github.sha', 'secrets.SCAN_WORDS']);
+    assert.deepEqual(found, ['github.event.pull_request.head.sha', 'github.event.pull_request.head.sha', 'github.event.pull_request.number', 'github.sha', 'secrets.SCAN_WORDS']);
     assert.equal(code.split('${{').length - 1, found.length, 'an expression that the pattern did not read');
   });
 
@@ -331,6 +333,69 @@ describe('pr-gate.yml: wiring', () => {
       assert.throws(() => parseYaml(`name: x\njobs:\n  gate:\n    steps: [opened, ${w}]\n`), /types differently/, w);
     }
     assert.deepEqual(parseYaml('name: x\njobs:\n  gate:\n    steps: [opened, edited]\n').jobs.gate.steps, ['opened', 'edited']);
+  });
+
+  it('has the steps in this order: name, checkout, fork, scan, review, basis, tie (the passed line is printed last)', () => {
+    const kinds = [
+      ['name the pull request', (s) => s.run?.includes('pr-gate: pr ')],
+      ['checkout', (s) => (s.uses ?? '').startsWith('actions/checkout@')],
+      ['fork', (s) => s.run?.includes('head.repo.full_name')],
+      ['scan', (s) => s.run?.includes('scripts/scan-pr-text.sh')],
+      ['review', (s) => s.run?.includes('scripts/check-review-record.sh')],
+      ['basis', (s) => s.run?.includes('scripts/check-basis-record.sh')],
+      ['tie', (s) => s.run?.includes('pr-gate: passed')],
+    ];
+    assert.equal(steps.length, kinds.length, `${steps.length} steps`);
+    kinds.forEach(([what, is], k) => {
+      assert.ok(is(steps[k]), `step ${k + 1} is not the ${what} step`);
+      assert.equal(steps.filter((x) => is(x)).length, 1, `the ${what} step is not the only one of its kind`);
+    });
+  });
+
+  it('keeps the review step as a call with two arguments (the basis check runs the review check with --emit itself)', () => {
+    const review = steps[4];
+    assert.ok(review?.run, 'the fifth step is the review step');
+    assert.deepEqual(logicalLines(review.run).map((l) => l.trim()).filter((l) => l.includes('check-review-record.sh')), ['sh scripts/check-review-record.sh "$body" "$HEAD_SHA"']);
+    assert.ok(!review.run.includes('--emit'));
+  });
+
+  it('has a basis step whose env is HEAD_SHA only, and that calls the base\'s check with the base\'s list, the base commit, this repository and this number', () => {
+    const basis = steps[5];
+    assert.ok(basis?.run, 'the sixth step is the basis step');
+    assert.deepEqual(basis.env, { HEAD_SHA: '${{ github.event.pull_request.head.sha }}' });
+    const lines = logicalLines(basis.run).map((l) => l.trim());
+    assert.deepEqual(lines.filter((l) => l.includes('check-basis-record.sh')),
+      ['sh scripts/check-basis-record.sh --body "$body" --head "$HEAD_SHA" --base "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY" --pr "$n" --list basis-paths.tsv || rc=$?']);
+    // the body and the number are read from the event file as data; the base is the commit that is checked out and that the run reports; the head is the env value
+    assert.ok(lines.some((l) => l.startsWith('jq -r \'.pull_request.body // ""\' "$GITHUB_EVENT_PATH" > "$body" ||')), 'the body is read from the event file');
+    assert.ok(lines.some((l) => l.startsWith('n=$(jq -r \'.pull_request.number\' "$GITHUB_EVENT_PATH") ||')), 'the number is read from the event file');
+    for (const bad of ['base.sha', 'head.sha', 'head.ref', '--emit', 'check-review-record', 'GITHUB_WORKSPACE']) assert.ok(!basis.run.includes(bad), `the basis step mentions ${bad}`);
+    // scripts and list are the checked-out base's own files, by relative path: nothing is taken from a directory under RUNNER_TEMP or from the head
+    assert.ok(!/RUNNER_TEMP\/[^"\s]*(scripts|basis-paths)/.test(basis.run));
+    // the head and the base are checked to be 40 lowercase hex characters before the head reaches git
+    const at = (re) => lines.findIndex((l) => re.test(l));
+    const gitLine = at(/^git fetch /);
+    assert.ok(gitLine > 0, 'the fetch line is there');
+    assert.ok(at(/is_hex "\$HEAD_SHA" 40/) >= 0 && at(/is_hex "\$GITHUB_SHA" 40/) >= 0, 'both shas are validated');
+    assert.ok(at(/is_hex "\$HEAD_SHA" 40/) < gitLine && at(/is_hex "\$GITHUB_SHA" 40/) < gitLine, 'the shas are validated before git runs');
+  });
+
+  it('has one git call in the whole workflow: the fetch of the head by sha as data, its output in a file that is never printed, its status checked', () => {
+    const code = runs.flatMap((s) => logicalLines(s.run).map((l) => l.trim())).filter((l) => !l.startsWith('#'));
+    const gits = code.filter((l) => /(^|[\s;&|(`$])git(\s|$)/.test(l));
+    assert.equal(gits.length, 1, `${gits.length} lines with git: ${gits.join(' // ')}`);
+    const m = /^git fetch --no-tags --no-recurse-submodules origin "\$HEAD_SHA" > "\$([a-z_]+)" 2>&1 \|\| stop "[^"$`]+"$/.exec(gits[0]);
+    assert.ok(m, `the fetch line has another form: ${gits[0]}`);
+    assert.equal(steps[5].run.split(`$${m[1]}`).length - 1, 1, 'the file of git\'s output is used only as the target of the redirect (never read, never printed)');
+    for (const sub of ['show', 'checkout', 'switch', 'worktree', 'reset', 'merge', 'apply', 'restore', 'read-tree', 'submodule', 'clone', 'pull', 'cat-file', 'diff', 'log', 'rev-parse']) {
+      assert.ok(!code.some((l) => new RegExp(`\\bgit\\s+(-\\S+\\s+)*${sub}\\b`).test(l)), `git ${sub}`);
+    }
+    assert.ok(!/\bgh\b|\bcurl\b|\bwget\b/.test(runs.map((s) => s.run).join('\n')), 'no other way to reach the head');
+  });
+
+  it('prints the passed line only in the last step, with its format unchanged', () => {
+    assert.deepEqual(steps.filter((s) => s.run?.includes('pr-gate: passed')), [steps.at(-1)]);
+    assert.ok(steps.at(-1).run.includes('printf \'pr-gate: passed pr %s head %s base %s text sha256 %s\\n\' "$n" "$head" "$GITHUB_SHA" "$hash"'));
   });
 
   it('has a fork step that turns a pull request from another repository red', () => {
@@ -394,8 +459,57 @@ describe('pr-gate.yml: the class rule on every run block', () => {
 
 // ---- 3. behaviour: the run blocks, executed ----
 
-const HEAD = 'a1'.repeat(20);
-const BASE = 'b2'.repeat(20);
+/**
+ * The fixture of the basis step: a base checkout (one commit: this repository's scripts/ and basis-paths.tsv, and a seed file) whose
+ * `origin` is a bare repository that holds the base and four pull request branches and serves any sha (uploadpack.allowAnySHA1InWant).
+ * The checkout has the base's history only, so the head commit has to be fetched by the step. Built once; every run gets a copy.
+ *   ok      one commit: a basis path only
+ *   mixed   a basis commit, then an implementation commit (a mixed change)
+ *   record  the same shape as mixed; its first commit is the one a record names as `basis`
+ *   evil    one commit that rewrites check-basis-record.sh to `exit 0` and the list to all-implementation, and adds a basis file
+ */
+const GIT_ENV = { PATH: '/usr/bin:/bin', HOME: '/nonexistent', LC_ALL: 'C', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 'fixture', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 'fixture' };
+const FIX = (() => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pr-gate-fixture-'));
+  process.on('exit', () => rmSync(root, { recursive: true, force: true }));
+  const g = (cwd, ...args) => {
+    const r = spawnSync('git', args, { cwd, env: GIT_ENV, encoding: 'utf8' });
+    if (r.status !== 0) throw new Error(`fixture: git ${args.join(' ')}: ${r.stderr}`);
+    return r.stdout.trim();
+  };
+  const seed = path.join(root, 'seed');
+  mkdirSync(seed);
+  g(seed, 'init', '-q', '-b', 'main');
+  cpSync(path.join(repoRoot, 'scripts'), path.join(seed, 'scripts'), { recursive: true });
+  cpSync(path.join(repoRoot, 'basis-paths.tsv'), path.join(seed, 'basis-paths.tsv'));
+  mkdirSync(path.join(seed, 'docs'));
+  writeFileSync(path.join(seed, 'docs/seed.md'), 'seed\n');
+  g(seed, 'add', '-A'); g(seed, 'commit', '-q', '-m', 'base');
+  const base = g(seed, 'rev-parse', 'HEAD');
+  const branch = (name, commits) => {
+    g(seed, 'checkout', '-q', '-b', name, base);
+    const shas = commits.map((files) => {
+      for (const [f, c] of Object.entries(files)) { mkdirSync(path.dirname(path.join(seed, f)), { recursive: true }); writeFileSync(path.join(seed, f), c); }
+      g(seed, 'add', '-A'); g(seed, 'commit', '-q', '-m', `${name} commit`);
+      return g(seed, 'rev-parse', 'HEAD');
+    });
+    return shas;
+  };
+  const ok = branch('ok', [{ 'docs/ok.md': 'ok\n' }]);
+  const mixed = branch('mixed', [{ 'docs/m.md': 'm\n' }, { 'scripts/m.sh': 'echo m\n' }]);
+  const record = branch('record', [{ 'docs/r.md': 'r\n' }, { 'scripts/r.sh': 'echo r\n' }]);
+  const evil = branch('evil', [{ 'scripts/check-basis-record.sh': 'exit 0\n', 'basis-paths.tsv': 'implementation\t*\teverything is implementation\n', 'docs/e.md': 'e\n' }]);
+  g(seed, 'checkout', '-q', 'main');
+  const origin = path.join(root, 'origin.git');
+  g(root, 'clone', '-q', '--bare', seed, origin);
+  g(origin, 'config', 'uploadpack.allowAnySHA1InWant', 'true');
+  // the workspace has the base's history only (as the checkout with fetch-depth 0 of the base branch has), not the pull request's commits
+  g(root, 'clone', '-q', '--single-branch', '--branch', 'main', `file://${origin}`, 'work');
+  return { work: path.join(root, 'work'), base, heads: { ok: ok[0], mixed: mixed[1], record: record[1], evil: evil[0] }, recordBasis: record[0] };
+})();
+
+const HEAD = FIX.heads.ok;
+const BASE = FIX.base;
 const OTHER_BASE = 'c3'.repeat(20);
 const REPO = 'octo/repo';
 const LIST = '# qjmarker list\nhitword\n';
@@ -410,7 +524,7 @@ function event({ title = TITLE, body = BODY, number = 42, head = HEAD, repo = RE
   return { pull_request: { number, title, body, head: { sha: head, repo: { full_name: repo } }, base: { sha: OTHER_BASE } } };
 }
 
-const REAL = Object.fromEntries(['jq', 'sha256sum', 'rm'].map((n) => [n, ['/usr/bin', '/bin'].map((d) => path.join(d, n)).find((p) => spawnSync('/bin/sh', ['-c', `test -x ${p}`]).status === 0)]));
+const REAL = Object.fromEntries(['jq', 'sha256sum', 'rm', 'git'].map((n) => [n, ['/usr/bin', '/bin'].map((d) => path.join(d, n)).find((p) => spawnSync('/bin/sh', ['-c', `test -x ${p}`]).status === 0)]));
 
 /** Resolves the `${{ ... }}` expressions a step's env may hold; throws on one it does not know. */
 function expand(value, ctx) {
@@ -423,7 +537,8 @@ function expand(value, ctx) {
 /**
  * Runs the run blocks of the job in order with `bash -e` (what Actions does by default on Linux), stopping at the first that fails.
  * Options: ev (the event), words (SCAN_WORDS), base (GITHUB_SHA), shims (name -> sh body, placed first on the PATH), only (a predicate
- * on a step: steps that do not pass are not run), pre (called with the dir before the steps run).
+ * on a step: steps that do not pass are not run), pre (called with the dirs, `work` among them, before the steps run).
+ * The steps run in `work`, a copy of the fixture base checkout (GITHUB_WORKSPACE).
  */
 function runJob({ ev = event(), words = LIST, base = BASE, shims = {}, only = () => true, pre = () => {}, rawEvent, runnerName = 'runner-temp' } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'pr-gate-'));
@@ -432,11 +547,13 @@ function runJob({ ev = event(), words = LIST, base = BASE, shims = {}, only = ()
     const runnerTemp = path.join(dir, runnerName);
     const tmp = path.join(dir, 'tmp');
     for (const d of [bin, runnerTemp, tmp]) mkdirSync(d);
+    const work = path.join(dir, 'work');
+    cpSync(FIX.work, work, { recursive: true });
     for (const [name, body] of Object.entries(shims)) { writeFileSync(path.join(bin, name), `#!/bin/sh\n${body}\n`); chmodSync(path.join(bin, name), 0o755); }
     const eventPath = path.join(dir, 'event.json');
     writeFileSync(eventPath, rawEvent ?? JSON.stringify(ev));
     const ctx = { 'secrets.SCAN_WORDS': words, 'github.event.pull_request.head.sha': ev.pull_request?.head?.sha ?? '', 'github.sha': base };
-    pre({ dir, bin, runnerTemp, tmp });
+    pre({ dir, bin, runnerTemp, tmp, work });
     const results = [];
     for (const s of steps) {
       if (s.run === undefined || !only(s)) continue;
@@ -444,9 +561,9 @@ function runJob({ ev = event(), words = LIST, base = BASE, shims = {}, only = ()
       writeFileSync(file, s.run);
       const env = {
         PATH: `${bin}:/usr/bin:/bin`, HOME: dir, TMPDIR: tmp, RUNNER_TEMP: runnerTemp, GITHUB_EVENT_PATH: eventPath,
-        GITHUB_SHA: base, GITHUB_REPOSITORY: REPO, GITHUB_WORKSPACE: repoRoot, ...(s.env ? Object.fromEntries(Object.entries(s.env).map(([k, v]) => [k, expand(v, ctx)])) : {}),
+        GITHUB_SHA: base, GITHUB_REPOSITORY: REPO, GITHUB_WORKSPACE: work, ...(s.env ? Object.fromEntries(Object.entries(s.env).map(([k, v]) => [k, expand(v, ctx)])) : {}),
       };
-      const r = spawnSync('bash', ['-e', file], { cwd: repoRoot, env, encoding: 'utf8' });
+      const r = spawnSync('bash', ['-e', file], { cwd: work, env, encoding: 'utf8' });
       results.push({ name: s.name ?? '(unnamed)', status: r.status, out: r.stdout + r.stderr, step: s });
       if (r.status !== 0) break;
     }
@@ -462,6 +579,7 @@ const PASSED = /^pr-gate: passed /m;
 const COULD_NOT = /^pr-gate: could not run \(.+\)$/m;
 const isScan = (s) => s.run.includes('scripts/scan-pr-text.sh');
 const isReview = (s) => s.run.includes('scripts/check-review-record.sh');
+const isBasis = (s) => s.run.includes('scripts/check-basis-record.sh');
 
 describe('pr-gate.yml: the run blocks, executed', () => {
   it('a good event passes with the exact line, the right number, head, base and the hash of the same bytes', () => {
@@ -481,7 +599,7 @@ describe('pr-gate.yml: the run blocks, executed', () => {
 
   it('hashes a title and a body with several lines, an empty body and a body without a final line feed', () => {
     for (const [title, body] of [['T', 'a\nb\n\nc'], ['T', ''], ['Ünï', 'x\n']]) {
-      const r = runJob({ ev: event({ title, body: body === '' ? null : body, head: HEAD }), only: (s) => !isReview(s) });
+      const r = runJob({ ev: event({ title, body: body === '' ? null : body, head: HEAD }), only: (s) => !isReview(s) && !isBasis(s) });
       assert.equal(r.status, 0, r.out);
       assert.ok(r.out.includes(`text sha256 ${hexOf(hashedBytes(title, body))}\n`), r.out);
     }
@@ -503,6 +621,118 @@ describe('pr-gate.yml: the run blocks, executed', () => {
     stopsAs2(r, why);
     assert.ok(COULD_NOT.test(r.out), `${why}: not the fixed pr-gate message: ${r.out}`);
   };
+
+  describe('the basis step (the head is fetched as data; the base\'s scripts and list decide)', () => {
+    const REC_LINK = (id) => `https://github.com/${REPO}/pull/42#issuecomment-${id}`;
+    /** The body of a pull request whose review record names `head`; with `basis`, a basis record that names it. */
+    const bodyFor = (head, basis) => `Plain text.\n\n## Review\n- opus: ${head}\n- codex: ${head}\n${basis ? `- basis: ${basis}\n- basis-opus: ${basis} ${REC_LINK(101)}\n- basis-codex: ${basis} ${REC_LINK(102)}\n` : ''}`;
+    const pr = (head, basis) => event({ head, body: bodyFor(head, basis) });
+    // a git that records its arguments (one line per call, in RUNNER_TEMP) and then does what the real one does
+    const GIT_LOG = `echo "qjgitcall $*" >> "$RUNNER_TEMP/git-calls"`;
+    const recordingGit = `${GIT_LOG}; exec ${REAL.git} "$@"`;
+    const calls = (r) => r.leftContents.flatMap((c) => c.split('\n')).filter((l) => l.startsWith('qjgitcall ')).map((l) => l.slice('qjgitcall '.length));
+    const lastIs = (r, pred) => assert.ok(pred(r.results.at(-1).step), `the run ended in "${r.results.at(-1).name}"`);
+
+    it('a head that is one kind of path passes; the head is fetched by its sha, once, with exactly these arguments, and the passed line comes after the basis step', () => {
+      const r = runJob({ shims: { git: recordingGit } });
+      assert.equal(r.status, 0, r.out);
+      assert.deepEqual(calls(r), [`fetch --no-tags --no-recurse-submodules origin ${HEAD}`]);
+      const names = r.results.map((x) => x.step);
+      assert.ok(names.findIndex(isBasis) >= 0 && names.findIndex(isBasis) < names.length - 1, 'the basis step ran, and before the last step');
+      assert.ok(PASSED.test(r.out));
+    });
+
+    it('a mixed change (basis and implementation) without a record is red (exit 1) with the finding and no passed line', () => {
+      const r = runJob({ ev: pr(FIX.heads.mixed) });
+      assert.equal(r.status, 1, r.out);
+      assert.ok(!PASSED.test(r.out), r.out);
+      assert.ok(r.out.includes('basis record: record the basis'), r.out);
+      lastIs(r, isBasis);
+    });
+
+    it('a mixed change with a correct record passes', () => {
+      const r = runJob({ ev: pr(FIX.heads.record, FIX.recordBasis) });
+      assert.equal(r.status, 0, r.out);
+      assert.ok(PASSED.test(r.out), r.out);
+      assert.ok(/^basis record: matches \(origin [0-9a-f]{8}, basis [0-9a-f]{8}\)$/m.test(r.out), r.out);
+    });
+
+    it('a record that names a commit that is not the pull request\'s is red', () => {
+      const r = runJob({ ev: pr(FIX.heads.record, FIX.heads.ok) });
+      assert.equal(r.status, 1, r.out);
+      assert.ok(!PASSED.test(r.out), r.out);
+    });
+
+    it('a head that rewrites check-basis-record.sh to `exit 0` and basis-paths.tsv to all-implementation is still red: the scripts and the list are the base\'s', () => {
+      const r = runJob({ ev: pr(FIX.heads.evil) });
+      assert.equal(r.status, 1, r.out);
+      assert.ok(!PASSED.test(r.out), r.out);
+      assert.ok(r.out.includes('basis record: record the basis'), r.out);
+    });
+
+    describe('what cannot be done is exit 2 with the fixed line and no passed line', () => {
+      const cases = {
+        'git is not there': { shims: { git: 'exit 127' } },
+        'the fetch fails': { shims: { git: 'exit 1' } },
+        'the fetch fails and prints': { shims: { git: 'echo qjgitout; echo qjgiterr >&2; exit 128' } },
+        'the fetch succeeds and prints, and brings nothing': { shims: { git: 'echo qjgitout; echo qjgiterr >&2; exit 0' } },
+        'the head is not in origin': { ev: pr('d4'.repeat(20)) },
+      };
+      for (const [what, opts] of Object.entries(cases)) {
+        it(`${what}: exit 2, no passed line, and git's output is not printed`, () => {
+          const r = runJob(opts);
+          assert.equal(r.status, 2, `${what}: ${r.out}`);
+          assert.ok(!PASSED.test(r.out), `${what}: ${r.out}`);
+          assert.ok(/could not run/.test(r.out), `${what}: ${r.out}`);
+          assert.ok(!r.out.includes('qjgit'), `${what}: git's output was printed: ${r.out}`);
+          lastIs(r, isBasis);
+        });
+      }
+      it('the fetch fails: the line is the fixed pr-gate line', () => {
+        assert.ok(COULD_NOT.test(runJob({ shims: { git: 'exit 1' } }).out));
+      });
+
+      const stub = (body) => ({ pre: ({ work }) => writeFileSync(path.join(work, 'scripts/check-basis-record.sh'), `${body}\n`) });
+      for (const [what, body, status] of [['says could not run (exit 2)', 'echo "basis record: could not run (stub)"; exit 2', 2], ['exits 3', 'exit 3', 2], ['exits 127', 'exit 127', 2], ['exits 1', 'echo "basis record: FAILED"; exit 1', 1]]) {
+        it(`the basis script ${what}: exit ${status}, no passed line`, () => {
+          const r = runJob(stub(body));
+          assert.equal(r.status, status, r.out);
+          assert.ok(!PASSED.test(r.out), r.out);
+          lastIs(r, isBasis);
+        });
+      }
+      it('the basis script is not there: exit 2, no passed line', () => {
+        // sh itself says it cannot open the file and ends with a status of its own (2 or 127): the step turns neither into a pass
+        const r = runJob({ pre: ({ work }) => rmSync(path.join(work, 'scripts/check-basis-record.sh')) });
+        assert.ok(r.status === 2, r.out);
+        assert.ok(!PASSED.test(r.out), r.out);
+        lastIs(r, isBasis);
+      });
+      it('basis-paths.tsv is not there: exit 2, no passed line (a base without a list is not "everything is basis")', () => {
+        const r = runJob({ pre: ({ work }) => rmSync(path.join(work, 'basis-paths.tsv')) });
+        stopsAs2(r, 'no list');
+      });
+      it('the basis script prints nothing and succeeds: the step is as green as the script says (the script is the judge; its own tests pin its output)', () => {
+        const r = runJob(stub('exit 0'));
+        assert.equal(r.status, 0, r.out);
+      });
+    });
+
+    it('a head or a base that is not 40 lowercase hex characters never reaches git', () => {
+      for (const opts of [{ ev: event({ head: 'xyz' }) }, { ev: event({ head: HEAD.toUpperCase() }) }, { ev: event({ head: `-${HEAD.slice(1)}` }) }, { ev: event({ head: '' }) }, { base: 'xyz' }, { base: BASE.toUpperCase() }, { base: '' }]) {
+        const r = runJob({ ...opts, only: (s) => !isReview(s), shims: { git: recordingGit } });
+        stopsAs2Fixed(r, JSON.stringify(Object.keys(opts)));
+        assert.deepEqual(calls(r), [], 'git was called');
+      }
+    });
+
+    it('a pull request whose title or body holds a marker never has it printed by the basis step', () => {
+      const r = runJob({ ev: event({ head: FIX.heads.mixed, body: `qjbodymarker\n\n## Review\n- opus: ${FIX.heads.mixed}\n- codex: ${FIX.heads.mixed}\n` }), only: (s) => !isScan(s) });
+      assert.equal(r.status, 1, r.out);
+      assert.ok(!r.out.includes('qjbodymarker'), r.out);
+    });
+  });
+
 
   describe('sha256sum', () => {
     const cases = [
@@ -537,7 +767,8 @@ describe('pr-gate.yml: the run blocks, executed', () => {
   describe('cmp (the byte comparison of the hash record)', () => {
     for (const [what, body] of [['says the files differ', 'exit 1'], ['cannot compare', 'exit 2'], ['is not there', 'exit 127']]) {
       it(`${what}: exit 2, could not run, no passed line`, () => {
-        stopsAs2Fixed(runJob({ shims: { cmp: body } }), what);
+        // the basis check uses cmp too and stops on its own: the step of the hash is the one that is looked at here
+        stopsAs2Fixed(runJob({ shims: { cmp: body }, only: (s) => !isBasis(s) }), what);
       });
     }
   });

@@ -65,6 +65,11 @@ describe('violationsOf', () => {
     assert.equal(rulesFor('scripts/a.mjs', "import x from 'left-pad';").length, 1);
     assert.deepEqual(rulesFor('tests/bin/a.test.mjs', "import x from '../../bin/kaninabe.mjs';"), []);
     assert.equal(rulesFor('tests/bin/a.test.mjs', "import x from '../../legacy/a.js';").length, 1);
+    // the shared harness of the two pr-gate tests: importable from tests/pr-gate/ only, and nothing else of tests/ is
+    assert.deepEqual(rulesFor('tests/pr-gate/a.test.mjs', "import x from './harness.mjs';"), []);
+    assert.equal(rulesFor('tests/push-gate/a.test.mjs', "import x from '../pr-gate/harness.mjs';").length, 1);
+    assert.equal(rulesFor('tests/pr-gate/a.test.mjs', "import x from './other.mjs';").length, 1);
+    assert.equal(rulesFor('tests/pr-gate/a.test.mjs', "import x from '../push-gate/harness.mjs';").length, 1);
   });
 });
 
